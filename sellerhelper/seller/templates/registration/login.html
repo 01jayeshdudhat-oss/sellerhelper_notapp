@@ -1,0 +1,303 @@
+{% extends 'base.html' %}
+{% load widget_tweaks %}
+
+{% block title %}Login{% endblock %}
+
+{% block content %}
+    <style>
+        .login-shell {
+            width: min(100%, 680px);
+        }
+        .login-card-body {
+            padding: clamp(1rem, 3vw, 1.5rem);
+        }
+        .login-title {
+            font-size: 1.35rem;
+            margin-bottom: .65rem;
+        }
+        .login-workspace-fieldset {
+            margin-bottom: .75rem;
+        }
+        .workspace-options {
+            display: flex;
+            flex-wrap: wrap;
+            gap: .5rem;
+        }
+        .workspace-option {
+            flex: 1 1 calc(50% - .5rem);
+            min-width: 120px;
+        }
+        .workspace-radio {
+            position: absolute;
+            opacity: 0;
+            width: 1px;
+            height: 1px;
+        }
+        .portal-choice {
+            min-height: 44px;
+            padding: .65rem .75rem !important;
+            border-radius: .75rem;
+            cursor: pointer;
+            transition: border-color .15s ease, background-color .15s ease, box-shadow .15s ease;
+        }
+        .workspace-radio:checked + .portal-choice {
+            border-color: var(--bs-primary);
+            background: #eff6ff;
+            box-shadow: 0 0 0 1px var(--bs-primary);
+        }
+        .workspace-radio:focus-visible + .portal-choice {
+            outline: 3px solid rgba(13, 110, 253, .35);
+            outline-offset: 2px;
+        }
+        .login-form-field {
+            margin-bottom: .65rem;
+        }
+        .login-form-field .form-control {
+            min-height: 42px;
+            padding: .45rem .75rem;
+        }
+        .login-remember {
+            margin-bottom: .75rem;
+        }
+        @media (max-width: 300px) {
+            .workspace-option {
+                min-width: 100%;
+            }
+        }
+    </style>
+    <div class="row justify-content-center">
+        <div class="col-12 login-shell">
+            <div class="card shadow-sm">
+                <div class="card-body login-card-body">
+                    <h3 class="card-title login-title">Sign in to your account</h3>
+                    <div class="alert alert-info py-1 px-2 mb-2" role="status">
+                        Selected workspace: <strong id="selectedWorkspaceName">{{ selected_portal_label }}</strong>
+                    </div>
+                    {% if form.errors %}
+                        <div class="alert alert-danger">
+                            {% if form.non_field_errors %}{{ form.non_field_errors }}{% else %}Please correct the errors below.{% endif %}
+                        </div>
+                    {% endif %}
+                    <form method="post" novalidate>
+                        {% csrf_token %}
+                        {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+                        <div id="rememberedLoginSection" class="mb-2" hidden>
+                            <label class="form-label mb-1" for="rememberedLoginSelect">Use a saved login</label>
+                            <div class="input-group">
+                                <select class="form-select" id="rememberedLoginSelect">
+                                    <option value="">Choose a saved account</option>
+                                </select>
+                                <button class="btn btn-outline-secondary" type="button" id="forgetRememberedLogin" disabled>
+                                    Forget
+                                </button>
+                            </div>
+                        </div>
+                        <fieldset class="login-workspace-fieldset">
+                            <legend class="form-label fs-6 mb-2">Choose your workspace</legend>
+                            <div class="workspace-options">
+                                <div class="workspace-option">
+                                    <input class="workspace-radio" type="radio" name="login_as" id="portalCustomer" value="CUSTOMER" data-workspace-label="Customer" {% if selected_portal == "CUSTOMER" %}checked{% endif %}>
+                                    <label class="card w-100 text-start portal-choice" for="portalCustomer">
+                                        <span class="fw-semibold"><i class="bi bi-bag-heart me-2 text-success"></i>Customer</span>
+                                    </label>
+                                </div>
+                                <div class="workspace-option">
+                                    <input class="workspace-radio" type="radio" name="login_as" id="portalB2BCustomer" value="B2B_CUSTOMER" data-workspace-label="B2B customer" {% if selected_portal == "B2B_CUSTOMER" %}checked{% endif %}>
+                                    <label class="card w-100 text-start portal-choice" for="portalB2BCustomer">
+                                        <span class="fw-semibold"><i class="bi bi-building me-2 text-primary"></i>B2B customer</span>
+                                    </label>
+                                </div>
+                                <div class="workspace-option">
+                                    <input class="workspace-radio" type="radio" name="login_as" id="portalOwner" value="SHOP_OWNER" data-workspace-label="Shop owner" {% if selected_portal == "SHOP_OWNER" %}checked{% endif %}>
+                                    <label class="card w-100 text-start portal-choice" for="portalOwner">
+                                        <span class="fw-semibold"><i class="bi bi-shop me-2 text-primary"></i>Shop owner</span>
+                                    </label>
+                                </div>
+                                <div class="workspace-option">
+                                    <input class="workspace-radio" type="radio" name="login_as" id="portalStaff" value="SHOP_STAFF" data-workspace-label="Shop staff" {% if selected_portal == "SHOP_STAFF" %}checked{% endif %}>
+                                    <label class="card w-100 text-start portal-choice" for="portalStaff">
+                                        <span class="fw-semibold"><i class="bi bi-person-badge me-2 text-warning"></i>Shop staff</span>
+                                    </label>
+                                </div>
+                                {% if user.is_superuser %}
+                                    <div class="workspace-option">
+                                        <input class="workspace-radio" type="radio" name="login_as" id="portalAdmin" value="ADMIN" data-workspace-label="Admin" {% if selected_portal == "ADMIN" %}checked{% endif %}>
+                                        <label class="card w-100 text-start portal-choice" for="portalAdmin">
+                                            <span class="fw-semibold"><i class="bi bi-shield-lock me-2 text-danger"></i>Admin</span>
+                                        </label>
+                                    </div>
+                                {% endif %}
+                            </div>
+                            <div class="form-text mt-1">Your account role controls which tools and shops you can access.</div>
+                        </fieldset>
+                        {% for field in form %}
+                            <div class="login-form-field">
+                                {{ field.label_tag }}
+                                {% if field.name == "username" %}
+                                    {{ field|add_class:'form-control'|attr:'autocomplete:username'|attr:'autocapitalize:none'|attr:'spellcheck:false' }}
+                                {% elif field.name == "password" %}
+                                    {{ field|add_class:'form-control'|attr:'autocomplete:current-password' }}
+                                {% else %}
+                                    {{ field|add_class:'form-control' }}
+                                {% endif %}
+                                {% if field.errors %}
+                                    <div class="text-danger small">{{ field.errors|striptags }}</div>
+                                {% endif %}
+                            </div>
+                        {% endfor %}
+                        <div class="form-check login-remember">
+                            <input class="form-check-input" type="checkbox" id="rememberLoginUsername">
+                            <label class="form-check-label" for="rememberLoginUsername">
+                                Remember this user ID and workspace on this device
+                            </label>
+                            <div class="form-text">Passwords are never stored here. Your device may offer to save your password securely.</div>
+                        </div>
+                        <div class="d-grid">
+                            <button type="submit" class="btn btn-primary">Login</button>
+                        </div>
+                    </form>
+                    <script>
+                        const workspaceRadios = document.querySelectorAll('input[name="login_as"]');
+                        const selectedWorkspaceName = document.getElementById("selectedWorkspaceName");
+                        function updateSelectedWorkspace() {
+                            const selected = document.querySelector('input[name="login_as"]:checked');
+                            selectedWorkspaceName.textContent = selected ? selected.dataset.workspaceLabel : "Choose a workspace";
+                        }
+                        workspaceRadios.forEach((radio) => radio.addEventListener("change", updateSelectedWorkspace));
+                        updateSelectedWorkspace();
+
+                        const loginForm = document.querySelector('form[method="post"]');
+                        const usernameInput = loginForm?.querySelector('input[name="username"]');
+                        const rememberUsername = document.getElementById("rememberLoginUsername");
+                        const rememberedLoginSelect = document.getElementById("rememberedLoginSelect");
+                        const rememberedLoginSection = document.getElementById("rememberedLoginSection");
+                        const forgetRememberedLogin = document.getElementById("forgetRememberedLogin");
+                        const rememberedLoginsKey = "sellerhelper.rememberedLogins";
+                        const legacyRememberedUsernameKey = "sellerhelper.rememberedLoginUsername";
+                        const portalRadios = Array.from(workspaceRadios);
+                        let rememberedLogins = [];
+
+                        function selectedPortal() {
+                            return document.querySelector('input[name="login_as"]:checked')?.value || "";
+                        }
+
+                        function selectPortal(portal) {
+                            const radio = portalRadios.find((option) => option.value === portal);
+                            if (!radio) return false;
+                            radio.checked = true;
+                            updateSelectedWorkspace();
+                            return true;
+                        }
+
+                        function renderRememberedLogins() {
+                            if (!rememberedLoginSelect || !rememberedLoginSection) return;
+                            rememberedLoginSelect.replaceChildren(new Option("Choose a saved account", ""));
+                            rememberedLogins.forEach((account, index) => {
+                                const radio = portalRadios.find((option) => option.value === account.portal);
+                                if (!radio) return;
+                                const option = new Option(
+                                    account.username + " — " + radio.dataset.workspaceLabel,
+                                    String(index),
+                                );
+                                rememberedLoginSelect.add(option);
+                            });
+                            rememberedLoginSection.hidden = rememberedLogins.length === 0;
+                            if (forgetRememberedLogin) {
+                                forgetRememberedLogin.disabled = rememberedLoginSelect.value === "";
+                            }
+                        }
+
+                        if (usernameInput && rememberUsername) {
+                            try {
+                                const savedLogins = JSON.parse(localStorage.getItem(rememberedLoginsKey) || "[]");
+                                if (Array.isArray(savedLogins)) {
+                                    rememberedLogins = savedLogins.filter((account) =>
+                                        account &&
+                                        typeof account.username === "string" &&
+                                        account.username.trim() &&
+                                        portalRadios.some((radio) => radio.value === account.portal),
+                                    );
+                                }
+
+                                const legacyUsername = localStorage.getItem(legacyRememberedUsernameKey);
+                                const legacyPortal = selectedPortal() || "CUSTOMER";
+                                if (legacyUsername && !rememberedLogins.some(
+                                    (account) => account.username === legacyUsername && account.portal === legacyPortal,
+                                )) {
+                                    rememberedLogins.unshift({ username: legacyUsername, portal: legacyPortal });
+                                    localStorage.removeItem(legacyRememberedUsernameKey);
+                                }
+                                renderRememberedLogins();
+
+                                rememberedLoginSelect?.addEventListener("change", () => {
+                                    if (!rememberedLoginSelect.value) {
+                                        if (forgetRememberedLogin) forgetRememberedLogin.disabled = true;
+                                        return;
+                                    }
+                                    const index = Number(rememberedLoginSelect.value);
+                                    const account = rememberedLogins[index];
+                                    if (!account) {
+                                        if (forgetRememberedLogin) forgetRememberedLogin.disabled = true;
+                                        return;
+                                    }
+                                    usernameInput.value = account.username;
+                                    selectPortal(account.portal);
+                                    rememberUsername.checked = true;
+                                    if (forgetRememberedLogin) forgetRememberedLogin.disabled = false;
+                                });
+
+                                forgetRememberedLogin?.addEventListener("click", () => {
+                                    if (!rememberedLoginSelect.value) return;
+                                    const index = Number(rememberedLoginSelect.value);
+                                    if (!Number.isInteger(index) || !rememberedLogins[index]) return;
+                                    rememberedLogins.splice(index, 1);
+                                    localStorage.setItem(rememberedLoginsKey, JSON.stringify(rememberedLogins));
+                                    renderRememberedLogins();
+                                });
+
+                                if (rememberedLogins.length && rememberedLoginSelect) {
+                                    rememberedLoginSelect.value = "0";
+                                    rememberedLoginSelect.dispatchEvent(new Event("change"));
+                                }
+
+                                loginForm?.addEventListener("submit", () => {
+                                    const username = usernameInput.value.trim();
+                                    const portal = selectedPortal();
+                                    if (!username || !portal) return;
+                                    if (rememberUsername.checked) {
+                                        rememberedLogins = rememberedLogins.filter(
+                                            (account) => account.username !== username || account.portal !== portal,
+                                        );
+                                        rememberedLogins.unshift({ username, portal });
+                                        localStorage.setItem(rememberedLoginsKey, JSON.stringify(rememberedLogins));
+                                        renderRememberedLogins();
+                                    }
+                                });
+                            } catch (error) {
+                                console.warn("Could not access the remembered login ID on this device.", error);
+                            }
+                        }
+                    </script>
+
+                    <hr class="my-4">
+                    <div class="text-center mb-2">Or continue with</div>
+                    <div class="d-flex justify-content-center">
+                        <a href="{% url 'social:begin' 'google-oauth2' %}?next={{ request.path }}" class="btn btn-outline-danger social-btn">Google</a>
+                        <a href="{% url 'social:begin' 'facebook' %}?next={{ request.path }}" class="btn btn-outline-primary social-btn">Facebook</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    .portal-choice { cursor: pointer; border: 1px solid #dee2e6; transition: border-color .15s ease, box-shadow .15s ease; }
+    fieldset .row.g-2 > .col-12 { position: relative; }
+    .workspace-radio { position: absolute; z-index: 2; top: 1.15rem; left: 1rem; width: 1.2rem; height: 1.2rem; cursor: pointer; }
+    .workspace-radio:checked + .portal-choice { border-color: #0d6efd; box-shadow: 0 0 0 .2rem rgba(13,110,253,.15); background: #f5f9ff; }
+    .workspace-radio:focus-visible + .portal-choice { outline: 2px solid #0d6efd; outline-offset: 2px; }
+    .portal-choice span { display: block; }
+</style>
+{% endblock %}

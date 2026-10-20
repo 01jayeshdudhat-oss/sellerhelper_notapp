@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block title %}Edit {{ product_shop.product.product_name }}{% endblock %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 820px;">
+    <div class="mb-4">
+        <a href="{% url 'shop_storefront' product_shop.shop_id %}" class="text-decoration-none">
+            <i class="bi bi-arrow-left me-1"></i>Back to storefront preview
+        </a>
+        <h1 class="h2 fw-bold mt-3 mb-1">Edit storefront product</h1>
+        <p class="text-muted mb-0">
+            {{ product_shop.shop.name }} · {{ product_shop.product.product_name }}
+        </p>
+    </div>
+
+    <form method="post" class="card border-0 shadow-sm">
+        {% csrf_token %}
+        {{ form.b2b_unit }}
+        <div class="card-body p-3 p-md-4">
+            {% if form.non_field_errors %}
+                <div class="alert alert-danger">{{ form.non_field_errors }}</div>
+            {% endif %}
+            <section class="mb-4" aria-labelledby="product-details-heading">
+                <h2 class="h5 fw-bold mb-3" id="product-details-heading">Product details</h2>
+                <div class="row g-3">
+                    {% for field in form %}
+                        {% if field.name == "product_alias_name" or field.name == "product_title" or field.name == "product_color" or field.name == "product_size" or field.name == "product_description" or field.name == "search_keywords" or field.name == "unit_value" or field.name == "unit_text" %}
+                            <div class="{% if field.name == 'product_description' or field.name == 'search_keywords' %}col-12{% else %}col-md-6{% endif %}">
+                                <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                                {{ field }}
+                                {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+                                {% for error in field.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
+                            </div>
+                        {% endif %}
+                    {% endfor %}
+                </div>
+            </section>
+
+            <section class="rounded border p-3 p-md-4 mb-4 bg-light" aria-labelledby="b2c-pricing-heading">
+                <h2 class="h5 fw-bold mb-1" id="b2c-pricing-heading">B2C pricing</h2>
+                <p class="text-muted small mb-3">Prices shown to regular customers. Prices are before GST.</p>
+                <div class="row g-3">
+                    {% for field in form %}
+                        {% if field.name == "shop_price" or field.name == "bulk_price" or field.name == "bulk_unit_value" or field.name == "bulk_unit_text" %}
+                            <div class="{% if field.name == 'bulk_unit_value' or field.name == 'bulk_unit_text' %}col-6 col-md-3{% else %}col-md-6{% endif %}">
+                                <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                                {{ field }}
+                                {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+                                {% for error in field.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
+                            </div>
+                        {% endif %}
+                    {% endfor %}
+                </div>
+            </section>
+
+            <section class="rounded border border-primary-subtle p-3 p-md-4 mb-4" aria-labelledby="b2b-pricing-heading">
+                <h2 class="h5 fw-bold mb-1" id="b2b-pricing-heading">B2B pricing</h2>
+                <p class="text-muted small mb-3">Business prices and bulk units are independent from B2C. Prices are before GST.</p>
+                <div class="row g-3">
+                    {% for field in form %}
+                        {% if field.name == "b2b_price" or field.name == "b2b_unit_value" or field.name == "b2b_unit_text" or field.name == "b2b_bulk_price" or field.name == "b2b_bulk_unit_value" or field.name == "b2b_bulk_unit_text" %}
+                            <div class="{% if field.name == 'b2b_unit_value' or field.name == 'b2b_unit_text' or field.name == 'b2b_bulk_unit_value' or field.name == 'b2b_bulk_unit_text' %}col-6 col-md-3{% else %}col-md-6{% endif %}">
+                                <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                                {{ field }}
+                                {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+                                {% for error in field.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
+                            </div>
+                        {% endif %}
+                    {% endfor %}
+                </div>
+            </section>
+
+            <section class="mb-2" aria-labelledby="stock-heading">
+                <h2 class="h5 fw-bold mb-3" id="stock-heading">Stock and order settings</h2>
+                <div class="row g-3">
+                    {% for field in form %}
+                        {% if field.name == "stock" or field.name == "b2b_stock" or field.name == "bulk_min_quantity" or field.name == "shop_image_url" %}
+                            <div class="col-md-6">
+                                <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                                {{ field }}
+                                {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+                                {% for error in field.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
+                            </div>
+                        {% endif %}
+                    {% endfor %}
+                </div>
+            </section>
+            <div class="alert alert-info mt-4 mb-0">
+                Search keywords help customers find this product but are not shown on marketplace listings. B2C and B2B stock and prices are managed separately; B2B orders use B2B stock. Product details and its base unit apply to all shops. Set each bulk unit value and text separately (for example, 12 and packs); leave a bulk price blank to hide that offer. The minimum order quantity is shared by both bulk offers. {% if product_shop.shop.allow_product_image_overrides %}This shop is permitted to use its own product image URL.{% else %}This shop uses the admin catalog image.{% endif %}
+            </div>
+        </div>
+        <div class="card-footer bg-white d-flex justify-content-end gap-2 p-3">
+            <a href="{% url 'shop_storefront' product_shop.shop_id %}" class="btn btn-outline-secondary">Cancel</a>
+            <button type="submit" class="btn btn-primary">
+                <i class="bi bi-check-lg me-1"></i>Save changes
+            </button>
+        </div>
+    </form>
+</div>
+{% endblock %}

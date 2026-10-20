@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+
+{% block title %}{{ shop.name }} Order Report{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+        <div>
+            <a href="{% url 'shop_detail' shop.id %}" class="text-decoration-none small">
+                <i class="bi bi-arrow-left me-1"></i>Back to shop
+            </a>
+            <h1 class="h3 fw-bold mt-2 mb-1">{{ shop.name }} order report</h1>
+            <p class="text-muted mb-0">Order value excludes cancelled orders.</p>
+        </div>
+    </div>
+
+    <section class="card border-0 shadow-sm mb-4" aria-labelledby="period-heading">
+        <div class="card-body">
+            <h2 id="period-heading" class="h5 fw-bold mb-3">Choose reporting period</h2>
+            <form method="get" class="row g-3 align-items-end">
+                <div class="col-sm-5 col-md-4">
+                    <label class="form-label" for="date-from">From</label>
+                    <input class="form-control" type="date" id="date-from" name="date_from"
+                           value="{{ date_from }}" required>
+                </div>
+                <div class="col-sm-5 col-md-4">
+                    <label class="form-label" for="date-to">To</label>
+                    <input class="form-control" type="date" id="date-to" name="date_to"
+                           value="{{ date_to }}" required>
+                </div>
+                <div class="col-sm-2 col-md-4 d-flex gap-2">
+                    <button class="btn btn-primary" type="submit">
+                        <i class="bi bi-funnel me-1"></i>Apply
+                    </button>
+                    <a class="btn btn-outline-secondary" href="{% url 'shop_order_report' shop.id %}">Today</a>
+                </div>
+            </form>
+            {% for error in errors %}
+                <div class="alert alert-danger mt-3 mb-0">{{ error }}</div>
+            {% endfor %}
+        </div>
+    </section>
+
+    <div class="row g-3 mb-4">
+        <div class="col-12"><h2 class="h5 fw-bold mb-0">Today · {{ today|date:"d M Y" }}</h2></div>
+        <div class="col-md-4">
+            <div class="card border-0 shadow-sm h-100"><div class="card-body">
+                <div class="small text-muted">Orders</div>
+                <div class="fs-3 fw-bold">{{ today_summary.order_count }}</div>
+            </div></div>
+        </div>
+        <div class="col-md-4">
+            <div class="card border-0 shadow-sm h-100"><div class="card-body">
+                <div class="small text-muted">Total order value</div>
+                <div class="fs-3 fw-bold text-success">₹{{ today_summary.total_amount|floatformat:2 }}</div>
+            </div></div>
+        </div>
+        <div class="col-md-4">
+            <div class="card border-0 shadow-sm h-100"><div class="card-body">
+                <div class="small text-muted">Average order value</div>
+                <div class="fs-3 fw-bold">₹{{ today_summary.average_order_value|floatformat:2 }}</div>
+            </div></div>
+        </div>
+
+        <div class="col-12 mt-4"><h2 class="h5 fw-bold mb-0">Selected period · {{ date_from }} to {{ date_to }}</h2></div>
+        <div class="col-md-4">
+            <div class="card border-primary shadow-sm h-100"><div class="card-body">
+                <div class="small text-muted">Orders</div>
+                <div class="fs-3 fw-bold">{{ period_summary.order_count }}</div>
+            </div></div>
+        </div>
+        <div class="col-md-4">
+            <div class="card border-primary shadow-sm h-100"><div class="card-body">
+                <div class="small text-muted">Total order value</div>
+                <div class="fs-3 fw-bold text-success">₹{{ period_summary.total_amount|floatformat:2 }}</div>
+            </div></div>
+        </div>
+        <div class="col-md-4">
+            <div class="card border-primary shadow-sm h-100"><div class="card-body">
+                <div class="small text-muted">Average order value</div>
+                <div class="fs-3 fw-bold">₹{{ period_summary.average_order_value|floatformat:2 }}</div>
+            </div></div>
+        </div>
+    </div>
+
+    {% if not errors %}
+    <div class="d-flex justify-content-between align-items-center mb-2">
+        <h2 class="h5 fw-bold mb-0">Orders in selected period</h2>
+        <a class="btn btn-sm btn-outline-success"
+           href="?date_from={{ date_from|urlencode }}&amp;date_to={{ date_to|urlencode }}&amp;format=csv">
+            <i class="bi bi-file-earmark-spreadsheet me-1"></i>Download CSV
+        </a>
+        {% if shop.gstin %}
+        <a class="btn btn-sm btn-outline-primary ms-2"
+           href="?date_from={{ date_from|urlencode }}&amp;date_to={{ date_to|urlencode }}&amp;format=gstr1">
+            <i class="bi bi-receipt me-1"></i>Download GSTR-1 data
+        </a>
+        {% endif %}
+    </div>
+    <div class="card border-0 shadow-sm">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light"><tr><th>Order</th><th>Date</th><th>Status</th><th class="text-end">Order value</th></tr></thead>
+                <tbody>
+                    {% for shop_order in report_orders %}
+                    <tr>
+                        <td><a href="{% url 'shop_order_detail' shop_order.id %}">{{ shop_order.shop_order_number|default:shop_order.order.order_id }}</a></td>
+                        <td>{{ shop_order.created_at|date:"d M Y, h:i A" }}</td>
+                        <td>{{ shop_order.status }}</td>
+                        <td class="text-end">₹{{ shop_order.total_amount|floatformat:2 }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="4" class="text-center text-muted py-4">No orders for this period.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% if report_orders|length == 100 %}
+        <div class="card-footer text-muted small">Showing the latest 100 orders. The summary and CSV include all orders in the period.</div>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

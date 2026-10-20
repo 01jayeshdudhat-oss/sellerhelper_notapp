@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+
+{% block title %}
+Add Shop Staff
+{% endblock %}
+
+{% block content %}
+
+<div class="row justify-content-center">
+
+    <div class="col-lg-6">
+
+        <div class="card border-0 shadow-sm">
+
+            <div class="card-body p-4">
+
+                <h3 class="mb-1">
+                    👤 Add Shop Staff
+                </h3>
+
+                <p class="text-muted">
+                    Create an account for a packer or authorized employee.
+                </p>
+
+
+                <form method="post">
+
+                    {% csrf_token %}
+
+
+                    <div class="mb-3">
+
+                        <label class="form-label">
+                            Username
+                        </label>
+
+                        <input
+                            type="text"
+                            name="username"
+                            class="form-control"
+                            required
+                        >
+
+                    </div>
+
+
+                    <div class="mb-3">
+
+                        <label class="form-label">
+                            Password
+                        </label>
+
+                        <input
+                            type="password"
+                            name="password"
+                            class="form-control"
+                            required
+                        >
+
+                    </div>
+
+
+                    <div class="mb-3">
+
+                        <label class="form-label">
+                            Shop
+                        </label>
+
+                        <select
+                            name="shop"
+                            class="form-select"
+                            required
+                        >
+
+                            <option value="">
+                                Select shop
+                            </option>
+
+                            {% for shop in shops %}
+
+                            <option value="{{ shop.id }}">
+
+                                {{ shop.name }}
+
+                            </option>
+
+                            {% endfor %}
+
+                        </select>
+
+                    </div>
+
+
+                    <div class="mb-4">
+
+                        <label class="form-label">
+                            Role
+                        </label>
+
+                        <select
+                            name="role"
+                            class="form-select"
+                        >
+
+                            <option value="PACKER">
+                                Packer
+                            </option>
+
+                            <option value="MANAGER">
+                                Manager
+                            </option>
+
+                            <option value="ORDER">
+                                Order Manager
+                            </option>
+
+                            <option value="DELIVERY">
+                                Delivery Staff
+                            </option>
+
+                            <option value="RIDER">
+                                Rider
+                            </option>
+
+                        </select>
+
+                    </div>
+
+
+                    <div class="d-flex gap-2">
+
+                        <a
+                            href="{% url 'shop_staff_list' %}"
+                            class="btn btn-secondary"
+                        >
+                            Cancel
+                        </a>
+
+                        <button
+                            type="submit"
+                            class="btn btn-primary"
+                        >
+                            Create Staff
+                        </button>
+
+                    </div>
+
+                </form>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+{% endblock %}

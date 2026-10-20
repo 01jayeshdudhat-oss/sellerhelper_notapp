@@ -1,0 +1,535 @@
+{% extends "base.html" %}
+
+{% block title %}My Cart{% endblock %}
+
+{% block content %}
+
+<div class="container-fluid py-3">
+
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
+
+        <div>
+            <h2 class="mb-1">🛒 My Cart</h2>
+            <p class="text-muted mb-0">
+                Review your items before checkout.
+            </p>
+        </div>
+
+        <a
+            href="{% url 'marketplace' %}"
+            class="btn btn-outline-primary"
+        >
+            ← Continue Shopping
+        </a>
+
+    </div>
+
+
+    {% if items %}
+
+    <div class="row g-4">
+
+        <!-- CART ITEMS -->
+
+        <div class="col-12 col-lg-8">
+
+            {% for item in items %}
+
+            <div class="card border-0 shadow-sm mb-3" data-cart-line="{{ item.line_key }}">
+
+                <div class="card-body">
+
+                    <div class="row align-items-center">
+
+                        <div class="col-3 col-md-2">
+
+                            {% if item.assignment.display_image_url %}
+
+                                <img
+                                    src="{{ item.assignment.display_image_url }}"
+                                    class="img-fluid rounded"
+                                    style="height:80px;width:80px;object-fit:contain;"
+                                >
+
+                            {% else %}
+
+                                <div
+                                    class="bg-light rounded d-flex
+                                           align-items-center
+                                           justify-content-center"
+                                    style="height:80px;width:80px;"
+                                >
+                                    📦
+                                </div>
+
+                            {% endif %}
+
+                        </div>
+
+
+                        <div class="col-9 col-md-4">
+
+                            <div class="small text-muted">
+                                🏪 {{ item.assignment.shop.name }}
+                            </div>
+
+                            <strong>
+                                {{ item.assignment.product.product_name }}
+                            </strong>
+                            {% if item.is_bulk_order %}
+                                <div class="small text-primary fw-semibold">
+                                    Bulk order · minimum {{ item.bulk_minimum_unit }}
+                                </div>
+                            {% endif %}
+                            <div class="small fw-semibold text-success" data-cart-unit-calculation>{{ item.unit_calculation }}</div>
+
+                            <div class="small text-muted">
+                                ₹{{ item.price }}
+                            </div>
+
+                        </div>
+
+
+                        <div class="col-6 col-md-3 mt-3 mt-md-0">
+
+                            <form
+                                method="post"
+                                action="{% url 'cart_update' item.assignment.id %}"
+                                class="d-flex align-items-center cart-quantity-form"
+                                data-max-quantity="{{ item.max_quantity }}"
+                            >
+
+                                {% csrf_token %}
+                                <input type="hidden" name="offer" value="{% if item.is_bulk_order %}bulk{% else %}retail{% endif %}">
+
+                                {% if item.quantity > 0 and not item.is_bulk_order or item.quantity > item.bulk_min_quantity %}
+                                    <button
+                                        type="button"
+                                        data-cart-quantity="{{ item.quantity|add:'-1' }}"
+                                        class="btn btn-outline-secondary"
+                                        aria-label="Decrease {{ item.assignment.product.product_name }}"
+                                    >−</button>
+                                {% else %}
+                                    <button class="btn btn-outline-secondary" type="button" data-cart-quantity="{{ item.quantity|add:'-1' }}" disabled aria-label="Quantity is zero">−</button>
+                                {% endif %}
+
+                                <span
+                                    class="px-3 d-flex
+                                           align-items-center
+                                           fw-bold border-top
+                                           border-bottom"
+                                    data-cart-quantity-display
+                                >
+                                    {{ item.quantity }}
+                                </span>
+
+                                <button
+                                    type="button"
+                                    data-cart-quantity="{{ item.quantity|add:'1' }}"
+                                    class="btn btn-outline-secondary"
+                                    aria-label="Increase {{ item.assignment.product.product_name }}"
+                                    {% if item.quantity >= item.max_quantity %}disabled{% endif %}
+                                >
+                                    +
+                                </button>
+
+                            </form>
+
+                        </div>
+
+
+                        <div class="col-4 col-md-2 mt-3 mt-md-0">
+
+                            <strong data-cart-line-total>
+                                ₹{{ item.total|floatformat:2 }}
+                            </strong>
+
+                        </div>
+
+
+                        <div class="col-2 col-md-1 mt-3 mt-md-0">
+
+                            <form
+                                method="post"
+                                action="{% url 'cart_remove' item.assignment.id %}"
+                            >
+
+                                {% csrf_token %}
+                                <input type="hidden" name="offer" value="{% if item.is_bulk_order %}bulk{% else %}retail{% endif %}">
+
+                                <button
+                                    class="btn btn-sm btn-outline-danger"
+                                    title="Remove"
+                                    aria-label="Delete {{ item.assignment.product.product_name }} from cart"
+                                >
+                                    <i class="bi bi-trash"></i>
+                                </button>
+
+                            </form>
+
+                        </div>
+
+                    </div>
+
+                    {% if item.is_bulk_order %}
+                    <div class="alert alert-warning py-2 mt-3 mb-0 small" data-cart-bulk-warning data-minimum="{{ item.bulk_min_quantity }}"{% if item.bulk_minimum_satisfied %} hidden{% endif %}>
+                        Increase the quantity to at least {{ item.bulk_minimum_unit }} to use this bulk price.
+                    </div>
+                    {% endif %}
+                    <div class="small text-danger mt-2" data-cart-update-error role="alert" hidden></div>
+
+                    {% if saved_baskets and item.quantity > 0 %}
+                    <form
+                        method="post"
+                        action="{% url 'cart_basket_add_item' item.assignment.id %}"
+                        class="row g-2 align-items-center mt-2 pt-2 border-top"
+                    >
+                        {% csrf_token %}
+                        <input type="hidden" name="offer" value="{% if item.is_bulk_order %}bulk{% else %}retail{% endif %}">
+                        <div class="col-12 col-sm-auto">
+                            <label class="small text-muted" for="basket-{{ item.assignment.id }}">Save this product to</label>
+                        </div>
+                        <div class="col-12 col-sm">
+                            <select
+                                id="basket-{{ item.assignment.id }}"
+                                name="basket_id"
+                                class="form-select form-select-sm"
+                                required
+                            >
+                                {% for basket in saved_baskets %}
+                                <option value="{{ basket.pk }}">{{ basket.name }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-12 col-sm-auto">
+                            <button type="submit" class="btn btn-sm btn-outline-primary">
+                                <i class="bi bi-basket-plus me-1"></i>Add product to basket
+                            </button>
+                        </div>
+                    </form>
+                    {% elif not saved_baskets and item.quantity > 0 %}
+                    <div class="small text-muted mt-2 pt-2 border-top">
+                        Save a named basket below first, then you can add individual cart products to it.
+                    </div>
+                    {% endif %}
+
+                </div>
+
+            </div>
+
+            {% endfor %}
+
+        </div>
+
+
+        <!-- SUMMARY -->
+
+        <div class="col-12 col-lg-4">
+
+            <div
+                class="card border-0 shadow-sm"
+                style="position:sticky;top:20px;"
+            >
+
+                <div class="card-body p-4">
+
+                    <h5 class="fw-bold mb-4">
+                        Order Summary
+                    </h5>
+
+                    <div class="d-flex justify-content-between mb-2">
+
+                        <span>
+                            Subtotal
+                        </span>
+
+                        <strong data-cart-subtotal>
+                            ₹{{ subtotal|floatformat:2 }}
+                        </strong>
+
+                    </div>
+
+                    <div class="d-flex justify-content-between mb-2">
+
+                        <span>
+                            Delivery
+                        </span>
+
+                        <strong class="{% if not delivery_charge %}text-success{% endif %}" data-cart-delivery-total>
+                            {% if delivery_charge %}₹{{ delivery_charge|floatformat:2 }}{% else %}FREE{% endif %}
+                        </strong>
+                    </div>
+
+                    <div class="small bg-light rounded p-2 mb-3" data-cart-delivery-shops{% if not cart_shop_summary %} hidden{% endif %}>
+                        <div class="fw-semibold mb-1">Delivery by shop</div>
+                        <div data-cart-delivery-shop-list>
+                        {% for shop in cart_shop_summary %}
+                        <div class="d-flex justify-content-between gap-2">
+                            <span class="text-break">{{ shop.shop_name }}</span>
+                            <span class="text-nowrap">
+                                {% if shop.delivery_fee %}₹{{ shop.delivery_fee|floatformat:2 }}{% else %}<span class="text-success">Free</span>{% endif %}
+                            </span>
+                        </div>
+                        {% endfor %}
+                        </div>
+                    </div>
+
+                    <hr>
+
+                    <div class="d-flex justify-content-between">
+
+                        <strong>
+                            Items + delivery
+                        </strong>
+
+                        <strong class="fs-4 text-success" data-cart-grand-total>
+                            ₹{{ grand_total|floatformat:2 }}
+                        </strong>
+
+                    </div>
+                    <div class="small text-muted mt-2">Applicable GST and platform charges are shown at checkout.</div>
+                    <!-- <a
+                        href="{% url 'marketplace' %}"
+                        class="btn btn-success btn-lg w-100 mt-4"
+                    >
+                        Continue Shopping
+                    </a> -->
+                    <div data-cart-checkout-state data-checkout-url="{% url 'checkout' %}">
+                    {% if active_item_count %}
+                    <a
+                        href="{% url 'checkout' %}"
+                        class="btn btn-success btn-lg w-100 mt-4"
+                    >
+                        Proceed to Checkout →
+                    </a>
+                    {% else %}
+                    <div class="alert alert-info mt-4 mb-0">
+                        Increase at least one product quantity to proceed to checkout.
+                    </div>
+                    {% endif %}
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+    {% else %}
+
+    <div class="text-center py-5">
+
+        <div style="font-size:70px;">
+            🛒
+        </div>
+
+        <h3 class="mt-3">
+            Your cart is empty
+        </h3>
+
+        <p class="text-muted">
+            Add some products to get started.
+        </p>
+
+        <a
+            href="{% url 'marketplace' %}"
+            class="btn btn-success px-4"
+        >
+            Start Shopping
+        </a>
+
+    </div>
+
+    {% endif %}
+
+    <section class="card border-0 shadow-sm mt-4">
+        <div class="card-body p-3 p-md-4">
+            <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-3">
+                <div>
+                    <h4 class="h5 fw-bold mb-1"><i class="bi bi-basket2 me-2 text-primary"></i>My product baskets</h4>
+                    <p class="text-muted small mb-0">Save a named basket and add its products to your cart again whenever you need them.</p>
+                </div>
+                <form method="post" action="{% url 'cart_basket_save' %}" class="d-flex flex-column flex-sm-row gap-2" data-cart-save-current{% if not active_item_count %} hidden{% endif %}>
+                    {% csrf_token %}
+                    <label class="visually-hidden" for="savedBasketName">Basket name</label>
+                    <input id="savedBasketName" name="name" class="form-control" maxlength="80" placeholder="e.g. Weekly groceries" required>
+                    <button class="btn btn-primary text-nowrap" type="submit"><i class="bi bi-bookmark-plus me-1"></i>Save current cart</button>
+                </form>
+            </div>
+
+            {% if saved_baskets %}
+                <div class="row g-3">
+                    {% for basket in saved_baskets %}
+                        <div class="col-12 col-lg-6">
+                            <article class="border rounded-3 p-3 h-100">
+                                <div class="d-flex justify-content-between align-items-start gap-3">
+                                    <div class="min-w-0">
+                                        <h5 class="h6 fw-bold mb-1 text-break">{{ basket.name }}</h5>
+                                        <div class="small text-muted">{{ basket.item_count }} saved product{{ basket.item_count|pluralize }}</div>
+                                    </div>
+                                    <div class="d-flex gap-2 flex-shrink-0">
+                                        <form method="post" action="{% url 'cart_basket_restore' basket.pk %}">
+                                            {% csrf_token %}
+                                            <button class="btn btn-sm btn-success" type="submit"><i class="bi bi-cart-plus me-1"></i>Add to cart</button>
+                                        </form>
+                                        <form method="post" action="{% url 'cart_basket_delete' basket.pk %}" onsubmit="return confirm('Delete this saved basket?');">
+                                            {% csrf_token %}
+                                            <button class="btn btn-sm btn-outline-danger" type="submit" aria-label="Delete {{ basket.name }}"><i class="bi bi-trash"></i></button>
+                                        </form>
+                                    </div>
+                                </div>
+                                <div class="small text-muted mt-2">
+                                    {% for saved_item in basket.items.all %}
+                                        {{ saved_item.product_name }} × {{ saved_item.quantity }}{% if not forloop.last %}, {% endif %}
+                                    {% empty %}
+                                        No saved products.
+                                    {% endfor %}
+                                </div>
+                            </article>
+                        </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <div class="rounded-3 bg-light px-3 py-3 text-muted small">
+                    Your saved baskets will appear here. Add products to your cart, then save them with a name for quick reordering.
+                </div>
+            {% endif %}
+        </div>
+    </section>
+
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-cart-quantity]");
+    if (!button || button.disabled) return;
+
+    const form = button.closest(".cart-quantity-form");
+    const line = button.closest("[data-cart-line]");
+    if (!form || !line || form.dataset.updating === "true") return;
+    const now = Date.now();
+    if (now - Number(form.dataset.lastActionAt || 0) < 350) return;
+
+    event.preventDefault();
+    const controls = Array.from(form.querySelectorAll("button[data-cart-quantity]"));
+    const quantityDisplay = form.querySelector("[data-cart-quantity-display]");
+    const currentQuantity = Number.parseInt(quantityDisplay?.textContent || "0", 10);
+    const change = button.getAttribute("aria-label")?.startsWith("Increase") ? 1 : -1;
+    const requestedQuantity = currentQuantity + change;
+    if (!Number.isInteger(currentQuantity) || requestedQuantity < 0) return;
+
+    const errorArea = line.querySelector("[data-cart-update-error]");
+    let responseSucceeded = false;
+    form.dataset.lastActionAt = String(now);
+    form.dataset.updating = "true";
+    errorArea.hidden = true;
+    controls.forEach((control) => { control.disabled = true; });
+
+    try {
+        const body = new FormData(form);
+        body.set("quantity", String(requestedQuantity));
+        const response = await fetch(form.action, {
+            method: "POST",
+            headers: { "X-Requested-With": "XMLHttpRequest" },
+            body,
+        });
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+            throw new Error(data.message || "Unable to update the cart quantity.");
+        }
+        responseSucceeded = true;
+
+        quantityDisplay.textContent = data.quantity;
+        line.querySelector("[data-cart-line-total]").textContent = `₹${data.line_total}`;
+        const unitCalculation = line.querySelector("[data-cart-unit-calculation]");
+        if (unitCalculation && data.unit_calculation) {
+            unitCalculation.textContent = data.unit_calculation;
+        }
+        const warning = line.querySelector("[data-cart-bulk-warning]");
+        if (warning) warning.hidden = data.bulk_minimum_satisfied;
+
+        const minusButton = form.querySelector('button[aria-label^="Decrease"], button[aria-label="Quantity is zero"]');
+        const plusButton = form.querySelector('button[aria-label^="Increase"]');
+        const isBulk = form.querySelector('[name="offer"]')?.value === "bulk";
+        if (minusButton) {
+            minusButton.disabled = isBulk
+                ? data.quantity <= Number(warning?.dataset.minimum || 1)
+                : data.quantity <= 0;
+            minusButton.dataset.cartQuantity = String(Math.max(0, data.quantity - 1));
+        }
+        if (plusButton) {
+            plusButton.disabled = data.quantity >= Number(form.dataset.maxQuantity);
+            plusButton.dataset.cartQuantity = String(data.quantity + 1);
+        }
+
+        document.querySelectorAll("[data-cart-count]").forEach((badge) => {
+            badge.textContent = data.cart_count;
+            badge.classList.toggle("d-none", data.cart_count === 0);
+        });
+        document.querySelector("[data-cart-subtotal]").textContent = `₹${data.subtotal}`;
+        const deliveryTotal = document.querySelector("[data-cart-delivery-total]");
+        deliveryTotal.textContent = Number(data.delivery_charge) ? `₹${data.delivery_charge}` : "FREE";
+        deliveryTotal.classList.toggle("text-success", !Number(data.delivery_charge));
+        document.querySelector("[data-cart-grand-total]").textContent = `₹${data.grand_total}`;
+
+        const shopsWrapper = document.querySelector("[data-cart-delivery-shops]");
+        const shopList = document.querySelector("[data-cart-delivery-shop-list]");
+        shopList.replaceChildren();
+        data.delivery_by_shop.forEach((shop) => {
+            const row = document.createElement("div");
+            row.className = "d-flex justify-content-between gap-2";
+            const name = document.createElement("span");
+            name.className = "text-break";
+            name.textContent = shop.shop_name;
+            const fee = document.createElement("span");
+            fee.className = "text-nowrap";
+            fee.textContent = Number(shop.delivery_fee) ? `₹${shop.delivery_fee}` : "Free";
+            if (!Number(shop.delivery_fee)) fee.classList.add("text-success");
+            row.append(name, fee);
+            shopList.append(row);
+        });
+        shopsWrapper.hidden = data.delivery_by_shop.length === 0;
+        const saveCartForm = document.querySelector("[data-cart-save-current]");
+        if (saveCartForm) saveCartForm.hidden = data.active_item_count === 0;
+        const checkoutState = document.querySelector("[data-cart-checkout-state]");
+        checkoutState.replaceChildren();
+        if (data.active_item_count) {
+            const checkoutLink = document.createElement("a");
+            checkoutLink.href = checkoutState.dataset.checkoutUrl;
+            checkoutLink.className = "btn btn-success btn-lg w-100 mt-4";
+            checkoutLink.append(document.createTextNode("Proceed to "));
+            const checkoutLabel = document.createElement("span");
+            checkoutLabel.textContent = "Checkout →";
+            checkoutLink.append(checkoutLabel);
+            checkoutState.append(checkoutLink);
+        } else {
+            const emptyNotice = document.createElement("div");
+            emptyNotice.className = "alert alert-info mt-4 mb-0";
+            emptyNotice.textContent = "Increase at least one product quantity to proceed to checkout.";
+            checkoutState.append(emptyNotice);
+        }
+    } catch (error) {
+        form.dataset.lastActionAt = "0";
+        errorArea.textContent = error instanceof Error ? error.message : "Unable to update the cart quantity.";
+        errorArea.hidden = false;
+    } finally {
+        form.dataset.updating = "false";
+        if (!responseSucceeded) {
+            const currentValue = Number.parseInt(quantityDisplay?.textContent || "0", 10);
+            const isBulk = form.querySelector('[name="offer"]')?.value === "bulk";
+            const minimum = Number(line.querySelector("[data-cart-bulk-warning]")?.dataset.minimum || 1);
+            controls.forEach((control) => {
+                control.disabled = control.getAttribute("aria-label")?.startsWith("Increase")
+                    ? currentValue >= Number(form.dataset.maxQuantity)
+                    : isBulk ? currentValue <= minimum : currentValue <= 0;
+            });
+        }
+    }
+});
+</script>
+{% endblock %}

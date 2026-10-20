@@ -1,0 +1,544 @@
+{% extends 'base.html' %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+
+<div class="container-fluid">
+
+    <!-- Dashboard Header -->
+    <div class="d-flex flex-column flex-sm-row justify-content-between align-items-sm-center gap-3 mt-4 mb-4">
+
+        <div>
+            <h2 class="mb-1">
+                Dashboard
+            </h2>
+
+            <p class="text-muted mb-0">
+                Overview of your shops, products and orders.
+            </p>
+        </div>
+
+        <div class="d-flex flex-wrap gap-2">
+            <a href="{% url 'shop_customers' %}" class="btn btn-outline-success">
+                <i class="bi bi-people me-1"></i>Customer data
+            </a>
+            {% if can_manage_shared_rider_groups %}
+                <a href="{% url 'shared_rider_groups' %}" class="btn btn-outline-success">
+                    <i class="bi bi-people me-1"></i>Shared rider groups
+                </a>
+            {% endif %}
+            <a href="{% url 'shop_list' %}" class="btn btn-outline-primary">
+                <i class="bi bi-shop me-1"></i>Manage all shops
+            </a>
+            <a href="{% url 'shop_add' %}" class="btn btn-primary">
+                <i class="bi bi-plus-lg me-1"></i>Add shop
+            </a>
+        </div>
+
+    </div>
+
+
+    <!-- Statistics -->
+    <div class="row g-3 mb-4">
+
+        <!-- Shops -->
+        <div class="col-12 col-md-3">
+
+            <div class="card border-0 shadow-sm h-100">
+
+                <div class="card-body">
+
+                    <div class="d-flex justify-content-between">
+
+                        <div>
+                            <div class="text-muted small">
+                                MY SHOPS
+                            </div>
+
+                            <div class="fs-3 fw-bold">
+                                {{ shops.count }}
+                            </div>
+                        </div>
+
+                        <div class="fs-2">
+                            🏪
+                        </div>
+
+                    </div>
+
+                    <a
+                        href="{% url 'shop_list' %}"
+                        class="small text-decoration-none"
+                    >
+                        Manage shops →
+                    </a>
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <!-- Products -->
+        <div class="col-12 col-md-3">
+
+            <div class="card border-0 shadow-sm h-100">
+
+                <div class="card-body">
+
+                    <div class="d-flex justify-content-between">
+
+                        <div>
+                            <div class="text-muted small">
+                                MY PRODUCTS
+                            </div>
+
+                            <div class="fs-3 fw-bold">
+                                {{ products.count }}
+                            </div>
+                        </div>
+
+                        <div class="fs-2">
+                            📦
+                        </div>
+
+                    </div>
+
+                    <a
+                        href="{% url 'product_list' %}"
+                        class="small text-decoration-none"
+                    >
+                        Manage products →
+                    </a>
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <!-- Orders -->
+        <div class="col-12 col-md-3">
+
+            <div class="card border-0 shadow-sm h-100">
+
+                <div class="card-body">
+
+                    <div class="d-flex justify-content-between">
+
+                        <div>
+                            <div class="text-muted small">
+                                TOTAL ORDERS
+                            </div>
+
+                            <div class="fs-3 fw-bold">
+                                {{ orders_count }}
+                            </div>
+                        </div>
+
+                        <div class="fs-2">
+                            🛒
+                        </div>
+
+                    </div>
+
+                    <div class="small text-muted">
+                        Pending:
+                        <strong>
+                            {{ orders_pending }}
+                        </strong>
+                    </div>
+                    <div class="small text-success">
+                        Delivered: <strong>{{ orders_delivered }}</strong>
+                    </div>
+                    <div class="d-flex flex-wrap gap-2 mt-2">
+                        <a href="{% url 'shop_order_list' %}" class="btn btn-sm btn-outline-primary">Manage orders</a>
+                        <a href="{% url 'owner_statement' %}" class="btn btn-sm btn-outline-secondary">All-shop statement</a>
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+        <div class="col-12 col-md-3">
+            <div class="card border-0 shadow-sm h-100">
+                <div class="card-body">
+                    <div class="text-muted small">SHOP WALLET BALANCE</div>
+                    <div class="fs-3 fw-bold text-success">₹{{ wallet_balance|floatformat:2 }}</div>
+                    <div class="small text-muted">Across your shops</div>
+                    {% if shops %}
+                        <a class="small text-decoration-none" href="{% url 'shop_wallet' shops.0.id %}">View wallet history →</a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+
+    <div class="row g-4 mb-4">
+        <div class="col-12 col-xl-7">
+            <section class="card border-0 shadow-sm h-100">
+                <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
+                    <h5 class="mb-0">Recent shop orders</h5>
+                    <a href="{% url 'shop_order_list' %}" class="btn btn-sm btn-outline-primary">All orders</a>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-sm table-striped table-hover align-middle mb-0 small">
+                        <thead class="table-light"><tr><th class="text-nowrap">Order</th><th class="text-nowrap">Shop</th><th>Status</th><th class="text-end">Total</th></tr></thead>
+                        <tbody>
+                            {% for shop_order in recent_shop_orders %}
+                                <tr class="lh-sm">
+                                    <td class="py-1 text-nowrap"><a href="{% url 'shop_order_detail' shop_order.pk %}">{{ shop_order.shop_order_number|default:shop_order.order.order_id }}</a></td>
+                                    <td class="py-1 text-nowrap">{{ shop_order.shop.name }}</td>
+                                    <td class="py-1 text-nowrap"><span class="badge text-bg-light">{{ shop_order.get_status_display|default:shop_order.status }}</span></td>
+                                    <td class="py-1 text-end text-nowrap">₹{{ shop_order.total_amount|floatformat:2 }}</td>
+                                </tr>
+                            {% empty %}
+                                <tr><td colspan="4" class="text-center text-muted py-4">No orders yet.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
+        <div class="col-12 col-xl-5">
+            <section class="card border-0 shadow-sm h-100">
+                <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
+                    <h5 class="mb-0">Low stock</h5>
+                    <span class="badge text-bg-warning">{{ low_stock_count }} products</span>
+                </div>
+                <div class="list-group list-group-flush">
+                    {% for assignment in low_stock_products %}
+                        <a class="list-group-item list-group-item-action d-flex justify-content-between align-items-center"
+                           href="{% url 'product_list' %}?shop={{ assignment.shop_id }}">
+                            <span>
+                                <strong>{{ assignment.product.product_name }}</strong>
+                                <span class="small text-muted d-block">{{ assignment.shop.name }}</span>
+                            </span>
+                            <span class="badge {% if assignment.stock == 0 %}text-bg-danger{% else %}text-bg-warning{% endif %}">
+                                {{ assignment.stock }} left
+                            </span>
+                        </a>
+                    {% empty %}
+                        <div class="text-center text-muted py-4">No low-stock alerts.</div>
+                    {% endfor %}
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <!-- Main Dashboard -->
+    <div class="row g-4">
+
+        <!-- My Shops -->
+        <div class="col-12 col-lg-6">
+
+            <div class="card border-0 shadow-sm h-100">
+
+                <div class="card-header bg-white border-0 pt-4 px-4">
+
+                    <div class="d-flex justify-content-between align-items-center">
+
+                        <h5 class="mb-0">
+                            🏪 My Shops
+                        </h5>
+
+                        <a
+                            href="{% url 'shop_list' %}"
+                            class="btn btn-sm btn-outline-primary"
+                        >
+                            View All
+                        </a>
+
+                    </div>
+
+                </div>
+
+
+                <div class="card-body px-4">
+
+                    <div class="list-group list-group-flush">
+
+                        {% for shop in shops|slice:":5" %}
+
+                            <div
+                                class="list-group-item px-0 py-3"
+                            >
+
+                                <div class="d-flex justify-content-between align-items-center">
+
+                                    <div>
+
+                                        <div class="fw-semibold">
+                                            {{ shop.name }}
+                                        </div>
+
+                                        <div class="small text-muted">
+
+                                            {% if shop.location %}
+
+                                                {{ shop.location }}
+
+                                            {% else %}
+
+                                                Location not set
+
+                                            {% endif %}
+
+                                        </div>
+
+                                    </div>
+
+
+                                    <a
+                                        class="btn btn-sm btn-outline-secondary"
+                                        href="{% url 'shop_edit' shop.id %}"
+                                    >
+                                        Edit
+                                    </a>
+
+                                </div>
+
+                            </div>
+
+                        {% empty %}
+
+                            <div class="text-center py-4 text-muted">
+
+                                <div class="fs-2 mb-2">
+                                    🏪
+                                </div>
+
+                                <div>
+                                    No shops registered yet.
+                                </div>
+
+                                <a
+                                    href="{% url 'shop_add' %}"
+                                    class="btn btn-sm btn-primary mt-3"
+                                >
+                                    Add Shop
+                                </a>
+
+                            </div>
+
+                        {% endfor %}
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <!-- My Products -->
+        <div class="col-12 col-lg-6">
+
+            <div class="card border-0 shadow-sm h-100">
+
+                <div class="card-header bg-white border-0 pt-4 px-4">
+
+                    <div class="d-flex justify-content-between align-items-center">
+
+                        <h5 class="mb-0">
+                            📦 My Products
+                        </h5>
+
+                        <a
+                            href="{% url 'product_list' %}"
+                            class="btn btn-sm btn-outline-primary"
+                        >
+                            View All
+                        </a>
+
+                    </div>
+
+                </div>
+
+
+                <div class="card-body px-4">
+
+                    <div class="list-group list-group-flush">
+
+                        {% for product in products|slice:":5" %}
+
+                            <div
+                                class="list-group-item px-0 py-3"
+                            >
+
+                                <div class="d-flex justify-content-between align-items-start">
+
+                                    <div class="me-3">
+
+                                        <!-- Product -->
+                                        <div class="fw-semibold">
+
+                                            {{ product.product_name }}
+
+                                        </div>
+
+
+                                        <!-- SKU -->
+                                        <div class="small text-muted mb-2">
+
+                                            SKU:
+                                            <strong>
+                                                {{ product.sku }}
+                                            </strong>
+
+                                            {% if product.product_size %}
+                                                • {{ product.product_size }}
+                                            {% endif %}
+
+                                            {% if product.product_color %}
+                                                • {{ product.product_color }}
+                                            {% endif %}
+
+                                        </div>
+
+
+                                        <!-- Price -->
+                                        <div class="small">
+
+                                            <strong>
+                                                {{ product.price }}
+                                            </strong>
+
+                                            {% if product.unit %}
+                                                / {{ product.unit }}
+                                            {% endif %}
+
+                                        </div>
+
+
+                                        <!-- Shop assignments -->
+                                        <div class="mt-2">
+
+                                            {% for assignment in product.shop_assignments.all %}
+
+                                                <div class="small mb-1">
+
+                                                    <span class="text-muted">
+                                                        🏪
+                                                        {{ assignment.shop.name }}
+                                                    </span>
+
+                                                    <span
+                                                        class="
+                                                            badge
+                                                            {% if assignment.stock > 0 %}
+                                                                bg-success
+                                                            {% else %}
+                                                                bg-danger
+                                                            {% endif %}
+                                                        "
+                                                    >
+                                                        Stock:
+                                                        {{ assignment.stock }}
+                                                    </span>
+
+
+                                                    {% if assignment.is_active %}
+
+                                                        <span
+                                                            class="badge bg-success-subtle text-success"
+                                                        >
+                                                            Active
+                                                        </span>
+
+                                                    {% else %}
+
+                                                        <span
+                                                            class="badge bg-secondary-subtle text-secondary"
+                                                        >
+                                                            Inactive
+                                                        </span>
+
+                                                    {% endif %}
+
+                                                </div>
+
+                                            {% empty %}
+
+                                                <span class="small text-muted">
+                                                    No shops assigned
+                                                </span>
+
+                                            {% endfor %}
+
+                                        </div>
+
+                                    </div>
+
+
+                                    <!-- Product status -->
+                                    <div>
+
+                                        {% if product.is_active %}
+
+                                            <span
+                                                class="badge bg-success rounded-pill"
+                                            >
+                                                Active
+                                            </span>
+
+                                        {% else %}
+
+                                            <span
+                                                class="badge bg-secondary rounded-pill"
+                                            >
+                                                Inactive
+                                            </span>
+
+                                        {% endif %}
+
+                                    </div>
+
+                                </div>
+
+                            </div>
+
+                        {% empty %}
+
+                            <div class="text-center py-4 text-muted">
+
+                                <div class="fs-2 mb-2">
+                                    📦
+                                </div>
+
+                                <div>
+                                    No products yet.
+                                </div>
+
+                                <a
+                                    href="{% url 'product_create' %}"
+                                    class="btn btn-sm btn-primary mt-3"
+                                >
+                                    Add Product
+                                </a>
+
+                            </div>
+
+                        {% endfor %}
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+{% endblock %}

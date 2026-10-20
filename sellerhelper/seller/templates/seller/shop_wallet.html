@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+
+{% block title %}{{ shop.name }} Wallet{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+        <div>
+            <h1 class="h2 fw-bold mb-1">{{ shop.name }} wallet</h1>
+            <p class="text-muted mb-0">Wallet balance, order proceeds, platform commission and payment activity</p>
+        </div>
+        <a href="{% url 'shop_detail' shop.id %}" class="btn btn-outline-secondary">Back to shop</a>
+    </div>
+
+    <div class="row g-4">
+        <div class="col-lg-5">
+            <section class="card border-0 shadow-sm mb-4">
+                <div class="card-body p-4">
+                    <div class="text-muted">Available balance</div>
+                    <div class="display-5 fw-bold text-success">₹{{ wallet.balance|floatformat:2 }}</div>
+                    <p class="small text-muted mt-2 mb-0">
+                        Delivered product sales are credited after a {{ commission_rate_percent|floatformat:2 }}% site commission on discounted, delivered product value. GST and delivery fees are excluded from the commission.
+                    </p>
+                    {% if not can_withdraw %}
+                        <div class="alert alert-info mt-3 mb-0 py-2">
+                            Read-only financial access. Withdrawal and bank-account actions are reserved for the shop owner.
+                        </div>
+                    {% endif %}
+                </div>
+            </section>
+
+            <section class="card border-0 shadow-sm mb-4">
+                <div class="card-body">
+                    <h2 class="h6 fw-bold">Financial totals</h2>
+                    <div class="d-flex justify-content-between py-1">
+                        <span class="text-muted">Order proceeds credited</span>
+                        <strong>₹{{ total_order_credits|floatformat:2 }}</strong>
+                    </div>
+                    <div class="d-flex justify-content-between py-1">
+                        <span class="text-muted">Platform commission</span>
+                        <strong class="text-danger">₹{{ total_commissions|floatformat:2 }}</strong>
+                    </div>
+                    <div class="d-flex justify-content-between py-1">
+                        <span class="text-muted">Withdrawals</span>
+                        <strong>₹{{ total_withdrawals|floatformat:2 }}</strong>
+                    </div>
+                </div>
+            </section>
+
+            {% if can_withdraw and not payout_configured %}
+                <div class="alert alert-warning">
+                    <strong>Withdrawals are not configured.</strong>
+                    The platform administrator must configure RazorpayX credentials, the payout account number, and the payout webhook secret.
+                </div>
+            {% elif can_withdraw %}
+                <section class="card border-0 shadow-sm">
+                    <div class="card-body p-4">
+                        <h2 class="h5 fw-bold">Withdraw to bank</h2>
+                        {% if bank_account_registered %}
+                            <p class="small text-muted">Your bank beneficiary is registered securely with RazorpayX.</p>
+                        {% else %}
+                            <p class="small text-muted">Register the receiving bank account for your first payout. Bank details are sent to RazorpayX and are not stored by this app.</p>
+                        {% endif %}
+                        <form method="post">
+                            {% csrf_token %}
+                            <div class="mb-3">
+                                <label class="form-label" for="withdrawalAmount">Amount (₹)</label>
+                                <input class="form-control" id="withdrawalAmount" name="amount" type="number"
+                                       min="1.00" max="{{ wallet.balance }}" step="0.01" required>
+                            </div>
+                            {% if not bank_account_registered %}
+                                <div class="mb-3">
+                                    <label class="form-label" for="accountHolder">Account holder name</label>
+                                    <input class="form-control" id="accountHolder" name="account_holder" maxlength="100" autocomplete="name" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label" for="accountNumber">Bank account number</label>
+                                    <input class="form-control" id="accountNumber" name="account_number" inputmode="numeric" minlength="8" maxlength="34" autocomplete="off" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label" for="ifsc">IFSC</label>
+                                    <input class="form-control text-uppercase" id="ifsc" name="ifsc" minlength="11" maxlength="11" autocomplete="off" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label" for="contactPhone">Beneficiary phone</label>
+                                    <input class="form-control" id="contactPhone" name="contact_phone" type="tel" inputmode="tel" minlength="10" maxlength="15" autocomplete="tel" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label" for="contactEmail">Beneficiary email</label>
+                                    <input class="form-control" id="contactEmail" name="contact_email" type="email" maxlength="100" autocomplete="email" required>
+                                </div>
+                            {% endif %}
+                            <div class="mb-3">
+                                <label class="form-label" for="payoutMode">Transfer mode</label>
+                                <select class="form-select" id="payoutMode" name="mode">
+                                    <option value="IMPS">IMPS</option>
+                                    <option value="NEFT">NEFT</option>
+                                    <option value="RTGS">RTGS</option>
+                                </select>
+                            </div>
+                            <button class="btn btn-primary w-100" type="submit" {% if wallet.balance < 1 %}disabled{% endif %}>
+                                Request RazorpayX withdrawal
+                            </button>
+                        </form>
+                    </div>
+                </section>
+            {% endif %}
+        </div>
+
+        <div class="col-lg-7">
+            <section class="card border-0 shadow-sm mb-4">
+                <div class="card-body">
+                    <h2 class="h5 fw-bold">Recent wallet activity</h2>
+                    <div class="table-responsive">
+                        <table class="table align-middle">
+                            <thead><tr><th>Activity</th><th>Date</th><th class="text-end">Amount</th><th class="text-end">Balance</th></tr></thead>
+                            <tbody>
+                                {% for transaction in transactions %}
+                                    <tr>
+                                        <td>
+                                            {% if transaction.shop_order %}
+                                                {% if transaction.transaction_type == "COMMISSION" %}
+                                                    Site commission · order {{ transaction.shop_order.shop_order_number|default:transaction.shop_order.order.order_id }}
+                                                {% elif transaction.transaction_type == "DEBIT" and "Customer overpayment refunded" in transaction.description %}
+                                                    Customer overpayment refund · order {{ transaction.shop_order.shop_order_number|default:transaction.shop_order.order.order_id }}
+                                                {% else %}
+                                                    Delivered order {{ transaction.shop_order.shop_order_number|default:transaction.shop_order.order.order_id }}
+                                                {% endif %}
+                                            {% elif transaction.payout %}
+                                                Withdrawal {{ transaction.payout.reference_id }} · {{ transaction.payout.get_status_display }}
+                                            {% else %}
+                                                {{ transaction.get_transaction_type_display }}
+                                            {% endif %}
+                                        </td>
+                                        <td class="text-muted small">{{ transaction.created_at|date:"d M Y, h:i A" }}</td>
+                                        <td class="text-end {% if transaction.transaction_type == 'DEBIT' or transaction.transaction_type == 'COMMISSION' %}text-danger{% else %}text-success{% endif %}">
+                                            {% if transaction.transaction_type == 'DEBIT' or transaction.transaction_type == 'COMMISSION' %}−{% else %}+{% endif %}₹{{ transaction.amount|floatformat:2 }}
+                                        </td>
+                                        <td class="text-end">₹{{ transaction.balance_after|floatformat:2 }}</td>
+                                    </tr>
+                                {% empty %}
+                                    <tr><td colspan="4" class="text-center text-muted py-4">No wallet activity yet. Delivered orders will be credited here.</td></tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <section class="card border-0 shadow-sm">
+                <div class="card-body">
+                    <h2 class="h5 fw-bold">Withdrawal status</h2>
+                    {% for payout in payouts %}
+                        <div class="d-flex flex-wrap justify-content-between gap-2 border-bottom py-3">
+                            <div>
+                                <strong>{{ payout.reference_id }}</strong>
+                                <div class="small text-muted">{{ payout.created_at|date:"d M Y, h:i A" }}</div>
+                                {% if payout.failure_reason %}<div class="small text-danger">{{ payout.failure_reason }}</div>{% endif %}
+                            </div>
+                            <div class="text-end">
+                                <div class="fw-semibold">₹{{ payout.amount|floatformat:2 }}</div>
+                                <span class="badge {% if payout.status == 'PROCESSED' %}text-bg-success{% elif payout.status == 'FAILED' or payout.status == 'REVERSED' %}text-bg-danger{% else %}text-bg-warning{% endif %}">
+                                    {{ payout.get_status_display }}
+                                </span>
+                            </div>
+                        </div>
+                    {% empty %}
+                        <p class="text-muted mb-0">No withdrawals yet.</p>
+                    {% endfor %}
+                </div>
+            </section>
+        </div>
+    </div>
+</div>
+{% endblock %}

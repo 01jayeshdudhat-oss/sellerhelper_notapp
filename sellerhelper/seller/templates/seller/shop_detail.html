@@ -1,0 +1,1324 @@
+{% extends "base.html" %}
+
+{% block title %}
+{{ shop.name }} - Shop Dashboard
+{% endblock %}
+
+{% block content %}
+
+<style>
+    .shop-dashboard {
+        max-width: 1500px;
+        margin: auto;
+    }
+
+    .dashboard-card {
+        border: 0;
+        border-radius: 16px;
+        box-shadow: 0 4px 18px rgba(0,0,0,.07);
+        transition: .2s ease;
+    }
+
+    .dashboard-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 25px rgba(0,0,0,.10);
+    }
+
+    .stat-card {
+        text-decoration: none;
+        color: inherit;
+        display: block;
+    }
+
+    .stat-number {
+        font-size: 2rem;
+        font-weight: 700;
+    }
+
+    .quick-btn {
+        min-height: 95px;
+        border-radius: 14px;
+        font-weight: 600;
+        transition: .2s;
+    }
+
+    .quick-btn:hover {
+        transform: translateY(-2px);
+    }
+
+    .clickable-row {
+        cursor: pointer;
+        transition: .15s;
+    }
+
+    .clickable-row:hover {
+        background: #f8fafc;
+    }
+
+    .shop-header {
+        background: linear-gradient(
+            135deg,
+            #ffffff,
+            #f5f7fb
+        );
+        border-radius: 18px;
+        padding: 22px;
+        box-shadow: 0 4px 20px rgba(0,0,0,.06);
+    }
+
+    .shop-icon {
+        width: 58px;
+        height: 58px;
+        border-radius: 15px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 28px;
+        background: #eef2ff;
+    }
+
+    .status-switch {
+        width: 58px;
+        height: 30px;
+        cursor: pointer;
+    }
+
+    .status-switch:checked {
+        background-color: #198754;
+        border-color: #198754;
+    }
+
+    .status-area {
+        border-radius: 14px;
+        padding: 16px;
+        background: #f8f9fa;
+    }
+
+    .product-thumb {
+        width: 42px;
+        height: 42px;
+        border-radius: 10px;
+        object-fit: cover;
+        background: #f1f3f5;
+    }
+
+    .badge-status {
+        min-width: 75px;
+    }
+</style>
+
+
+<div class="container-fluid py-4 shop-dashboard">
+
+    <!-- =====================================================
+         HEADER
+    ====================================================== -->
+
+    <div class="shop-header mb-4">
+
+        <div class="d-flex flex-wrap justify-content-between align-items-center">
+
+            <div class="d-flex align-items-center gap-3">
+
+                <div class="shop-icon">
+                    🏪
+                </div>
+
+                <div>
+
+                    <div class="mb-1">
+                        <a
+                            href="{% url 'shop_list' %}"
+                            class="text-decoration-none small"
+                        >
+                            ← Back to Shops
+                        </a>
+                    </div>
+
+                    <h2 class="fw-bold mb-0">
+                        {{ shop.name }}
+                    </h2>
+
+                    {% if shop.alias_name %}
+                    <div class="text-muted">
+                        {{ shop.alias_name }}
+                    </div>
+                    {% endif %}
+
+                </div>
+
+            </div>
+
+
+            <!-- HEADER BUTTONS -->
+
+            <div class="d-flex gap-2 mt-3 mt-md-0 flex-wrap">
+
+                {% if is_shop_owner or can_manage_staff %}
+
+                <a
+                    href="{% url 'shop_staff_list_shop' shop.id %}"
+                    class="btn btn-primary"
+                >
+                    👥 Staff Management
+                </a>
+
+                {% endif %}
+
+                {% if is_shop_owner %}
+                <a href="{% url 'shop_staff_create_shop' shop.id %}" class="btn btn-outline-primary">
+                    ➕ Add Staff
+                </a>
+                <a href="{% url 'shop_order_report' shop.id %}" class="btn btn-outline-success">
+                    📈 Order Report
+                </a>
+                <a href="{% url 'shop_wallet' shop.id %}" class="btn btn-outline-primary">
+                    💰 Shop Wallet
+                </a>
+                <a href="{% url 'shop_job_openings' shop.id %}" class="btn btn-success">
+                    💼 Job Openings
+                </a>
+                <a href="{% url 'shop_job_opening_create' shop.id %}" class="btn btn-outline-success">
+                    ➕ Post a Job
+                </a>
+                <a href="{% url 'shop_job_applications' shop.id %}" class="btn btn-outline-primary">
+                    🧾 View Applications
+                </a>
+                <a href="{% url 'shop_edit' shop.id %}" class="btn btn-outline-secondary">
+                    ✏️ Edit Shop
+                </a>
+                {% endif %}
+                {% if can_view_financials and not is_shop_owner %}
+                    <a href="{% url 'shop_wallet' shop.id %}" class="btn btn-outline-primary">
+                        <i class="bi bi-wallet2 me-1"></i>Shop wallet history
+                    </a>
+                {% endif %}
+
+                {% if is_shop_owner %}
+                <a href="{% url 'shop_settings' shop.id %}" class="btn btn-outline-secondary">
+                    ⚙️ Shop Settings
+                </a>
+                {% endif %}
+                {% if can_manage_stock %}
+                <a href="{% url 'stock_import' shop.id %}" class="btn btn-outline-success">
+                    📥 Update Stock
+                </a>
+                <a href="{% url 'stock_report' shop.id %}" class="btn btn-outline-primary">
+                    📊 Stock Report
+                </a>
+                {% endif %}
+                <a href="{% url 'shop_storefront' shop.id %}" class="btn btn-dark">
+                    🛍️ View Storefront
+                </a>
+                {% if can_view_rider_map %}
+                    <a href="{% url 'shop_rider_map' shop.id %}" class="btn btn-outline-info">
+                        <i class="bi bi-geo-alt me-1"></i>Rider locations
+                    </a>
+                {% endif %}
+
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- =====================================================
+         SHOP OPEN / CLOSE
+    ====================================================== -->
+
+    <div class="dashboard-card card mb-4">
+
+        <div class="card-body">
+            <div class="card shadow-sm mb-4">
+                <div class="card-body">
+
+                    <div class="d-flex justify-content-between align-items-center">
+
+                        <div>
+                            <h4 class="mb-1">
+                                {{ shop.name }}
+                            </h4>
+
+                            {% if shop.is_shop_open %}
+
+                                <span class="badge bg-success">
+                                    ● SHOP OPEN
+                                </span>
+
+                            {% else %}
+
+                                <span class="badge bg-danger">
+                                    ● SHOP CLOSED
+                                </span>
+
+                            {% endif %}
+                        </div>
+
+
+                        <form
+                            method="POST"
+                            action="{% url 'shop_toggle_status' shop.id %}"
+                        >
+
+                            {% csrf_token %}
+
+                            <div class="form-check form-switch">
+
+                                <input
+                                    class="form-check-input"
+                                    type="checkbox"
+                                    role="switch"
+                                    id="shopStatusSwitch"
+                                    {% if shop.is_shop_open %}checked{% endif %}
+                                    onchange="this.form.submit();"
+                                    style="
+                                        width:55px;
+                                        height:28px;
+                                        cursor:pointer;
+                                    "
+                                >
+
+                                <label
+                                    class="form-check-label ms-2"
+                                    for="shopStatusSwitch"
+                                >
+                                    {% if shop.is_shop_open %}
+                                        Open
+                                    {% else %}
+                                        Closed
+                                    {% endif %}
+                                </label>
+
+                            </div>
+
+                        </form>
+
+                    </div>
+
+                </div>
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- =====================================================
+         STATISTICS
+    ====================================================== -->
+
+    <div class="row g-3 mb-4">
+
+
+        <!-- PRODUCTS -->
+
+        <div class="col-6 col-lg-3">
+
+            <a
+                href="{% url 'product_list' %}?shop={{ shop.id }}"
+                class="stat-card"
+            >
+
+                <div class="dashboard-card card h-100">
+
+                    <div class="card-body">
+
+                        <div class="text-muted">
+                            Products
+                        </div>
+
+                        <div class="stat-number">
+                            {{ total_products }}
+                        </div>
+
+                        <small class="text-success">
+                            {{ active_products }} active
+                        </small>
+
+                    </div>
+
+                </div>
+
+            </a>
+
+        </div>
+
+
+        <!-- STOCK -->
+
+        <div class="col-6 col-lg-3">
+
+            <a
+                href="#products"
+                class="stat-card"
+            >
+
+                <div class="dashboard-card card h-100">
+
+                    <div class="card-body">
+
+                        <div class="text-muted">
+                            Stock
+                        </div>
+
+                        <div class="stat-number">
+                            {{ total_stock }}
+                        </div>
+
+                        <small class="text-muted">
+                            Total units
+                        </small>
+
+                    </div>
+
+                </div>
+
+            </a>
+
+        </div>
+
+
+        <!-- ORDERS -->
+
+        <div class="col-6 col-lg-3">
+
+            <a
+                href="{% url 'shop_order_list' %}?shop={{ shop.id }}"
+                class="stat-card"
+            >
+
+                <div class="dashboard-card card h-100">
+
+                    <div class="card-body">
+
+                        <div class="text-muted">
+                            Orders
+                        </div>
+
+                        <div class="stat-number">
+                            {{ total_orders }}
+                        </div>
+
+                        <small class="text-warning">
+                            {{ pending_orders }} pending
+                        </small>
+
+                    </div>
+
+                </div>
+
+            </a>
+
+        </div>
+
+
+        <!-- DELIVERED -->
+
+        <div class="col-6 col-lg-3">
+
+            <a
+                href="{% url 'shop_order_list' shop.id %}?status=DELIVERED"
+                class="stat-card"
+            >
+
+                <div class="dashboard-card card h-100">
+
+                    <div class="card-body">
+
+                        <div class="text-muted">
+                            Delivered
+                        </div>
+
+                        <div class="stat-number">
+                            {{ delivered_orders }}
+                        </div>
+
+                        <small class="text-success">
+                            Completed orders
+                        </small>
+
+                    </div>
+
+                </div>
+
+            </a>
+
+        </div>
+
+    </div>
+
+    {% if can_view_financials %}
+        <section class="dashboard-card card mb-4" aria-label="Shared rider income report">
+            <div class="card-body">
+                <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+                    <div>
+                        <h5 class="fw-bold mb-1">Shared-rider income and charges</h5>
+                        <div class="small text-muted">
+                            Rider-wise wallet transfers for today, the last 7 days, and the last 30 days.
+                        </div>
+                    </div>
+                    <span class="badge text-bg-light">
+                        ₹{{ shared_rider_fee_policy.shared_rider_base_pay|floatformat:2 }} base +
+                        ₹{{ shared_rider_fee_policy.shared_rider_rate_per_km|floatformat:2 }}/km ·
+                        minimum ₹20.00 · no maximum
+                    </span>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th>Rider</th>
+                                <th class="text-end">Paid today</th>
+                                <th class="text-end">Paid 7d</th>
+                                <th class="text-end">Paid 30d</th>
+                                <th class="text-end">Received today</th>
+                                <th class="text-end">Received 7d</th>
+                                <th class="text-end">Received 30d</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for row in shared_rider_payment_report %}
+                                <tr>
+                                    <td>
+                                        {{ row.rider.user.get_full_name|default:row.rider.user.username }}
+                                        <small class="d-block text-muted">{{ row.rider.shop.name }}</small>
+                                    </td>
+                                    <td class="text-end">₹{{ row.paid_today|floatformat:2 }}</td>
+                                    <td class="text-end">₹{{ row.paid_7_days|floatformat:2 }}</td>
+                                    <td class="text-end">₹{{ row.paid_30_days|floatformat:2 }}</td>
+                                    <td class="text-end">₹{{ row.received_today|floatformat:2 }}</td>
+                                    <td class="text-end">₹{{ row.received_7_days|floatformat:2 }}</td>
+                                    <td class="text-end">₹{{ row.received_30_days|floatformat:2 }}</td>
+                                </tr>
+                            {% empty %}
+                                <tr>
+                                    <td colspan="7" class="text-center text-muted py-3">
+                                        No shared-rider transfers in the last 30 days.
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% if shared_rider_payment_report %}
+                <details class="mt-3">
+                    <summary class="small text-muted">Payment details (last 30 days)</summary>
+                    {% for row in shared_rider_payment_report %}
+                        {% for payment in row.payments %}
+                            <div class="d-flex flex-wrap justify-content-between gap-2 border-top py-2 small">
+                                <span>
+                                    {{ payment.shop_order.shop_order_number|default:payment.shop_order.order.order_id }} · {{ payment.paying_shop.name }}
+                                    → {{ payment.rider_home_shop.name }} ·
+                                    {{ payment.delivery_distance_km|floatformat:3 }} km
+                                </span>
+                                <span>₹{{ payment.amount|floatformat:2 }} · {{ payment.delivered_at|date:"d M Y, h:i A" }}</span>
+                            </div>
+                        {% endfor %}
+                    {% endfor %}
+                </details>
+                {% endif %}
+            </div>
+        </section>
+    {% endif %}
+
+    <!-- =====================================================
+         QUICK ACTIONS
+    ====================================================== -->
+
+    <div class="dashboard-card card mb-4">
+
+        <div class="card-body">
+
+            <h5 class="fw-bold mb-3">
+                Quick Actions
+            </h5>
+
+            <div class="row g-2">
+
+
+                <!-- ORDERS -->
+
+                <div class="col-6 col-md-3">
+
+                    <a
+                        href="{% url 'shop_order_list' %}?shop={{ shop.id }}"
+                        class="btn btn-outline-primary quick-btn w-100"
+                    >
+
+                        📦
+                        <br>
+
+                        Orders
+
+                    </a>
+
+                </div>
+
+
+                <!-- ADD PRODUCT -->
+
+                <div class="col-6 col-md-3">
+
+                    <a
+                        href="{% url 'product_create' %}"
+                        class="btn btn-outline-success quick-btn w-100"
+                    >
+
+                        ➕
+                        <br>
+
+                        Add Product
+
+                    </a>
+
+                </div>
+
+
+                <!-- PRODUCTS -->
+
+                <div class="col-6 col-md-3">
+
+                    <a
+                        href="#products"
+                        class="btn btn-outline-secondary quick-btn w-100"
+                    >
+
+                        🏷️
+                        <br>
+
+                        Products
+
+                    </a>
+
+                </div>
+
+
+                <!-- STAFF -->
+                
+                <div class="col-6 col-md-3">
+
+                    {% if is_shop_owner or can_manage_staff %}
+
+                    <a
+                        href="{% url 'shop_staff_list_shop' shop.id %}"
+                        class="btn btn-outline-primary quick-btn w-100"
+                    >
+
+                        👥
+                        <br>
+
+                        Staff
+
+                    </a>
+
+                    {% else %}
+
+                    <button
+                        class="btn btn-outline-secondary quick-btn w-100"
+                        disabled
+                    >
+
+                        👥
+                        <br>
+
+                        Staff
+
+                    </button>
+
+                    {% endif %}
+
+                </div>
+
+            </div>
+            <div class="row g-2 mt-1">
+                {% if can_manage_stock %}
+                <div class="col-6 col-md-3">
+                    <a href="{% url 'stock_import' shop.id %}" class="btn btn-outline-success quick-btn w-100">
+                        📥<br>Import Stock
+                    </a>
+                </div>
+                <div class="col-6 col-md-3">
+                    <a href="{% url 'stock_report' shop.id %}" class="btn btn-outline-info quick-btn w-100">
+                        📊<br>Stock Report
+                    </a>
+                </div>
+                {% endif %}
+                <div class="col-6 col-md-3">
+                    <a href="{% url 'marketplace' %}?shop={{ shop.id }}" class="btn btn-outline-dark quick-btn w-100">
+                        🛍️<br>Storefront
+                    </a>
+                </div>
+                {% if is_shop_owner %}
+                <div class="col-6 col-md-3">
+                    <a href="{% url 'shop_job_opening_create' shop.id %}" class="btn btn-outline-success quick-btn w-100">
+                        💼<br>Post a Job
+                    </a>
+                </div>
+                {% endif %}
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- =====================================================
+         SHOP INFORMATION
+    ====================================================== -->
+
+    <div class="row g-4 mb-4">
+
+
+        <!-- LOCATION -->
+
+        <div class="col-lg-6">
+
+            <div class="dashboard-card card h-100">
+
+                <div class="card-body">
+
+                    <h5 class="fw-bold mb-3">
+                        📍 Shop Information
+                    </h5>
+
+
+                    <div class="mb-3">
+
+                        <small class="text-muted">
+                            Location
+                        </small>
+
+                        {% if shop.location %}
+
+                        <div class="fw-semibold">
+
+                            {{ shop.location.lat|floatformat:6 }},
+                            {{ shop.location.lng|floatformat:6 }}
+
+                        </div>
+
+                        {% else %}
+
+                        <div>—</div>
+
+                        {% endif %}
+
+                    </div>
+
+
+                    <div class="mb-3">
+
+                        <small class="text-muted">
+                            Contact
+                        </small>
+
+                        <div>
+                            {{ shop.contact_no|default:"—" }}
+                        </div>
+
+                    </div>
+
+
+                    <div>
+
+                        <small class="text-muted">
+                            Email
+                        </small>
+
+                        <div>
+                            {{ shop.email_no|default:"—" }}
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <!-- DELIVERY -->
+
+        <div class="col-lg-6">
+
+            <div class="dashboard-card card h-100">
+
+                <div class="card-body">
+
+                    <h5 class="fw-bold mb-3">
+                        🚚 Delivery Coverage
+                    </h5>
+
+
+                    <div class="mb-3">
+
+                        <small class="text-muted">
+                            Delivery Pincodes
+                        </small>
+
+                        <div class="mt-2">
+
+                            {% for pin in shop.delivery_pincode %}
+
+                            <span class="badge bg-primary me-1 mb-1">
+                                {{ pin }}
+                            </span>
+
+                            {% empty %}
+
+                            <span class="text-muted">
+                                No pincodes configured
+                            </span>
+
+                            {% endfor %}
+
+                        </div>
+
+                    </div>
+
+
+                    <div>
+
+                        <small class="text-muted">
+                            Delivery Area Map
+                        </small>
+
+                        {% if is_shop_owner %}
+                            <a href="{% url 'shop_edit' shop.id %}" class="btn btn-sm btn-outline-primary ms-2">
+                                <i class="bi bi-pencil-square me-1"></i>Set delivery coverage
+                            </a>
+                            <div class="small text-muted mt-1">Open the map editor to draw, adjust, or remove delivery coverage polygons.</div>
+                        {% endif %}
+                        <div class="mt-3">
+                            <div id="shopDeliveryMap" style="height: 260px; width: 100%; border-radius: 12px; overflow: hidden; border: 1px solid #e5e7eb; background: #f8fafc;"></div>
+                            <div id="shopDeliveryMapStatus" class="small text-muted mt-2" role="status" aria-live="polite"></div>
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- =====================================================
+         PRODUCTS
+    ====================================================== -->
+
+    <div
+        id="products"
+        class="dashboard-card card mb-4"
+    >
+
+        <div class="card-header bg-white py-3">
+
+            <div class="d-flex justify-content-between align-items-center">
+
+                <h5 class="fw-bold mb-0">
+                    🛒 Shop Products
+                </h5>
+
+                <a
+                    href="{% url 'product_list' %}?shop={{ shop.id }}"
+                    class="btn btn-sm btn-outline-primary"
+                >
+                    View All
+                </a>
+
+            </div>
+
+        </div>
+
+
+        <div class="card-body p-0">
+
+            <div class="table-responsive">
+
+                <table class="table table-hover align-middle mb-0">
+
+                    <thead class="table-light">
+
+                        <tr>
+
+                            <th>Product</th>
+                            <th>SKU</th>
+                            <th>Price</th>
+                            <th>Stock</th>
+                            <th>Status</th>
+
+                        </tr>
+
+                    </thead>
+
+
+                    <tbody>
+
+                    {% for assignment in product_assignments %}
+
+                    <tr
+                        class="clickable-row"
+                        onclick="window.location.href='{% url 'product_edit' assignment.product.id %}'"
+                    >
+
+                        <td>
+
+                            <div class="d-flex align-items-center gap-2">
+
+                                {% if assignment.display_image_url %}
+
+                                <img
+                                    src="{{ assignment.display_image_url }}"
+                                    class="product-thumb"
+                                >
+
+                                {% endif %}
+
+                                <div>
+
+                                    <strong>
+                                        {{ assignment.product.product_name }}
+                                    </strong>
+
+                                    {% if assignment.product.product_title %}
+
+                                    <br>
+
+                                    <small class="text-muted">
+                                        {{ assignment.product.product_title }}
+                                    </small>
+
+                                    {% endif %}
+
+                                </div>
+
+                            </div>
+
+                        </td>
+
+
+                        <td>
+                            {{ assignment.product.sku }}
+                        </td>
+
+
+                        <td>
+
+                            <strong>
+                                ₹{{ assignment.effective_price }}
+                            </strong>
+
+                        </td>
+
+
+                        <td>
+
+                            {% if assignment.stock > 0 %}
+
+                            <span class="badge bg-success">
+                                {{ assignment.stock }}
+                            </span>
+
+                            {% else %}
+
+                            <span class="badge bg-danger">
+                                Out of Stock
+                            </span>
+
+                            {% endif %}
+
+                        </td>
+
+
+                        <td>
+
+                            {% if assignment.is_active and assignment.product.is_active %}
+
+                            <span class="badge bg-success">
+                                Active
+                            </span>
+
+                            {% else %}
+
+                            <span class="badge bg-secondary">
+                                Inactive
+                            </span>
+
+                            {% endif %}
+
+                        </td>
+
+                    </tr>
+
+                    {% empty %}
+
+                    <tr>
+
+                        <td
+                            colspan="5"
+                            class="text-center py-5 text-muted"
+                        >
+                            📦 No products assigned to this shop.
+                        </td>
+
+                    </tr>
+
+                    {% endfor %}
+
+                    </tbody>
+
+                </table>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- =====================================================
+         RECENT ORDERS
+    ====================================================== -->
+
+    <div class="dashboard-card card mb-4">
+
+        <div class="card-header bg-white py-3">
+
+            <div class="d-flex justify-content-between align-items-center">
+
+                <h5 class="fw-bold mb-0">
+                    📦 Recent Orders
+                </h5>
+
+                <a
+                    href="{% url 'shop_order_list' %}?shop={{ shop.id }}"
+                    class="btn btn-sm btn-outline-primary"
+                >
+                    View All
+                </a>
+
+            </div>
+
+        </div>
+
+
+        <div class="card-body p-0">
+
+            <div class="table-responsive">
+
+                <table class="table table-sm table-striped table-hover align-middle mb-0 small">
+
+                    <thead class="table-light">
+
+                        <tr>
+
+                            <th>Order</th>
+                            <th>Customer</th>
+                            <th>Amount</th>
+                            <th>Status</th>
+                            <th>Date</th>
+
+                        </tr>
+
+                    </thead>
+
+
+                    <tbody>
+
+                    {% for shop_order in shop_orders %}
+
+                    <tr
+                        class="clickable-row"
+                        onclick="window.location.href='{% url 'shop_order_detail' shop_order.id %}'"
+                    >
+
+                        <td class="fw-semibold py-1 text-nowrap">
+
+                            {{ shop_order.shop_order_number|default:shop_order.order.order_id }}
+
+                        </td>
+
+
+                        <td class="py-1 text-nowrap">
+
+                            {{ shop_order.order.user|default:"Customer" }}
+
+                        </td>
+
+
+                        <td class="fw-bold text-success py-1 text-nowrap">
+
+                            ₹{{ shop_order.total_amount|floatformat:2 }}
+
+                        </td>
+
+
+                        <td class="py-1 text-nowrap">
+
+                            <span class="badge bg-primary">
+                                {{ shop_order.status }}
+                            </span>
+
+                        </td>
+
+
+                        <td class="py-1 text-nowrap">
+
+                            {{ shop_order.created_at|date:"d M Y h:i A" }}
+
+                        </td>
+
+                    </tr>
+
+                    {% empty %}
+
+                    <tr>
+
+                        <td
+                            colspan="5"
+                            class="text-center py-4 text-muted"
+                        >
+                            No orders yet.
+                        </td>
+
+                    </tr>
+
+                    {% endfor %}
+
+                    </tbody>
+
+                </table>
+
+            </div>
+
+        </div>
+
+    </div>
+
+    <div class="row g-4 mt-1 mb-4">
+        <div class="col-lg-6">
+            <div class="dashboard-card card h-100">
+                <div class="card-header bg-white py-3">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h5 class="fw-bold mb-0">💼 Need for Job</h5>
+                        {% if is_shop_owner %}
+                            <a href="{% url 'shop_job_openings' shop.id %}" class="btn btn-sm btn-outline-primary">Openings</a>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="card-body">
+                    {% for opening in job_openings %}
+                        <div class="border rounded p-3 mb-2">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <div>
+                                    <strong>{{ opening.title }}</strong>
+                                    <div class="small text-muted">{{ opening.role }} · {{ opening.employment_type }}</div>
+                                </div>
+                                <span class="badge {% if opening.is_active %}bg-success{% else %}bg-secondary{% endif %}">{% if opening.is_active %}Open{% else %}Closed{% endif %}</span>
+                            </div>
+                        </div>
+                    {% empty %}
+                        <div class="text-muted">No job openings added yet.</div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-6">
+            <div class="dashboard-card card h-100">
+                <div class="card-header bg-white py-3">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h5 class="fw-bold mb-0">🧾 Received Job Applications</h5>
+                        {% if is_shop_owner %}
+                            <a href="{% url 'shop_job_applications' shop.id %}" class="btn btn-sm btn-outline-primary">View all</a>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="card-body">
+                    {% for application in job_applications %}
+                        <div class="border rounded p-3 mb-2">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <div>
+                                    <strong>{{ application.full_name }}</strong>
+                                    <div class="small text-muted">{{ application.job_title|default:application.job_opening.title }}</div>
+                                </div>
+                                <span class="badge bg-primary">{{ application.status }}</span>
+                            </div>
+                            <div class="small text-muted mt-2">{{ application.email }} · {{ application.created_at|date:"d M Y" }}</div>
+                        </div>
+                    {% empty %}
+                        <div class="text-muted">No job applications received yet.</div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script>
+
+function toggleShopStatus() {
+
+    const checkbox =
+        document.getElementById("shopStatusSwitch");
+
+    const form =
+        document.getElementById("shopStatusForm");
+
+    if (!checkbox || !form) {
+        return;
+    }
+
+    const newStatus = checkbox.checked;
+
+    const message = newStatus
+        ? "Open {{ shop.name }} and start accepting orders?"
+        : "Close {{ shop.name }} and stop accepting new orders?";
+
+    if (!confirm(message)) {
+
+        checkbox.checked = !newStatus;
+
+        return;
+
+    }
+
+    form.submit();
+}
+
+(function () {
+    const mapContainer = document.getElementById('shopDeliveryMap');
+    if (!mapContainer) {
+        return;
+    }
+    const mapStatus = document.getElementById('shopDeliveryMapStatus');
+    if (typeof window.L === 'undefined') {
+        mapStatus.textContent = 'The map library could not load. Check network access and reload this page.';
+        return;
+    }
+
+    const shopLocation = {{ shop.location|default:'null'|safe }};
+    const deliveryArea = {{ shop.delivery_area|default:'[]'|safe }};
+
+    const initialPoint = shopLocation && Number.isFinite(Number(shopLocation.lat)) &&
+        Number.isFinite(Number(shopLocation.lng))
+        ? [Number(shopLocation.lat), Number(shopLocation.lng)]
+        : [20.5937, 78.9629];
+    const map = L.map('shopDeliveryMap', { scrollWheelZoom: false }).setView(initialPoint, shopLocation ? 13 : 5);
+    let currentLocationMarker = null;
+    const normalLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+        maxZoom: 20,
+        attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+        subdomains: 'abcd',
+    });
+    const satelliteLayer = L.tileLayer(
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        {maxZoom: 19, attribution: 'Tiles &copy; Esri'}
+    );
+    satelliteLayer.addTo(map);
+    L.control.layers({"Normal": normalLayer, "Satellite": satelliteLayer}).addTo(map);
+    [normalLayer, satelliteLayer].forEach((layer) => {
+        layer.on('tileerror', () => {
+            mapStatus.textContent = 'Map tiles could not be loaded. Try the other layer or check network access.';
+        });
+        layer.on('tileload', () => {
+            mapStatus.textContent = '';
+        });
+    });
+    const locateControl = L.control({position: 'topright'});
+    locateControl.onAdd = function () {
+        const button = L.DomUtil.create('button', 'btn btn-sm btn-light border');
+        button.type = 'button';
+        button.textContent = 'Current location';
+        button.setAttribute('aria-label', 'Center map on my current location');
+        L.DomEvent.disableClickPropagation(button);
+        L.DomEvent.on(button, 'click', function () {
+            if (!navigator.geolocation) {
+                mapStatus.textContent = 'Location is not supported by this browser.';
+                return;
+            }
+            mapStatus.textContent = 'Getting your current location…';
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const point = [position.coords.latitude, position.coords.longitude];
+                    if (currentLocationMarker) currentLocationMarker.setLatLng(point);
+                    else currentLocationMarker = L.marker(point).addTo(map);
+                    currentLocationMarker.bindPopup('Your current location').openPopup();
+                    map.setView(point, 15);
+                    mapStatus.textContent = 'Map centered on your current location.';
+                },
+                (error) => {
+                    mapStatus.textContent = error.code === error.PERMISSION_DENIED
+                        ? 'Location access is blocked. Allow browser location permission and try again.'
+                        : 'Could not get your location. Check the device location service and try again.';
+                },
+                {enableHighAccuracy: true, timeout: 10000, maximumAge: 60000}
+            );
+        });
+        return button;
+    };
+    locateControl.addTo(map);
+
+    const polygonLayers = [];
+
+    function normalizePolygonLayer(raw) {
+        if (!raw) return null;
+
+        if (Array.isArray(raw) && raw.length && Array.isArray(raw[0])) {
+            return raw[0].map((point) => [point.lat ?? point[0], point.lng ?? point[1]]);
+        }
+
+        if (raw.type === 'Polygon' && Array.isArray(raw.coordinates)) {
+            return raw.coordinates[0].map((point) => [point[1], point[0]]);
+        }
+
+        if (raw.type === 'MultiPolygon' && Array.isArray(raw.coordinates)) {
+            const firstPolygon = raw.coordinates[0];
+            if (Array.isArray(firstPolygon) && Array.isArray(firstPolygon[0])) {
+                return firstPolygon[0].map((point) => [point[1], point[0]]);
+            }
+        }
+
+        return null;
+    }
+
+    if (Array.isArray(deliveryArea)) {
+        deliveryArea.forEach((item) => {
+            const polygonCoords = normalizePolygonLayer(item);
+            if (polygonCoords && polygonCoords.length) {
+                polygonLayers.push(L.polygon(polygonCoords, { color: '#0d6efd', weight: 2, fillOpacity: 0.18 }).addTo(map));
+            }
+        });
+    }
+
+    if (shopLocation && typeof shopLocation === 'object' &&
+        Number.isFinite(Number(shopLocation.lat)) && Number.isFinite(Number(shopLocation.lng))) {
+        L.marker([shopLocation.lat, shopLocation.lng]).addTo(map);
+    }
+
+    if (polygonLayers.length) {
+        const bounds = L.latLngBounds(polygonLayers.map((layer) => layer.getBounds()));
+        if (bounds.isValid()) {
+            map.fitBounds(bounds.pad(0.3));
+        }
+    } else if (shopLocation && typeof shopLocation === 'object' &&
+        Number.isFinite(Number(shopLocation.lat)) && Number.isFinite(Number(shopLocation.lng))) {
+        map.setView([shopLocation.lat, shopLocation.lng], 13);
+    }
+
+    setTimeout(() => map.invalidateSize(), 150);
+})();
+
+</script>
+
+{% endblock %}

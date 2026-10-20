@@ -1,0 +1,38 @@
+{% extends 'base.html' %}
+
+{% block title %}Ecommerce Catalog{% endblock %}
+
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+      <h2>Shop Products</h2>
+      <p class="text-muted">Browse products from all shops and build a multi-shop cart.</p>
+    </div>
+    <a href="{% url 'ecommerce_cart' %}" class="btn btn-primary">View Cart</a>
+  </div>
+
+  <div class="row g-4">
+    {% for product in products %}
+      <div class="col-md-6 col-lg-4">
+        <div class="card h-100">
+          <div class="card-body">
+            <h5 class="card-title">{{ product.name }}</h5>
+            <p class="text-muted mb-2">{{ product.shop.name }}</p>
+            <p class="card-text">{{ product.description|truncatechars:120 }}</p>
+            <div class="d-flex justify-content-between align-items-center">
+              <span class="fw-bold">₹{{ product.price }}</span>
+              <form method="post" action="{% url 'ecommerce_cart' %}">
+                {% csrf_token %}
+                <input type="hidden" name="product_id" value="{{ product.id }}">
+                <input type="hidden" name="quantity" value="1">
+                <button type="submit" class="btn btn-outline-primary btn-sm">Add to cart</button>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+    {% empty %}
+      <div class="col-12"><div class="alert alert-info">No products available yet.</div></div>
+    {% endfor %}
+  </div>
+{% endblock %}

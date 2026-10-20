@@ -1,0 +1,15 @@
+{% extends 'base.html' %}
+
+{% block title %}Delete Order{% endblock %}
+
+{% block content %}
+  <div class="card p-4">
+    <h3 class="mb-3">Delete Order</h3>
+    <p>Are you sure you want to delete order <strong>{{ order.order_id }}</strong>?</p>
+    <form method="post">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-danger">Delete</button>
+      <a href="{% url 'order_list' %}" class="btn btn-secondary ms-2">Cancel</a>
+    </form>
+  </div>
+{% endblock %}

@@ -1,0 +1,1598 @@
+{% extends "base.html" %}
+
+{% block title %}
+{{ title }}
+{% endblock %}
+
+{% block content %}
+
+<link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+/>
+
+<link
+    rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"
+/>
+
+
+<div class="container py-4">
+
+    <div class="card shadow">
+
+        <div class="card-header">
+
+            <h3 class="mb-0">
+                {{ title }}
+            </h3>
+
+        </div>
+
+
+        <div class="card-body">
+
+            <form method="POST" id="shopForm">
+
+                {% csrf_token %}
+
+
+                <!-- ============================= -->
+                <!-- SHOP INFORMATION -->
+                <!-- ============================= -->
+
+                <h5 class="mb-3">
+                    Shop Information
+                </h5>
+
+
+                <div class="row">
+
+                    <div class="col-md-6 mb-3">
+
+                        <label class="form-label">
+                            Shop Name
+                        </label>
+
+                        {{ form.name }}
+
+                    </div>
+
+                    <div class="col-12 mb-3">
+                        <label class="form-label fw-semibold" for="{{ form.storefront_slug.id_for_label }}">
+                            Choose your unique shop subdomain
+                        </label>
+                        <div class="input-group">
+                            <span class="input-group-text">{{ storefront_url_prefix }}</span>
+                            {{ form.storefront_slug }}
+                            {% if storefront_url_suffix %}
+                                <span class="input-group-text">{{ storefront_url_suffix }}</span>
+                            {% endif %}
+                        </div>
+                        <div class="form-text" id="storefrontSlugStatus" aria-live="polite">
+                            Choose a unique name customers can use to open and advertise your shop catalog. It does not need to match your shop name.
+                        </div>
+                        {% for error in form.storefront_slug.errors %}
+                            <div class="text-danger small">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+
+                    <div class="col-md-3 mb-3">
+
+                        <label class="form-label">
+                            Market
+                        </label>
+
+                        {{ form.market_category }}
+
+                    </div>
+
+                    <div class="col-md-3 mb-3">
+
+                        <label class="form-label">
+                            Shop Category
+                        </label>
+
+                        {{ form.shop_category }}
+
+                    </div>
+
+
+                    <div class="col-md-6 mb-3">
+
+                        <label class="form-label">
+                            Alias Name
+                        </label>
+
+                        {{ form.alias_name }}
+
+                    </div>
+
+
+                    <div class="col-md-6 mb-3">
+
+                        <label class="form-label">
+                            Contact No
+                        </label>
+
+                        {{ form.contact_no }}
+
+                    </div>
+
+
+                    <div class="col-md-6 mb-3">
+
+                        <label class="form-label">
+                            Email
+                        </label>
+
+                        {{ form.email_no }}
+
+                    </div>
+
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label" for="{{ form.upi_id.id_for_label }}">
+                            Shop UPI ID for COD payments
+                        </label>
+                        {{ form.upi_id }}
+                        <div class="form-text">Customers can scan the shop’s UPI QR for the order balance. Payments to this ID do not create a staff handover balance.</div>
+                        {% for error in form.upi_id.errors %}
+                            <div class="text-danger small">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label" for="{{ form.delivery_fee.id_for_label }}">
+                            Delivery fee per order (₹)
+                        </label>
+                        {{ form.delivery_fee }}
+                        <div class="form-text">Set 0.00 to offer free delivery. Customers see this fee before placing an order.</div>
+                        {% for error in form.delivery_fee.errors %}
+                            <div class="text-danger small">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+
+
+                    <div class="col-md-4 mb-3">
+
+                        <label class="form-label">
+                            Opening Time
+                        </label>
+
+                        {{ form.shop_open_time }}
+
+                    </div>
+
+
+                    <div class="col-md-4 mb-3">
+
+                        <label class="form-label">
+                            Closing Time
+                        </label>
+
+                        {{ form.shop_close_time }}
+
+                    </div>
+
+
+                    <div class="col-md-4 mb-3">
+
+                        <label class="form-label">
+                            Shop Status
+                        </label>
+
+                        <div class="form-check mt-2">
+
+                            {{ form.is_shop_open }}
+
+                            <label class="form-check-label">
+                                Shop is Open
+                            </label>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+                <div class="form-check border rounded p-3 mb-3">
+                    {{ form.share_riders_with_nearby_shops }}
+                    <label class="form-check-label fw-semibold"
+                           for="{{ form.share_riders_with_nearby_shops.id_for_label }}">
+                        {{ form.share_riders_with_nearby_shops.label }}
+                    </label>
+                    <div class="form-text">{{ form.share_riders_with_nearby_shops.help_text }}</div>
+                    {% for error in form.share_riders_with_nearby_shops.errors %}
+                        <div class="text-danger small">{{ error }}</div>
+                    {% endfor %}
+                </div>
+
+                <hr>
+                <section aria-labelledby="gst-details-heading">
+                    <h5 id="gst-details-heading">GST registration (optional)</h5>
+                    <p class="text-muted small">
+                        If your shop is GST-registered, enter its GSTIN, registered state, and billing address.
+                        This enables GST calculation and tax invoices for new orders. Leave GSTIN blank if you are not registered.
+                    </p>
+                    <div class="row">
+                        <div class="col-md-4 mb-3">
+                            <label class="form-label" for="{{ form.gstin.id_for_label }}">Shop GSTIN</label>
+                            {{ form.gstin }}
+                            {% for error in form.gstin.errors %}
+                                <div class="text-danger small">{{ error }}</div>
+                            {% endfor %}
+                        </div>
+                        <div class="col-md-4 mb-3">
+                            <label class="form-label" for="{{ form.delivery_hsn_code.id_for_label }}">Delivery service HSN/SAC</label>
+                            {{ form.delivery_hsn_code }}
+                            <div class="form-text">Use the code applicable to your delivery service.</div>
+                            {% for error in form.delivery_hsn_code.errors %}
+                                <div class="text-danger small">{{ error }}</div>
+                            {% endfor %}
+                        </div>
+                        <div class="col-md-4 mb-3">
+                            <label class="form-label" for="{{ form.delivery_gst_rate.id_for_label }}">Delivery service GST rate (%)</label>
+                            {{ form.delivery_gst_rate }}
+                            <div class="form-text">Leave blank to use the platform delivery GST rate.</div>
+                            {% for error in form.delivery_gst_rate.errors %}
+                                <div class="text-danger small">{{ error }}</div>
+                            {% endfor %}
+                        </div>
+                        <div class="col-md-4 mb-3">
+                            <label class="form-label" for="{{ form.gst_state_code.id_for_label }}">GST registration state</label>
+                            {{ form.gst_state_code }}
+                            {% for error in form.gst_state_code.errors %}
+                                <div class="text-danger small">{{ error }}</div>
+                            {% endfor %}
+                        </div>
+                        <div class="col-md-8 mb-3">
+                            <label class="form-label" for="{{ form.billing_address.id_for_label }}">Registered billing address</label>
+                            {{ form.billing_address }}
+                            {% for error in form.billing_address.errors %}
+                                <div class="text-danger small">{{ error }}</div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% if form.gstin.help_text %}
+                        <div class="form-text">{{ form.gstin.help_text }}</div>
+                    {% endif %}
+                </section>
+
+                <!-- ============================= -->
+                <!-- BREAK TIMES -->
+                <!-- ============================= -->
+
+                <hr>
+
+                <h5>
+                    Shop Break Times
+                </h5>
+
+                <div id="breakTimes"></div>
+
+                <button
+                    type="button"
+                    class="btn btn-outline-primary btn-sm mb-3"
+                    onclick="addBreakTime()"
+                >
+                    + Add Break
+                </button>
+
+
+                <!-- ============================= -->
+                <!-- LOCATION -->
+                <!-- ============================= -->
+
+                <hr>
+
+                <h5>
+                    Shop Location
+                </h5>
+
+                <p class="text-muted">
+                    Click on the map to place the shop location.
+                </p>
+
+
+                <div
+                    id="locationMap"
+                    style="
+                        height:400px;
+                        border-radius:10px;
+                        margin-bottom:15px;
+                    "
+                ></div>
+                <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+                    <button type="button" class="btn btn-outline-primary btn-sm" id="useCurrentShopLocation">
+                        <i class="bi bi-crosshair me-1"></i>Use current location
+                    </button>
+                    <span id="shopLocationMessage" class="small text-muted" aria-live="polite"></span>
+                </div>
+
+
+                <div class="row">
+
+                    <div class="col-md-6">
+
+                        <label>
+                            Latitude
+                        </label>
+
+                        <input
+                            type="text"
+                            id="latitude"
+                            class="form-control"
+                            readonly
+                        >
+
+                    </div>
+
+
+                    <div class="col-md-6">
+
+                        <label>
+                            Longitude
+                        </label>
+
+                        <input
+                            type="text"
+                            id="longitude"
+                            class="form-control"
+                            readonly
+                        >
+
+                    </div>
+
+                </div>
+
+
+                <!-- ============================= -->
+                <!-- DELIVERY AREA -->
+                <!-- ============================= -->
+
+                <hr>
+
+                <h5>
+                    Delivery Area
+                </h5>
+
+                <p class="text-muted">
+
+                    Use the polygon tool on the map to draw
+                    multiple delivery areas.
+
+                </p>
+
+
+                <div
+                    id="deliveryMap"
+                    style="
+                        height:500px;
+                        border-radius:10px;
+                        margin-bottom:15px;
+                    "
+                ></div>
+
+
+                <div class="alert alert-info">
+
+                    <strong id="polygonCount">
+                        0
+                    </strong>
+
+                    delivery area(s) selected.
+
+                </div>
+
+
+                <!-- ============================= -->
+                <!-- PINCODES -->
+                <!-- ============================= -->
+
+                <hr>
+
+                <h5>
+                    Delivery Pincodes
+                </h5>
+
+
+                <div class="input-group mb-2">
+
+                    <input
+                        type="text"
+                        id="pincodeInput"
+                        class="form-control"
+                        placeholder="Enter pincode"
+                    >
+
+                    <button
+                        type="button"
+                        class="btn btn-primary"
+                        onclick="addPincode()"
+                    >
+                        Add
+                    </button>
+
+                </div>
+
+
+                <div
+                    id="pincodeList"
+                    class="mb-3"
+                ></div>
+
+
+                <!-- ============================= -->
+                <!-- ADDITIONAL DATA -->
+                <!-- ============================= -->
+
+                <hr>
+
+                <h5>
+                    Additional Information
+                </h5>
+
+                {{ form.shop_data }}
+
+
+                <!-- ============================= -->
+                <!-- HIDDEN JSON -->
+                <!-- ============================= -->
+
+                <input
+                    type="hidden"
+                    name="location_json"
+                    id="location_json"
+                >
+
+
+                <input
+                    type="hidden"
+                    name="delivery_area_json"
+                    id="delivery_area_json"
+                >
+
+
+                <input
+                    type="hidden"
+                    name="delivery_pincode_json"
+                    id="delivery_pincode_json"
+                >
+
+
+                <input
+                    type="hidden"
+                    name="break_time_json"
+                    id="break_time_json"
+                >
+
+
+                <!-- ============================= -->
+                <!-- BUTTONS -->
+                <!-- ============================= -->
+
+                <hr>
+
+                <div class="d-flex gap-2">
+
+                    <button
+                        type="submit"
+                        class="btn btn-success"
+                    >
+                        💾 Save Shop
+                    </button>
+
+
+                    <a
+                        href="{% url 'shop_list' %}"
+                        class="btn btn-secondary"
+                    >
+                        Cancel
+                    </a>
+
+                </div>
+
+            </form>
+
+        </div>
+
+    </div>
+
+</div>
+
+
+<script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    onerror="document.getElementById('shopLocationMessage').textContent='The map library could not load. Check network access and reload this page.'">
+</script>
+
+<script
+    src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js">
+</script>
+
+
+<script>
+
+/* ============================================================
+   EXISTING SHOP DATA
+============================================================ */
+
+const existingLocation =
+    {{ shop.location|default:"null"|safe }};
+
+const existingDeliveryArea =
+    {{ shop.delivery_area|default:"[]"|safe }};
+
+const existingPincodes =
+    {{ shop.delivery_pincode|default:"[]"|safe }};
+
+const existingBreakTimes =
+    {{ shop.shop_break_time_list|default:"[]"|safe }};
+
+
+/* ============================================================
+   LOCATION MAP
+============================================================ */
+
+let defaultLat = 20.5937;
+let defaultLng = 78.9629;
+
+if (
+    existingLocation &&
+    Number.isFinite(Number(existingLocation.lat)) &&
+    Number.isFinite(Number(existingLocation.lng))
+) {
+    defaultLat = Number(existingLocation.lat);
+    defaultLng = Number(existingLocation.lng);
+}
+
+const locationMap = L.map("locationMap").setView(
+    [defaultLat, defaultLng],
+    13
+)
+
+/* ============================================================
+   NORMAL MAP
+============================================================ */
+
+const normalMap = L.tileLayer(
+    "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+    {
+        maxZoom: 20,
+        attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+        subdomains: "abcd"
+    }
+);
+
+
+/* ============================================================
+   SATELLITE MAP
+============================================================ */
+
+const satelliteMap = L.tileLayer(
+    "https://server.arcgisonline.com/ArcGIS/rest/services/" +
+    "World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    {
+        maxZoom: 20,
+        attribution:
+            "Tiles &copy; Esri"
+    }
+);
+
+
+/* Default map */
+
+satelliteMap.addTo(locationMap);
+
+
+/* ============================================================
+   MAP LAYER SWITCHER
+============================================================ */
+
+const baseMaps = {
+
+    "🗺️ Normal": normalMap,
+
+    "🛰️ Satellite": satelliteMap
+
+};
+
+
+L.control.layers(
+    baseMaps,
+    null,
+    {
+        position: "topright"
+    }
+).addTo(locationMap);
+
+
+let locationMarker = null;
+
+
+const deliveryMap = L.map("deliveryMap").setView(
+    [defaultLat, defaultLng],
+    13
+);
+let deliveryLocationMarker = null;
+if (
+    existingLocation &&
+    Number.isFinite(Number(existingLocation.lat)) &&
+    Number.isFinite(Number(existingLocation.lng))
+) {
+    deliveryLocationMarker = L.marker([defaultLat, defaultLng], {draggable: true}).addTo(deliveryMap);
+    deliveryLocationMarker.on("dragend", function () {
+        const point = deliveryLocationMarker.getLatLng();
+        setLocation(point.lat, point.lng);
+    });
+}
+
+document.getElementById("useCurrentShopLocation").addEventListener("click", function() {
+    const message = document.getElementById("shopLocationMessage");
+    if (!navigator.geolocation) {
+        message.textContent = "Location is not supported by this browser.";
+        return;
+    }
+    message.textContent = "Getting your current location…";
+    navigator.geolocation.getCurrentPosition(
+        function(position) {
+            const lat = position.coords.latitude;
+            const lng = position.coords.longitude;
+            setLocation(lat, lng);
+            if (!deliveryLocationMarker) {
+                deliveryLocationMarker = L.marker([lat, lng], {draggable: true}).addTo(deliveryMap);
+                deliveryLocationMarker.on("dragend", function () {
+                    const point = deliveryLocationMarker.getLatLng();
+                    setLocation(point.lat, point.lng);
+                });
+            }
+            deliveryLocationMarker.setLatLng([lat, lng]);
+            locationMap.setView([lat, lng], 16);
+            deliveryMap.setView([lat, lng], 16);
+            message.textContent = "Shop location set to your current location.";
+        },
+        function(error) {
+            message.textContent = error.code === error.PERMISSION_DENIED
+                ? "Location permission was denied. Allow location access and try again."
+                : "Could not get your location. You can place the pin on the map instead.";
+        },
+        {enableHighAccuracy: true, timeout: 10000, maximumAge: 60000}
+    );
+});
+
+
+// let defaultLat = 20.5937;
+// let defaultLng = 78.9629;
+
+// if (
+//     existingLocation &&
+//     existingLocation.lat &&
+//     existingLocation.lng
+// ) {
+
+//     defaultLat = existingLocation.lat;
+//     defaultLng = existingLocation.lng;
+
+// }
+
+
+// const locationMap = L.map(
+//     "locationMap"
+// ).setView(
+//     [defaultLat, defaultLng],
+//     13
+// );
+
+// const locationTileLayer = L.tileLayer(
+//     "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+//     {
+//         maxZoom: 19,
+//         attribution: "&copy; OpenStreetMap &copy; CARTO"
+//     }
+// );
+
+// let locationMarker = null;
+
+
+
+/* Existing marker */
+
+if (
+    existingLocation &&
+    Number.isFinite(Number(existingLocation.lat)) &&
+    Number.isFinite(Number(existingLocation.lng))
+) {
+
+    setLocation(
+        Number(existingLocation.lat),
+        Number(existingLocation.lng)
+    );
+
+}
+
+
+/* Click map */
+
+locationMap.on(
+    "click",
+    function(e) {
+
+        setLocation(
+            e.latlng.lat,
+            e.latlng.lng
+        );
+
+    }
+);
+
+
+function setLocation(lat, lng) {
+
+    if (locationMarker) {
+
+        locationMarker.setLatLng(
+            [lat, lng]
+        );
+
+    } else {
+
+        locationMarker = L.marker(
+            [lat, lng],
+            {
+                draggable: true
+            }
+        ).addTo(locationMap);
+
+
+        locationMarker.on(
+            "dragend",
+            function(e) {
+
+                const pos =
+                    e.target.getLatLng();
+
+                updateLocation(
+                    pos.lat,
+                    pos.lng
+                );
+
+            }
+        );
+
+    }
+
+
+    updateLocation(
+        lat,
+        lng
+    );
+
+}
+
+
+function updateLocation(lat, lng) {
+
+    document.getElementById(
+        "latitude"
+    ).value = lat.toFixed(7);
+
+
+    document.getElementById(
+        "longitude"
+    ).value = lng.toFixed(7);
+
+
+    document.getElementById(
+        "location_json"
+    ).value = JSON.stringify({
+
+        lat: lat,
+        lng: lng
+
+    });
+
+}
+
+
+/* ============================================================
+   DELIVERY AREA MAP
+============================================================ */
+
+
+
+const deliveryTileLayer = L.tileLayer(
+    "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+    {
+        maxZoom: 20,
+        attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+        subdomains: "abcd"
+    }
+);
+
+const deliverySatelliteLayer = L.tileLayer(
+    "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    {
+        maxZoom: 19,
+        attribution: "Tiles &copy; Esri",
+    }
+);
+deliverySatelliteLayer.addTo(deliveryMap);
+L.control.layers(
+    {
+        "Street map": deliveryTileLayer,
+        "Satellite": deliverySatelliteLayer,
+    },
+    null,
+    {position: "topright"}
+).addTo(deliveryMap);
+[normalMap, satelliteMap, deliveryTileLayer, deliverySatelliteLayer].forEach(function (layer) {
+    layer.on("tileerror", function () {
+        document.getElementById("shopLocationMessage").textContent =
+            "Map tiles could not be loaded. Try the other map layer or check network access.";
+    });
+});
+
+let deliveryLayer =
+    new L.FeatureGroup();
+
+deliveryMap.addLayer(
+    deliveryLayer
+);
+
+
+/* Drawing tools */
+
+const drawControl =
+    new L.Control.Draw({
+
+        edit: {
+
+            featureGroup:
+                deliveryLayer
+
+        },
+
+        draw: {
+
+            polygon: true,
+
+            polyline: false,
+
+            rectangle: false,
+
+            circle: false,
+
+            circlemarker: false,
+
+            marker: false
+
+        }
+
+    });
+
+
+deliveryMap.addControl(
+    drawControl
+);
+
+
+/* ============================================================
+   LOAD EXISTING POLYGONS
+============================================================ */
+
+if (
+    Array.isArray(existingDeliveryArea)
+) {
+
+    existingDeliveryArea.forEach(
+        function(polygon) {
+
+            if (
+                Array.isArray(polygon) &&
+                polygon.length > 0
+            ) {
+
+                const latlngs =
+                    polygon.map(
+                        function(point) {
+
+                            return [
+                                point.lat,
+                                point.lng
+                            ];
+
+                        }
+                    );
+
+
+                const layer =
+                    L.polygon(
+                        latlngs
+                    );
+
+                deliveryLayer.addLayer(
+                    layer
+                );
+
+            }
+
+        }
+    );
+
+}
+
+
+updatePolygonCount();
+
+
+/* ============================================================
+   NEW POLYGON
+============================================================ */
+
+deliveryMap.on(
+    L.Draw.Event.CREATED,
+    function(e) {
+
+        const layer = e.layer;
+
+        deliveryLayer.addLayer(
+            layer
+        );
+
+        saveDeliveryAreas();
+
+    }
+);
+
+
+/* ============================================================
+   EDIT / DELETE POLYGON
+============================================================ */
+
+deliveryMap.on(
+    L.Draw.Event.EDITED,
+    function() {
+
+        saveDeliveryAreas();
+
+    }
+);
+
+
+deliveryMap.on(
+    L.Draw.Event.DELETED,
+    function() {
+
+        saveDeliveryAreas();
+
+    }
+);
+
+
+/* ============================================================
+   SAVE POLYGONS
+============================================================ */
+
+function saveDeliveryAreas() {
+
+    const polygons = [];
+
+
+    deliveryLayer.eachLayer(
+        function(layer) {
+
+            let latlngs =
+                layer.getLatLngs();
+
+
+            /*
+             * Polygon
+             */
+
+            if (
+                Array.isArray(latlngs[0])
+            ) {
+
+                latlngs =
+                    latlngs[0];
+
+            }
+
+
+            const polygon =
+                latlngs.map(
+                    function(point) {
+
+                        return {
+
+                            lat:
+                                point.lat,
+
+                            lng:
+                                point.lng
+
+                        };
+
+                    }
+                );
+
+
+            polygons.push(
+                polygon
+            );
+
+        }
+    );
+
+
+    document.getElementById(
+        "delivery_area_json"
+    ).value =
+        JSON.stringify(polygons);
+
+
+    updatePolygonCount();
+
+}
+
+
+function updatePolygonCount() {
+
+    document.getElementById(
+        "polygonCount"
+    ).innerText =
+        deliveryLayer.getLayers().length;
+
+}
+
+
+/* ============================================================
+   CURRENT LOCATION MAP BUTTON
+============================================================ */
+
+const currentLocationControl = L.control({
+    position: "topright"
+});
+
+
+currentLocationControl.onAdd = function(map) {
+
+    const div = L.DomUtil.create(
+        "div",
+        "leaflet-bar"
+    );
+
+    div.innerHTML = `
+        <button
+            type="button"
+            id="currentLocationBtn"
+            title="Use Current Location"
+            style="
+                background:white;
+                border:none;
+                padding:8px 12px;
+                font-size:14px;
+                cursor:pointer;
+                white-space:nowrap;
+                box-shadow:0 1px 5px rgba(0,0,0,0.3);
+                border-radius:4px;
+            "
+        >
+            📍 Use Current Location
+        </button>
+    `;
+
+
+    /*
+     * Prevent map click/drag when clicking button
+     */
+    L.DomEvent.disableClickPropagation(div);
+    L.DomEvent.disableScrollPropagation(div);
+
+
+    return div;
+};
+
+
+currentLocationControl.addTo(
+    locationMap
+);
+
+document.getElementById(
+    "currentLocationBtn"
+).addEventListener(
+    "click",
+    function() {
+
+        const button = this;
+
+
+        if (!navigator.geolocation) {
+
+            alert(
+                "Geolocation is not supported by your browser."
+            );
+
+            return;
+        }
+
+
+        button.disabled = true;
+
+        button.innerHTML =
+            "📍 Getting Location...";
+
+
+        navigator.geolocation.getCurrentPosition(
+
+            function(position) {
+
+                const lat =
+                    position.coords.latitude;
+
+                const lng =
+                    position.coords.longitude;
+
+
+                /*
+                 * Center map
+                 */
+                locationMap.setView(
+                    [lat, lng],
+                    17
+                );
+
+
+                /*
+                 * Create / move marker
+                 */
+                setLocation(
+                    lat,
+                    lng
+                );
+
+
+                button.disabled = false;
+
+                button.innerHTML =
+                    "📍 Use Current Location";
+
+            },
+
+            function(error) {
+
+                button.disabled = false;
+
+                button.innerHTML =
+                    "📍 Use Current Location";
+
+
+                if (error.code === 1) {
+
+                    alert(
+                        "Location permission denied."
+                    );
+
+                } else if (error.code === 2) {
+
+                    alert(
+                        "Unable to determine your location."
+                    );
+
+                } else if (error.code === 3) {
+
+                    alert(
+                        "Location request timed out."
+                    );
+
+                } else {
+
+                    alert(
+                        "Unable to get your current location."
+                    );
+
+                }
+
+            },
+
+            {
+                enableHighAccuracy: true,
+                timeout: 15000,
+                maximumAge: 0
+            }
+
+        );
+
+    }
+);
+
+/* ============================================================
+   PINCODES
+============================================================ */
+
+let pincodes = [];
+
+
+if (
+    Array.isArray(existingPincodes)
+) {
+
+    pincodes =
+        existingPincodes.map(
+            String
+        );
+
+}
+
+
+renderPincodes();
+
+
+function addPincode() {
+
+    const input =
+        document.getElementById(
+            "pincodeInput"
+        );
+
+
+    const value =
+        input.value.trim();
+
+
+    if (!value) {
+
+        return;
+
+    }
+
+
+    if (
+        !/^[0-9]{4,10}$/.test(value)
+    ) {
+
+        alert(
+            "Please enter a valid pincode."
+        );
+
+        return;
+
+    }
+
+
+    if (
+        pincodes.includes(value)
+    ) {
+
+        alert(
+            "Pincode already added."
+        );
+
+        return;
+
+    }
+
+
+    pincodes.push(
+        value
+    );
+
+
+    input.value = "";
+
+    renderPincodes();
+
+}
+
+
+function removePincode(index) {
+
+    pincodes.splice(
+        index,
+        1
+    );
+
+    renderPincodes();
+
+}
+
+
+function renderPincodes() {
+
+    const container =
+        document.getElementById(
+            "pincodeList"
+        );
+
+
+    container.innerHTML = "";
+
+
+    pincodes.forEach(
+        function(pincode, index) {
+
+            const badge =
+                document.createElement(
+                    "span"
+                );
+
+
+            badge.className =
+                "badge bg-primary me-2 mb-2 p-2";
+
+
+            badge.innerHTML =
+                pincode +
+                ' <button type="button" ' +
+                'class="btn-close btn-close-white ms-1" ' +
+                'onclick="removePincode(' +
+                index +
+                ')"></button>';
+
+
+            container.appendChild(
+                badge
+            );
+
+        }
+    );
+
+
+    document.getElementById(
+        "delivery_pincode_json"
+    ).value =
+        JSON.stringify(pincodes);
+
+}
+
+
+/* ============================================================
+   BREAK TIMES
+============================================================ */
+
+let breakTimes = [];
+
+
+if (
+    Array.isArray(existingBreakTimes)
+) {
+
+    breakTimes =
+        existingBreakTimes;
+
+}
+
+
+renderBreakTimes();
+
+
+function addBreakTime(
+    start = "",
+    end = ""
+) {
+
+    breakTimes.push({
+
+        start: start,
+
+        end: end
+
+    });
+
+
+    renderBreakTimes();
+
+}
+
+
+function removeBreakTime(index) {
+
+    breakTimes.splice(
+        index,
+        1
+    );
+
+    renderBreakTimes();
+
+}
+
+
+function renderBreakTimes() {
+
+    const container =
+        document.getElementById(
+            "breakTimes"
+        );
+
+
+    container.innerHTML = "";
+
+
+    breakTimes.forEach(
+        function(item, index) {
+
+            const row =
+                document.createElement(
+                    "div"
+                );
+
+
+            row.className =
+                "row mb-2";
+
+
+            row.innerHTML = `
+
+                <div class="col-md-5">
+
+                    <input
+                        type="time"
+                        class="form-control"
+                        value="${item.start || ""}"
+                        onchange="
+                            updateBreakTime(
+                                ${index},
+                                'start',
+                                this.value
+                            )
+                        "
+                    >
+
+                </div>
+
+
+                <div class="col-md-5">
+
+                    <input
+                        type="time"
+                        class="form-control"
+                        value="${item.end || ""}"
+                        onchange="
+                            updateBreakTime(
+                                ${index},
+                                'end',
+                                this.value
+                            )
+                        "
+                    >
+
+                </div>
+
+
+                <div class="col-md-2">
+
+                    <button
+                        type="button"
+                        class="btn btn-danger"
+                        onclick="
+                            removeBreakTime(${index})
+                        "
+                    >
+                        Remove
+                    </button>
+
+                </div>
+
+            `;
+
+
+            container.appendChild(
+                row
+            );
+
+        }
+    );
+
+
+    document.getElementById(
+        "break_time_json"
+    ).value =
+        JSON.stringify(breakTimes);
+
+}
+
+
+function updateBreakTime(
+    index,
+    field,
+    value
+) {
+
+    breakTimes[index][field] =
+        value;
+
+
+    document.getElementById(
+        "break_time_json"
+    ).value =
+        JSON.stringify(breakTimes);
+
+}
+
+
+/* ============================================================
+   FORM SUBMIT
+============================================================ */
+
+document.getElementById(
+    "shopForm"
+).addEventListener(
+    "submit",
+    function() {
+
+        /*
+         * Make absolutely sure
+         * current map data is saved.
+         */
+
+        saveDeliveryAreas();
+
+        renderPincodes();
+
+        renderBreakTimes();
+
+    }
+);
+
+</script>
+
+{% endblock %}
+
+{% block extra_js %}
+{{ block.super }}
+<script>
+(() => {
+    const slugInput = document.getElementById("id_storefront_slug");
+    const status = document.getElementById("storefrontSlugStatus");
+    if (!slugInput || !status) return;
+
+    let requestId = 0;
+    let timer;
+    const slugify = (value) => value.toLowerCase()
+        .normalize("NFKD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 63)
+        .replace(/-+$/g, "");
+
+    slugInput.addEventListener("input", () => {
+        slugInput.value = slugify(slugInput.value);
+        checkAvailability();
+    });
+
+    function checkAvailability() {
+        window.clearTimeout(timer);
+        const slug = slugInput.value.trim();
+        if (!slug) {
+            status.textContent = "Enter a shop web address.";
+            status.className = "form-text text-danger";
+            return;
+        }
+        status.textContent = "Checking address…";
+        status.className = "form-text text-muted";
+        const currentRequest = ++requestId;
+        timer = window.setTimeout(() => {
+            const url = new URL("{% url 'shop_storefront_slug_available' %}", window.location.origin);
+            url.searchParams.set("slug", slug);
+            {% if shop %}url.searchParams.set("shop_id", "{{ shop.pk }}");{% endif %}
+            fetch(url, { credentials: "same-origin" })
+                .then((response) => response.json())
+                .then((result) => {
+                    if (currentRequest !== requestId) return;
+                    status.textContent = result.available
+                        ? `Available: {{ storefront_url_prefix|escapejs }}${slug}{{ storefront_url_suffix|escapejs }}`
+                        : (result.message || "This address is unavailable.");
+                    status.className = result.available ? "form-text text-success" : "form-text text-danger";
+                })
+                .catch(() => {
+                    if (currentRequest !== requestId) return;
+                    status.textContent = "Could not check availability right now. The address will be checked when saved.";
+                    status.className = "form-text text-warning";
+                });
+        }, 250);
+    }
+    if (slugInput.value) checkAvailability();
+})();
+</script>
+{% endblock %}

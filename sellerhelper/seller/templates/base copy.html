@@ -1,0 +1,595 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>{% block title %}Seller Helper{% endblock %}</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous">
+        {% load static %}
+        <link rel="stylesheet" href="{% static 'seller/css/base.css' %}">
+        <link rel="stylesheet" href="{% static 'seller/css/desktop.css' %}" media="(min-width:992px)">
+        <link rel="stylesheet" href="{% static 'seller/css/mobile.css' %}" media="(max-width:991px)">
+        <link rel="icon" href="{% static 'seller/img/favicon.svg' %}" type="image/svg+xml">
+    </head>
+    <!-- <body class="nav-sidebar" data-static-url="{% static '' %}"> -->
+    <body class="nav-top" data-static-url="{% static '' %}">
+        <!-- =========================================================
+            TOP NAVIGATION
+        ========================================================= -->
+        <!-- TOP NAVBAR -->
+
+        {% if request.user.is_authenticated %}
+
+            {% if is_shop_owner %}
+
+                <div class="dropdown">
+
+                    <button
+                        class="btn btn-outline-primary dropdown-toggle"
+                        type="button"
+                        data-bs-toggle="dropdown"
+                    >
+                        🏪 Shop Management
+                    </button>
+
+                    <ul class="dropdown-menu dropdown-menu-end">
+
+                        <li>
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_list' %}"
+                            >
+                                🏪 My Shops
+                            </a>
+                        </li>
+
+                        <li>
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_orders' %}"
+                            >
+                                📦 Orders
+                            </a>
+                        </li>
+
+                        <li>
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_staff_list' %}"
+                            >
+                                👥 Staff
+                            </a>
+                        </li>
+
+                        <li>
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'product_list' %}"
+                            >
+                                🛒 Products
+                            </a>
+                        </li>
+
+                    </ul>
+
+                </div>
+
+            {% elif staff_member %}
+
+                <div class="dropdown">
+
+                    <button
+                        class="btn btn-outline-primary dropdown-toggle"
+                        type="button"
+                        data-bs-toggle="dropdown"
+                    >
+                        👤 Staff
+                    </button>
+
+                    <ul class="dropdown-menu dropdown-menu-end">
+
+                        <li>
+                            <h6 class="dropdown-header">
+                                {{ staff_member.get_role_display }}
+                            </h6>
+                        </li>
+
+                        <li>
+                            <span class="dropdown-item-text small text-muted">
+                                {{ staff_shop.name }}
+                            </span>
+                        </li>
+
+                        <li>
+                            <hr class="dropdown-divider">
+                        </li>
+
+                        {% if staff_member.can_view_orders %}
+
+                        <li>
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_orders' %}"
+                            >
+                                📦 Orders
+                            </a>
+                        </li>
+
+                        {% endif %}
+
+
+                        {% if staff_member.can_confirm_orders %}
+
+                        <li>
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_orders' %}?status=PLACED"
+                            >
+                                ✅ Confirm Orders
+                            </a>
+                        </li>
+
+                        {% endif %}
+
+
+                        {% if staff_member.can_pack_orders %}
+
+                        <li>
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_orders' %}?status=CONFIRMED"
+                            >
+                                📦 Packing
+                            </a>
+                        </li>
+
+                        {% endif %}
+
+
+                        {% if staff_member.can_manage_stock %}
+
+                        <li>
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'product_list' %}"
+                            >
+                                📊 Stock
+                            </a>
+                        </li>
+
+                        {% endif %}
+
+
+                        {% if staff_member.can_manage_products %}
+
+                        <li>
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'product_list' %}"
+                            >
+                                🛍️ Products
+                            </a>
+                        </li>
+
+                        {% endif %}
+
+
+                        {% if staff_member.can_manage_staff %}
+
+                        <li>
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_staff_list' %}"
+                            >
+                                👥 Staff
+                            </a>
+                        </li>
+
+                        {% endif %}
+
+
+                        {% if staff_member.can_view_reports %}
+
+                        <li>
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_reports' %}"
+                            >
+                                📈 Reports
+                            </a>
+                        </li>
+
+                        {% endif %}
+
+                    </ul>
+
+                </div>
+
+            {% endif %}
+
+        {% endif %}
+        <nav class="topbar">
+            <div class="container-fluid">
+
+                <div class="d-flex align-items-center">
+
+                    <!-- Brand -->
+                    <a
+                        href="{% url 'home' %}"
+                        class="topbar-brand text-decoration-none"
+                    >
+                        <img
+                            src="{% static 'seller/img/logo.svg' %}"
+                            alt="Seller Helper"
+                            class="topbar-logo"
+                        >
+
+                        <span>Seller Helper</span>
+                    </a>
+
+
+                    <!-- Horizontal Navigation -->
+                    <div class="top-navigation ms-auto">
+
+                        <a href="{% url 'home' %}" class="top-nav-link">
+                            🏠 <span>Home</span>
+                        </a>
+                        <a href="{% url 'market' %}" class="top-nav-link">
+                            🏠 <span>Market</span>
+                        </a>
+                            
+                        {% if user.is_authenticated %}
+
+                            <a href="{% url 'dashboard' %}" class="top-nav-link">
+                                📊 <span>Dashboard</span>
+                            </a>
+
+                            <a href="{% url 'order_list' %}" class="top-nav-link">
+                                📦 <span>Orders</span>
+                            </a>
+
+                            <a href="{% url 'shop_list' %}" class="top-nav-link">
+                                🏪 <span>Shops</span>
+                            </a>
+
+                            <a href="{% url 'product_list' %}" class="top-nav-link">
+                                🛒 <span>Products</span>
+                            </a>
+
+                            <a href="{% url 'client_profile' %}" class="top-nav-link">
+                                👤 <span>My Profile</span>
+                            </a>
+
+                            <a href="{% url 'logout' %}" class="top-nav-link logout-link">
+                                🚪 <span>Logout</span>
+                            </a>
+
+                        {% else %}
+
+                            <a href="{% url 'login' %}" class="top-nav-link">
+                                🔐 <span>Login</span>
+                            </a>
+
+                            <a href="{% url 'signup' %}" class="top-nav-link">
+                                ✨ <span>Sign Up</span>
+                            </a>
+
+                        {% endif %}
+
+                    </div>
+
+
+                    <!-- Switch to sidebar -->
+                    <button
+                        id="navModeToggle"
+                        type="button"
+                        class="btn btn-outline-light btn-sm ms-3"
+                    >
+                        ☰ Sidebar
+                    </button>
+
+                </div>
+
+            </div>
+        </nav>
+
+
+        <!-- MAIN -->
+        <div class="container-fluid">
+
+            <div class="row">
+
+                <!-- SIDEBAR -->
+                <!-- <aside
+                    id="sidebarCol"
+                    class="col-12 col-lg-3 sidebar-col"
+                    style="display:none;"
+                > -->
+                <aside
+                    id="sidebarCol"
+                    class="col-12 col-lg-3 sidebar-col"
+                >
+
+                    <div class="sidebar p-4">
+
+                        <div class="d-flex justify-content-between align-items-center mb-4">
+
+                            <a
+                                href="{% url 'home' %}"
+                                class="sidebar-brand text-decoration-none"
+                            >
+                                <img
+                                    src="{% static 'seller/img/logo.svg' %}"
+                                    alt="Seller Helper"
+                                >
+
+                                <span class="brand-text">
+                                    Seller Helper
+                                </span>
+                            </a>
+
+                            <button
+                                id="sidebarNavToggle"
+                                type="button"
+                                class="btn btn-outline-light btn-sm"
+                            >
+                                ☰ Top Nav
+                            </button>
+
+                        </div>
+
+
+                        <nav class="nav flex-column sidebar-navigation">
+
+                            <a
+                                class="nav-link"
+                                href="{% url 'home' %}"
+                            >
+                                🏠 Home
+                            </a>
+
+                            <a
+                                class="nav-link"
+                                href="{% url 'dashboard' %}"
+                            >
+                                📊 Dashboard
+                            </a>
+
+                            <a
+                                class="nav-link"
+                                href="{% url 'order_list' %}"
+                            >
+                                📦 Orders
+                            </a>
+
+                            <a
+                                class="nav-link"
+                                href="{% url 'shop_list' %}"
+                            >
+                                🏪 Shops
+                            </a>
+
+                            <a
+                                class="nav-link"
+                                href="{% url 'product_list' %}"
+                            >
+                                🛒 Products
+                            </a>
+
+                            {% if user.is_authenticated %}
+
+                                <div class="sidebar-divider"></div>
+
+                                <a
+                                    class="nav-link"
+                                    href="{% url 'client_profile' %}"
+                                >
+                                    👤 My Profile
+                                </a>
+
+                                <a
+                                    class="nav-link logout-nav-link"
+                                    href="{% url 'logout' %}"
+                                >
+                                    🚪 Logout
+                                </a>
+
+                            {% else %}
+
+                                <a
+                                    class="nav-link"
+                                    href="{% url 'login' %}"
+                                >
+                                    🔐 Login
+                                </a>
+
+                                <a
+                                    class="nav-link"
+                                    href="{% url 'signup' %}"
+                                >
+                                    ✨ Sign Up
+                                </a>
+
+                            {% endif %}
+
+                        </nav>
+
+                    </div>
+
+                </aside>
+
+
+                <!-- CONTENT -->
+                <main
+                    id="mainContent"
+                    class="col-12"
+                >
+
+                    <div class="content-box">
+
+                        {% if messages %}
+
+                            {% for message in messages %}
+
+                                <div
+                                    class="alert alert-{{ message.tags }} alert-dismissible fade show"
+                                    role="alert"
+                                >
+                                    {{ message }}
+
+                                    <button
+                                        type="button"
+                                        class="btn-close"
+                                        data-bs-dismiss="alert"
+                                    ></button>
+
+                                </div>
+
+                            {% endfor %}
+
+                        {% endif %}
+
+
+                        {% block content %}{% endblock %}
+
+                    </div>
+
+                </main>
+
+            </div>
+
+        </div>
+
+
+        <!-- =========================================================
+            FOOTER
+        ========================================================= -->
+
+        <footer class="site-footer text-center">
+
+            <div class="container">
+
+                <small>
+                    © {{ now|date:"Y" }}
+                    <strong>Seller Helper</strong>
+                    — Professional Dashboard
+                </small>
+
+            </div>
+
+        </footer>
+
+
+        <!-- =========================================================
+            MOBILE BOTTOM NAVIGATION
+        ========================================================= -->
+
+        <div class="mobile-bottom-nav d-lg-none">
+
+            <a
+                href="{% url 'home' %}"
+                class="mobile-nav-item"
+            >
+
+                <span class="mobile-nav-icon">
+                    🏠
+                </span>
+
+                <span>
+                    Home
+                </span>
+
+            </a>
+
+
+            {% if user.is_authenticated %}
+
+                <a
+                    href="{% url 'dashboard' %}"
+                    class="mobile-nav-item"
+                >
+
+                    <span class="mobile-nav-icon">
+                        📊
+                    </span>
+
+                    <span>
+                        Dashboard
+                    </span>
+
+                </a>
+
+
+                <a
+                    href="{% url 'order_list' %}"
+                    class="mobile-nav-item"
+                >
+
+                    <span class="mobile-nav-icon">
+                        📦
+                    </span>
+
+                    <span>
+                        Orders
+                    </span>
+
+                </a>
+
+
+                <a
+                    href="{% url 'client_profile' %}"
+                    class="mobile-nav-item"
+                >
+
+                    <span class="mobile-nav-icon">
+                        👤
+                    </span>
+
+                    <span>
+                        Profile
+                    </span>
+
+                </a>
+
+            {% else %}
+
+                <a
+                    href="{% url 'login' %}"
+                    class="mobile-nav-item"
+                >
+
+                    <span class="mobile-nav-icon">
+                        🔐
+                    </span>
+
+                    <span>
+                        Login
+                    </span>
+
+                </a>
+
+            {% endif %}
+
+        </div>
+
+
+        <!-- =========================================================
+            JAVASCRIPT
+        ========================================================= -->
+
+        <script
+            src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"
+            crossorigin="anonymous"
+        ></script>
+
+        <script src="{% static 'seller/js/main.js' %}"></script>
+
+        {% block extra_scripts %}
+
+        {% endblock %}
+
+        
+
+       
+    </body>
+</html>

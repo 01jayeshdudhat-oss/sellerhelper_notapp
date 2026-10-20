@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block title %}{{ form_title }} · {{ site_branding.site_name|default:'Seller Helper' }}{% endblock %}
+
+{% block content %}
+<div class="container" style="max-width: 920px;">
+    <a href="{% url 'admin_catalog_dashboard' %}" class="btn btn-link text-decoration-none px-0 mb-3">
+        <i class="bi bi-arrow-left me-1"></i>Back to catalog
+    </a>
+    <section class="bg-white border rounded-4 shadow-sm p-3 p-md-4">
+        <div class="mb-4">
+            <span class="badge rounded-pill text-bg-primary-subtle text-primary mb-2">ADMIN CATALOG</span>
+            <h1 class="h3 fw-bold mb-1">{{ form_title }}</h1>
+            <p class="text-muted mb-0">Catalog values will be suggested to shop owners when they add this product.</p>
+        </div>
+        <form method="post" novalidate>
+            {% csrf_token %}
+            {% if form.non_field_errors %}<div class="alert alert-danger">{{ form.non_field_errors }}</div>{% endif %}
+            <div class="row g-3">
+                {% for field in form %}
+                    <div class="{% if field.name == 'is_active' %}col-12{% else %}col-12 col-md-6{% endif %}">
+                        {% if field.name == "is_active" %}
+                            <div class="form-check form-switch mt-2">
+                                {{ field }}
+                                <label class="form-check-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }} — available to shops</label>
+                            </div>
+                        {% else %}
+                            <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                            {{ field }}
+                        {% endif %}
+                        {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+                        {% for error in field.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+                    </div>
+                {% endfor %}
+            </div>
+            <div class="d-flex flex-column flex-sm-row justify-content-end gap-2 mt-4">
+                <a href="{% url 'admin_catalog_dashboard' %}" class="btn btn-light border">Cancel</a>
+                <button type="submit" class="btn btn-primary px-4"><i class="bi bi-check2 me-1"></i>Save product</button>
+            </div>
+        </form>
+    </section>
+</div>
+{% endblock %}

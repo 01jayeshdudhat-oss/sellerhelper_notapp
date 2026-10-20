@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+
+{% block title %}Order Form{% endblock %}
+
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+      <h2>{{ form_title }}</h2>
+      <p class="text-muted">Use the form below to {{ form_action }} an order.</p>
+    </div>
+    <a href="{% url 'order_list' %}" class="btn btn-secondary">Back to Orders</a>
+  </div>
+
+  <div class="card p-4">
+    <form method="post">
+      {% csrf_token %}
+      {% for field in form %}
+        <div class="mb-3">
+          <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+          {{ field }}
+          {% if field.help_text %}
+            <div class="form-text">{{ field.help_text }}</div>
+          {% endif %}
+          {% for error in field.errors %}
+            <div class="text-danger small">{{ error }}</div>
+          {% endfor %}
+        </div>
+      {% endfor %}
+      <button type="submit" class="btn btn-primary">Save Order</button>
+    </form>
+  </div>
+{% endblock %}

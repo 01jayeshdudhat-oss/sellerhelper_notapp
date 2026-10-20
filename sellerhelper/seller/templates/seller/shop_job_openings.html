@@ -1,0 +1,55 @@
+{% extends 'base.html' %}
+
+{% block title %}Shop jobs{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2 class="mb-1">{{ shop.name }} job openings</h2>
+            <p class="text-muted mb-0">Create and review roles for this shop</p>
+        </div>
+        <div class="d-flex gap-2">
+            <a href="{% url 'shop_job_applications' shop.id %}" class="btn btn-outline-primary">View applications</a>
+            <a href="{% url 'shop_job_opening_create' shop.id %}" class="btn btn-primary">New opening</a>
+        </div>
+    </div>
+
+    <div class="card shadow-sm border-0">
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Title</th>
+                            <th>Role</th>
+                            <th>Type</th>
+                            <th>Status</th>
+                            <th>Applications</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for opening in openings %}
+                        <tr>
+                            <td>{{ opening.title }}</td>
+                            <td>{{ opening.role }}</td>
+                            <td>{{ opening.employment_type }}</td>
+                            <td>{{ opening.is_active|yesno:'Active,Inactive' }}</td>
+                            <td>
+                                <a href="{% url 'shop_job_applications' shop.id %}" class="btn btn-sm btn-outline-primary">
+                                    {{ opening.applications.count }} view
+                                </a>
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="5" class="text-center text-muted py-4">No job openings created yet.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

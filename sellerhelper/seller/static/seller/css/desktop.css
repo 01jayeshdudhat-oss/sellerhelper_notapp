@@ -1,0 +1,6 @@
+/* desktop.css - desktop-specific adjustments */
+.content-box{padding:2rem}
+.navbar-brand{font-size:1.25rem}
+.card-body h3{font-size:1.4rem}
+.card{padding:1rem}
+.container-fluid{max-width:1200px}

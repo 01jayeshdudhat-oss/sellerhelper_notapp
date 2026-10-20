@@ -1,0 +1,45 @@
+{% extends 'base.html' %}
+
+{% block title %}Shops{% endblock %}
+
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+      <h2>Shops</h2>
+      <p class="text-muted">Create and manage shops used by orders.</p>
+    </div>
+    <a href="{% url 'shop_create' %}" class="btn btn-primary">New Shop</a>
+  </div>
+
+  <div class="table-responsive">
+    <table class="table table-hover align-middle">
+      <thead class="table-light">
+        <tr>
+          <th>ID</th>
+          <th>Name</th>
+          <th>Location</th>
+          <th>Delivery Area</th>
+          <th>Contact</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for shop in shops %}
+          <tr>
+            <td>{{ shop.id }}</td>
+            <td>{{ shop.name }}</td>
+            <td>{{ shop.location }}</td>
+            <td>{{ shop.delivery_area }}</td>
+            <td>{{ shop.contact_no }}</td>
+            <td>
+              <a class="btn btn-sm btn-outline-primary" href="{% url 'shop_edit' shop.id %}">Edit</a>
+              <a class="btn btn-sm btn-outline-danger" href="{% url 'shop_delete' shop.id %}">Delete</a>
+            </td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="6" class="text-center text-muted">No shops found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

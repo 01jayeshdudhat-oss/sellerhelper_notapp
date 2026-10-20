@@ -1,0 +1,256 @@
+{% extends "base.html" %}
+
+{% block title %}
+{{ shop.name }} - Settings
+{% endblock %}
+
+{% block content %}
+
+<div class="container py-4">
+
+    <div class="d-flex justify-content-between align-items-center mb-4">
+
+        <div>
+
+            <a
+                href="{% url 'shop_detail' shop.id %}"
+                class="text-decoration-none"
+            >
+                ← Back to Shop
+            </a>
+
+            <h2 class="fw-bold mt-2 mb-0">
+                ⚙️ {{ shop.name }} Settings
+            </h2>
+
+        </div>
+
+    </div>
+
+
+    <div class="card border-0 shadow-sm">
+
+        <div class="card-body">
+
+            <h5 class="fw-bold mb-4">
+                Shop Availability
+            </h5>
+
+
+            <div class="d-flex justify-content-between align-items-center">
+
+                <div>
+
+                    <div class="fw-semibold">
+                        Accept New Orders
+                    </div>
+
+                    <small class="text-muted">
+                        Control whether customers can place orders.
+                    </small>
+
+                </div>
+
+
+                <form
+                    method="POST"
+                    action="{% url 'shop_toggle_status' shop.id %}"
+                >
+
+                    {% csrf_token %}
+
+                    <button
+                        type="submit"
+                        class="btn
+                        {% if shop.is_shop_open %}
+                            btn-success
+                        {% else %}
+                            btn-danger
+                        {% endif %}
+                        px-4"
+                        onclick="
+                            return confirm(
+                                '{% if shop.is_shop_open %}Close{% else %}Open{% endif %} {{ shop.name }}?'
+                            );
+                        "
+                    >
+
+                        {% if shop.is_shop_open %}
+
+                            🟢 SHOP OPEN
+
+                        {% else %}
+
+                            🔴 SHOP CLOSED
+
+                        {% endif %}
+
+                    </button>
+
+                </form>
+
+            </div>
+
+        </div>
+
+    </div>
+
+    <div class="card border-0 shadow-sm mt-4">
+        <div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-3">
+            <div>
+                <h5 class="fw-bold mb-1">Delivery coverage area</h5>
+                <p class="text-muted mb-0">Draw, adjust, or remove delivery coverage polygons on the shop map.</p>
+            </div>
+            <a href="{% url 'shop_edit' shop.id %}" class="btn btn-outline-primary">
+                <i class="bi bi-map me-1"></i>Set delivery coverage on map
+            </a>
+        </div>
+    </div>
+
+
+    <div class="card border-0 shadow-sm mt-4">
+
+        <div class="card-body">
+
+            <h5 class="fw-bold mb-3">
+                Customer Verification
+            </h5>
+
+            <form method="POST">
+                {% csrf_token %}
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="allow_scheduled_delivery" name="allow_scheduled_delivery" {% if shop.allow_scheduled_delivery %}checked{% endif %}>
+                    <label class="form-check-label" for="allow_scheduled_delivery">
+                        Keep products visible for scheduled delivery when this shop is closed
+                    </label>
+                    <div class="form-text">
+                        Customers can see in-stock products while the shop is closed and will be told that delivery timing must be scheduled with the shop.
+                    </div>
+                </div>
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="require_customer_otp_verification" name="require_customer_otp_verification" {% if shop.require_customer_otp_verification %}checked{% endif %}>
+                    <label class="form-check-label" for="require_customer_otp_verification">
+                        Require customer OTP verification before marking delivery complete
+                    </label>
+                </div>
+                <div class="row g-3 mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label" for="delivery_fee">
+                            Delivery fee per order (₹)
+                        </label>
+                        <input class="form-control" type="number" id="delivery_fee"
+                               name="delivery_fee" min="0" max="999999.99" step="0.01"
+                               value="{{ shop.delivery_fee|default:'0.00' }}" required>
+                        <div class="form-text">Customers are charged this amount once for this shop's part of an order. Set 0.00 for free delivery.</div>
+                    </div>
+                    {% if shop.gstin %}
+                    <div class="col-12">
+                        <h6 class="fw-semibold mb-0">Delivery service GST</h6>
+                        <div class="form-text">These details are included on this shop's GST invoices. Update the shop GSTIN in Shop Information if needed.</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label" for="delivery_hsn_code">Delivery service HSN/SAC</label>
+                        <input class="form-control" type="text" id="delivery_hsn_code"
+                               name="delivery_hsn_code" maxlength="8" pattern="[0-9]{4}([0-9]{2}){0,2}"
+                               value="{{ shop.delivery_hsn_code }}" placeholder="4, 6, or 8 digits">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label" for="delivery_gst_rate">Delivery service GST rate (%)</label>
+                        <input class="form-control" type="number" id="delivery_gst_rate"
+                               name="delivery_gst_rate" min="0" max="100" step="0.01"
+                               value="{{ shop.delivery_gst_rate|default_if_none:'' }}" placeholder="Platform default">
+                        <div class="form-text">Leave blank to use the platform delivery GST rate; enter 0 for no GST.</div>
+                    </div>
+                    {% endif %}
+                    <div class="col-md-6">
+                        <label class="form-label" for="delivery_eta_reminder_minutes">
+                            ETA notification lead time (minutes)
+                        </label>
+                        <input class="form-control" type="number" id="delivery_eta_reminder_minutes"
+                               name="delivery_eta_reminder_minutes" min="0" max="60"
+                               value="{{ shop.delivery_eta_reminder_minutes|default:3 }}" required>
+                        <div class="form-text">Default: 3 minutes before the estimated delivery time. Set to 0 to disable this reminder.</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label" for="rider_nearby_notification_meters">
+                            Rider nearby notification radius (meters)
+                        </label>
+                        <input class="form-control" type="number" id="rider_nearby_notification_meters"
+                               name="rider_nearby_notification_meters" min="10" max="5000"
+                               value="{{ shop.rider_nearby_notification_meters|default:100 }}" required>
+                        <div class="form-text">Default: 100 meters from the customer’s delivery location.</div>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary">Save Settings</button>
+            </form>
+
+            <hr>
+
+            <h5 class="fw-bold">
+                Shop Information
+            </h5>
+
+            <hr>
+
+            <div class="row">
+
+                <div class="col-md-6 mb-3">
+
+                    <small class="text-muted">
+                        Shop Name
+                    </small>
+
+                    <div class="fw-semibold">
+                        {{ shop.name }}
+                    </div>
+
+                </div>
+
+
+                <div class="col-md-6 mb-3">
+
+                    <small class="text-muted">
+                        Alias
+                    </small>
+
+                    <div>
+                        {{ shop.alias_name|default:"-" }}
+                    </div>
+
+                </div>
+
+
+                <div class="col-md-6 mb-3">
+
+                    <small class="text-muted">
+                        Contact
+                    </small>
+
+                    <div>
+                        {{ shop.contact_no|default:"-" }}
+                    </div>
+
+                </div>
+
+
+                <div class="col-md-6 mb-3">
+
+                    <small class="text-muted">
+                        Email
+                    </small>
+
+                    <div>
+                        {{ shop.email_no|default:"-" }}
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+{% endblock %}

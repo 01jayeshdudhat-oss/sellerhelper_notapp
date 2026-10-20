@@ -1,0 +1,1639 @@
+{% extends "base.html" %}
+
+{% block title %}
+Rider Dashboard
+{% endblock %}
+
+{% block content %}
+
+<div class="rider-dashboard-tabs-wrap">
+<nav class="nav nav-pills flex-wrap gap-2 mb-4 rider-dashboard-tabs" aria-label="Rider dashboard tabs">
+    <a href="{% url 'rider_dashboard' %}?view=available"
+       class="nav-link {% if available_view %}active{% endif %}">
+        <i class="bi bi-inbox me-1"></i><span>Available</span>
+        <span class="badge rounded-pill ms-1 {% if available_view %}text-bg-light{% else %}text-bg-secondary{% endif %}">{{ available_order_count }}</span>
+    </a>
+    <a href="{% url 'rider_dashboard' %}?view=active"
+       class="nav-link {% if active_view %}active{% endif %}">
+        <i class="bi bi-bicycle me-1"></i><span>Active</span>
+        <span class="badge rounded-pill ms-1 {% if active_view %}text-bg-light{% else %}text-bg-secondary{% endif %}">{{ active_order_count }}</span>
+    </a>
+    <a href="{% url 'rider_dashboard' %}?view=completed"
+       class="nav-link {% if completed_view %}active{% endif %}">
+        <i class="bi bi-check2-circle me-1"></i><span>Done</span>
+        <span class="badge rounded-pill ms-1 {% if completed_view %}text-bg-light{% else %}text-bg-secondary{% endif %}">{{ completed_order_count }}</span>
+    </a>
+    <a href="{% url 'rider_dashboard' %}?view=performance"
+       class="nav-link {% if performance_view %}active{% endif %}">
+        <i class="bi bi-bar-chart me-1"></i><span>Stats</span>
+    </a>
+</nav>
+</div>
+
+<style>
+.rider-route-customer-label,
+.rider-route-pickup-label {
+    padding: 3px 7px;
+    border: 1px solid #d5dde5;
+    border-radius: 999px;
+    color: #17212b;
+    background: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.4;
+    white-space: normal;
+    max-width: min(280px, 70vw);
+    box-shadow: 0 2px 8px rgba(15, 23, 42, .18);
+}
+.rider-route-pickup-label { border-color: #f0c36d; background: #fff8e7; }
+.rider-route-direction-arrow {
+    width: 22px;
+    height: 22px;
+    color: #0759c7;
+    font-size: 22px;
+    font-weight: 900;
+    line-height: 22px;
+    text-align: center;
+    text-shadow: 0 0 3px #fff, 0 0 6px #fff;
+}
+
+@media (max-width: 767.98px) {
+    .rider-cash-panel > summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 10px;
+        cursor: pointer;
+        list-style: none;
+    }
+
+    .rider-cash-panel > summary::-webkit-details-marker { display: none; }
+    .rider-cash-panel > summary::marker { content: ""; }
+    .rider-cash-panel[open] > summary { border-bottom: 1px solid #edf0f2; }
+    .rider-cash-panel .rider-cash-amount { font-size: 1.15rem; }
+    .rider-cash-panel .rider-cash-toggle { flex: 0 0 auto; transition: transform .2s ease; }
+    .rider-cash-panel[open] .rider-cash-toggle { transform: rotate(180deg); }
+    .rider-cash-panel .list-group-item { padding: 8px 10px; }
+
+    .rider-order-track {
+        display: flex;
+        flex-wrap: nowrap;
+        gap: 10px;
+        margin-right: -8px;
+        margin-left: -8px;
+        padding: 0 4% 10px;
+        scroll-padding-inline: 4%;
+        overflow-x: auto;
+        overscroll-behavior-x: contain;
+        scroll-snap-type: x mandatory;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: thin;
+        touch-action: pan-x pan-y;
+    }
+
+    .rider-order-slide {
+        flex: 0 0 92%;
+        width: 92%;
+        max-width: 92%;
+        scroll-snap-align: center;
+        scroll-snap-stop: always;
+    }
+
+    .rider-order-slide > .card { height: 100%; }
+    .rider-order-slide .card-body { padding: 10px; }
+}
+</style>
+
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+    <div>
+        <h2 class="fw-bold mb-1">Rider dashboard</h2>
+        <p class="text-muted mb-0">{{ staff.shop.name }} · {{ request.user.username }}</p>
+        <p class="small text-muted mt-1 mb-0">
+            Shared-shop offers appear after one minute and within {{ shared_rider_radius_km|floatformat:2 }} km of your latest accepted pickup{% if shared_group_count %}; approved rider-group shops can also share deliveries{% endif %}.
+        </p>
+    </div>
+    {% if can_manage_shared_rider_groups %}
+        <a href="{% url 'shared_rider_groups' %}" class="btn btn-outline-success">
+            <i class="bi bi-people me-1"></i> Rider groups
+        </a>
+    {% endif %}
+</div>
+
+{% if not performance_view %}
+<section class="card border-info shadow-sm mb-3" aria-label="Personal UPI COD outstanding">
+    <div class="card-body py-2 px-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <div>
+            <div class="small text-muted">Personal UPI COD outstanding</div>
+            <div class="h4 fw-bold mb-0">₹{{ staff_upi_cod_balance|floatformat:2 }}</div>
+        </div>
+        <div class="small text-muted">
+            Amount received in your personal UPI and still owed to the shop until handover is confirmed.
+        </div>
+    </div>
+</section>
+<details class="card border-0 shadow-sm mb-4 rider-cash-panel">
+    <summary aria-label="Expand COD cash-in-hand details">
+        <div>
+            <div class="text-muted small">Total cash COD awaiting shop handover</div>
+            <div class="h3 fw-bold mb-0 rider-cash-amount">₹{{ cash_in_hand|floatformat:2 }}</div>
+        </div>
+        <div class="d-flex align-items-center gap-2">
+            <span class="badge rounded-pill text-bg-warning">
+                {{ pending_cash_collections|length }} pending
+            </span>
+            <i class="bi bi-chevron-down rider-cash-toggle" aria-hidden="true"></i>
+        </div>
+    </summary>
+    <div class="card-body py-2 px-3">
+        <div class="small text-muted">
+            Cash held physically; personal UPI collections are displayed separately above.
+        </div>
+    </div>
+    {% if pending_cash_collections %}
+        <div class="list-group list-group-flush">
+            {% for collection in pending_cash_collections %}
+                <div class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2">
+                    <div>
+                        <strong>Order #{{ collection.shop_order.shop_order_number|default:collection.shop_order.order.order_id }}</strong>
+                        <div class="small text-muted">
+                            {{ collection.shop.name }} · Collected {{ collection.created_at|date:"d M Y, h:i A" }}
+                            <br>Collected ₹{{ collection.amount|floatformat:2 }} · Handed over ₹{{ collection.handed_over_amount|floatformat:2 }} · Remaining ₹{{ collection.remaining_amount|floatformat:2 }}
+                        </div>
+                    </div>
+                    <div class="d-flex flex-column align-items-stretch gap-2">
+                        <div class="d-flex flex-wrap align-items-center gap-2">
+                            <strong>₹{{ collection.remaining_amount|floatformat:2 }} pending</strong>
+                            {% if collection.payment_method == "STAFF_UPI" %}
+                                <span class="badge text-bg-info">Personal UPI</span>
+                            {% else %}
+                                <span class="badge text-bg-secondary">Cash</span>
+                            {% endif %}
+                            <a class="btn btn-sm btn-outline-primary"
+                               href="{% url 'shop_order_detail' collection.shop_order_id %}">
+                                Handover details
+                            </a>
+                        </div>
+                        {% if collection.edit_cod_amount_available and collection.remaining_amount > 0 %}
+                            <form method="post"
+                                  action="{% url 'edit_rider_cod_collection' collection.shop_order_id %}"
+                                  class="d-flex flex-wrap align-items-center gap-2">
+                                {% csrf_token %}
+                                <label class="small mb-0" for="rider-cod-amount-{{ collection.shop_order_id }}">
+                                    Correct collected amount
+                                </label>
+                                <div class="input-group input-group-sm" style="max-width: 260px;">
+                                    <span class="input-group-text">₹</span>
+                                    <input class="form-control"
+                                           id="rider-cod-amount-{{ collection.shop_order_id }}"
+                                           type="number" name="received_amount"
+                                           min="{{ collection.handed_over_amount|floatformat:2 }}"
+                                           max="{{ collection.edit_cod_amount_max|floatformat:2 }}"
+                                           step="0.01" value="{{ collection.amount|floatformat:2 }}"
+                                           required>
+                                    <button class="btn btn-outline-success" type="submit">Update</button>
+                                </div>
+                                <span class="form-text small">
+                                    Extra above the bill is credited to the customer's wallet.
+                                </span>
+                            </form>
+                        {% endif %}
+                    </div>
+                </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="small text-muted px-3 pb-3">No cash or personal-UPI handovers are pending.</div>
+    {% endif %}
+</details>
+{% endif %}
+
+<section class="card border-0 shadow-sm mb-4" aria-label="Rider load capacity">
+    <div class="card-body py-2 px-3">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+            <div>
+                <strong>Current estimated load</strong>
+                <div class="small text-muted">Approximate parcel size; actual weight and volume may vary.</div>
+            </div>
+            <div class="text-sm-end fw-semibold">
+                {{ rider_load_weight_kg|floatformat:2 }} kg · {{ rider_load_volume_cubic_ft|floatformat:2 }} cu ft
+                {% if rider_capacity_configured %}
+                    <div class="small text-muted">
+                        of {{ rider_capacity_weight_kg|floatformat:2 }} kg · {{ rider_capacity_volume_cubic_ft|floatformat:2 }} cu ft
+                    </div>
+                {% else %}
+                    <div class="small text-muted">No capacity limit set</div>
+                {% endif %}
+            </div>
+        </div>
+        {% if rider_capacity_configured %}
+            <a class="small d-inline-block mt-1" href="{% url 'staff_payment_settings' %}">Update my capacity</a>
+        {% endif %}
+    </div>
+</section>
+
+{% if performance_view %}
+<section class="card border-0 shadow-sm mb-4" aria-label="Rider performance">
+    <div class="card-body">
+        <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+            <div>
+                <h5 class="fw-bold mb-1">My delivery performance · last 30 days</h5>
+                <div class="small text-muted">
+                    Rank {{ efficiency.rank|default:"—" }} of {{ efficiency.team_size }} rider{{ efficiency.team_size|pluralize }} · ranked by order value/hour, quantity/hour, and completed orders.
+                </div>
+            </div>
+            <div class="text-md-end">
+                <div class="small text-muted">Suggested monthly salary</div>
+                {% if efficiency.salary_policy_configured %}
+                    <div class="h4 fw-bold mb-0">₹{{ efficiency.salary_suggestion|floatformat:2 }}</div>
+                    <div class="small text-muted">Base ₹{{ efficiency.base_salary|floatformat:2 }} + {{ efficiency.completed_order_count }} orders × ₹{{ efficiency.order_bonus|floatformat:2 }}</div>
+                {% else %}
+                    <div class="small fw-semibold">Salary policy not configured by admin</div>
+                {% endif %}
+            </div>
+        </div>
+        <div class="row g-3 mt-2">
+            <div class="col-6 col-lg-3"><div class="small text-muted">Delivered orders</div><strong>{{ efficiency.completed_order_count }}</strong></div>
+            <div class="col-6 col-lg-3"><div class="small text-muted">Order value</div><strong>₹{{ efficiency.total_order_value|floatformat:2 }}</strong></div>
+            <div class="col-6 col-lg-3"><div class="small text-muted">Units delivered</div><strong>{{ efficiency.total_quantity }}</strong></div>
+            <div class="col-6 col-lg-3"><div class="small text-muted">Average delivery time</div><strong>{% if efficiency.average_minutes %}{{ efficiency.average_minutes|floatformat:1 }} min{% else %}—{% endif %}</strong></div>
+            <div class="col-6 col-lg-3"><div class="small text-muted">Value / hour</div><strong>₹{{ efficiency.value_per_hour|floatformat:2 }}</strong></div>
+            <div class="col-6 col-lg-3"><div class="small text-muted">Units / hour</div><strong>{{ efficiency.quantity_per_hour|floatformat:2 }}</strong></div>
+            <div class="col-6 col-lg-3"><div class="small text-muted">Shared-rider income</div><strong>₹{{ efficiency.shared_rider_income_30_days|floatformat:2 }}</strong></div>
+            <div class="col-6 col-lg-3"><div class="small text-muted">COD collected / handed over · 30d (cash + personal UPI)</div><strong>₹{{ cod_collected_30_days|floatformat:2 }} / ₹{{ cod_handed_over_30_days|floatformat:2 }}</strong></div>
+            <div class="col-6 col-lg-3"><div class="small text-muted">Personal UPI collected / handed over · 30d</div><strong>₹{{ personal_upi_collected_30_days|floatformat:2 }} / ₹{{ personal_upi_handed_over_30_days|floatformat:2 }}</strong></div>
+        </div>
+    </div>
+</section>
+{% endif %}
+
+{% if not performance_view %}
+{% if pending_return_items %}
+<section class="card border-warning shadow-sm mb-4">
+    <div class="card-header bg-warning-subtle fw-semibold">
+        <i class="bi bi-arrow-return-left me-1"></i> Returned items to bring back to the shop
+    </div>
+    <div class="card-body">
+        <p class="small text-muted">
+            Keep these items with you until shop staff confirm they have received them. They leave this list after the shop records the handoff.
+        </p>
+        {% for item in pending_return_items %}
+            <div class="d-flex flex-wrap justify-content-between align-items-center border-top py-2 gap-2">
+                <div>
+                    <strong>{{ item.product_name }}</strong>
+                    <div class="small text-muted">
+                        {{ item.pending_return_quantity }} item(s) to hand in · Order #{{ item.shop_order.shop_order_number|default:item.shop_order.order.order_id }}
+                    </div>
+                </div>
+                {% if item.shop_order.shop_id == staff.shop_id %}
+                    <a class="btn btn-sm btn-outline-primary"
+                       href="{% url 'shop_order_detail' item.shop_order_id %}">
+                        Shop return status
+                    </a>
+                {% else %}
+                    <a class="btn btn-sm btn-outline-primary"
+                       href="{% url 'rider_dashboard' %}?view=completed#order-{{ item.shop_order_id }}">
+                        View delivery
+                    </a>
+                {% endif %}
+            </div>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+{% if active_view and navigation_stops %}
+<section class="card border-0 shadow-sm mb-4">
+    <div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-3">
+        <div>
+            <h3 class="h5 fw-bold mb-1">Multi-stop delivery route</h3>
+            <p class="text-muted mb-0">
+                Navigate to {{ navigation_stops|length }} accepted customer locations in one route.
+            </p>
+        </div>
+        <button type="button" id="multiStopNavigation" class="btn btn-primary">
+            <i class="bi bi-sign-turn-right me-1"></i>
+            Navigate all accepted deliveries
+        </button>
+        <div id="multiStopNavigationStatus" class="w-100 small text-muted" role="status" aria-live="polite"></div>
+    </div>
+</section>
+{{ navigation_stops|json_script:"rider-navigation-stops" }}
+{% endif %}
+{% if active_view and pickup_navigation_stops or active_view and navigation_stops %}
+<section class="card border-primary shadow-sm mb-4">
+    <div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-3">
+        <div>
+            <h3 class="h5 fw-bold mb-1">Complete active-order route</h3>
+            <p class="text-muted mb-0">
+                Visit pending pickup shops first; delivery starts after all assigned active parcels are collected.
+            </p>
+        </div>
+        <button type="button" id="completeActiveRouteNavigation" class="btn btn-primary">
+            <i class="bi bi-sign-turn-right me-1"></i>
+            Navigate all active orders
+        </button>
+        <div id="completeActiveRouteNavigationStatus" class="w-100 small text-muted" role="status" aria-live="polite"></div>
+    </div>
+</section>
+<section class="card border-0 shadow-sm mb-4" aria-labelledby="rider-route-map-heading">
+    <div class="card-body">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+            <div>
+                <h3 class="h5 fw-bold mb-1" id="rider-route-map-heading">Active route stops</h3>
+                <p class="small text-muted mb-0">Stops at the same location appear together in one stacked label; select the marker for full names and order numbers. Your current location appears as a blue marker. The line connects stops directly; actual roads may differ.</p>
+            </div>
+            <button type="button" class="btn btn-sm btn-outline-primary d-none" id="fitRiderRouteStops">
+                <i class="bi bi-arrows-fullscreen me-1"></i>Fit all stops
+            </button>
+        </div>
+        <div id="riderActiveRouteMap"
+             style="height: min(55vh, 520px); min-height: 320px; border-radius: 12px;"
+             role="region" aria-label="Map of active pickup and customer delivery stops"></div>
+        <div id="riderActiveRouteMapStatus" class="small text-muted mt-2" role="status" aria-live="polite"></div>
+        <div id="riderCurrentLocationStatus" class="small text-muted" role="status" aria-live="polite"></div>
+        <ol class="small mb-0 mt-3" id="riderActiveRouteStopList"></ol>
+    </div>
+</section>
+{{ combined_route_groups|json_script:"rider-combined-route-groups" }}
+{{ combined_route_groups|json_script:"rider-combined-map-stops" }}
+{% endif %}
+{% if active_view and pickup_navigation_stops %}
+<section class="card border-warning shadow-sm mb-4">
+    <div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-3">
+        <div>
+            <h3 class="h5 fw-bold mb-1">Collect accepted parcels</h3>
+            <p class="text-muted mb-0">
+                Pick up {{ pickup_pending_count }} parcel{{ pickup_pending_count|pluralize }} from {{ pickup_navigation_stops|length }} shop{{ pickup_navigation_stops|length|pluralize }}. Once all are collected, use Start delivery below.
+            </p>
+        </div>
+        <button type="button" id="pickupRouteNavigation" class="btn btn-warning">
+            <i class="bi bi-shop me-1"></i> Navigate shop-to-shop
+        </button>
+        <div id="pickupRouteNavigationStatus" class="w-100 small text-muted" role="status" aria-live="polite"></div>
+    </div>
+</section>
+{{ pickup_navigation_stops|json_script:"rider-pickup-stops" }}
+{% endif %}
+{% if active_view and pickup_ready_count %}
+<div class="alert alert-info">
+    {{ pickup_ready_count }} collected parcel{{ pickup_ready_count|pluralize }} secured.
+    {% if pickup_pending_count %}
+        Some pickups remain. Starting delivery changes the status of picked-up parcels only.
+    {% else %}
+        Use Start delivery to move all collected active parcels to Out for delivery.
+    {% endif %}
+</div>
+{% endif %}
+{% if show_start_active_deliveries %}
+<section class="card {% if pickup_ready_count %}border-success{% else %}border-warning{% endif %} shadow-sm mb-4">
+    <div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-3">
+        <div>
+            {% if pickup_ready_count %}
+                <h3 class="h5 fw-bold mb-1">Ready to start delivery</h3>
+                <p class="text-muted mb-0">
+                    Start delivery for all {{ pickup_ready_count }} currently picked-up active parcel{{ pickup_ready_count|pluralize }}. Parcels awaiting pickup stay unchanged.
+                </p>
+            {% else %}
+                <h3 class="h5 fw-bold mb-1">Start delivery</h3>
+                <p class="text-muted mb-0">
+                    No parcels are currently picked up{% if pickup_pending_count %}; {{ pickup_pending_count }} assigned parcel{{ pickup_pending_count|pluralize }} still need pickup{% endif %}. Parcels awaiting pickup stay unchanged.
+                </p>
+            {% endif %}
+        </div>
+        <form method="post" action="{% url 'rider_start_active_deliveries' %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-success btn-lg">
+                <i class="bi bi-truck me-1"></i>Start delivery
+            </button>
+        </form>
+    </div>
+</section>
+{% endif %}
+
+{% if orders and not completed_view and not performance_view %}
+<section class="card border-primary shadow-sm mb-3">
+    <div class="card-body d-flex flex-wrap align-items-center gap-2">
+        <button type="button" class="btn btn-outline-primary" id="showNearbyRiderOrders">
+            <i class="bi bi-crosshair me-1"></i> Show nearest orders
+        </button>
+        <button type="button" class="btn btn-outline-secondary d-none" id="showAllRiderOrders">
+            Show all orders
+        </button>
+        <span class="small text-muted" id="nearbyRiderOrdersStatus" role="status" aria-live="polite">
+            Show the nearest order, plus any other orders within 100 meters of your current location.
+        </span>
+    </div>
+</section>
+{% endif %}
+
+<div class="row g-3 rider-order-track" aria-label="Rider orders. Swipe horizontally to view each order.">
+    {% for order in orders %}
+        <div id="order-{{ order.id }}" class="col-lg-6 rider-order-slide"
+             data-rider-order-card
+             {% if order.nearest_order_coordinates %}
+                 data-location-latitude="{{ order.nearest_order_coordinates.lat }}"
+                 data-location-longitude="{{ order.nearest_order_coordinates.lng }}"
+             {% endif %}
+            {% if order.delivery_coordinates %}
+                data-distance-latitude="{{ order.delivery_coordinates.lat }}"
+                data-distance-longitude="{{ order.delivery_coordinates.lng }}"
+            {% endif %}
+            {% if order.pickup_coordinates %}
+               data-pickup-latitude="{{ order.pickup_coordinates.lat }}"
+               data-pickup-longitude="{{ order.pickup_coordinates.lng }}"
+            {% endif %}>
+            <div class="card border-0 shadow-sm">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+                        <div>
+                            <h5 class="mb-1">#{{ order.shop_order_number|default:order.order.order_id }}</h5>
+                            <small class="text-muted">Status updated: {{ order.last_status_changed_at|date:"d M Y h:i A" }}</small>
+                        </div>
+                        <span class="badge rounded-pill {% if order.status == 'READY' %}text-bg-success{% elif order.status == 'OUT_FOR_DELIVERY' %}text-bg-primary{% elif order.status == 'RIDER_ASSIGNED' or order.status == 'PICKED_UP' %}text-bg-warning{% else %}text-bg-secondary{% endif %}">
+                            {% if order.status == "RIDER_ASSIGNED" %}Accepted by rider
+                            {% elif order.status == "PICKED_UP" %}Picked up
+                            {% elif order.status == "OUT_FOR_DELIVERY" %}Out for delivery
+                            {% elif order.status == "READY" %}Ready for pickup
+                            {% else %}{{ order.status }}{% endif %}
+                        </span>
+                    </div>
+
+                    <div class="mb-3">
+                        <div>
+                            <strong>Shop:</strong> {{ order.shop.name }}
+                            {% if order.is_shared_shop_delivery %}
+                                <span class="badge text-bg-info ms-1">Shared order</span>
+                                {% if order.is_group_shared_delivery %}<span class="badge text-bg-primary ms-1">Rider group</span>{% endif %}
+                                {% if order.shared_shop_distance_km %}
+                                    <span class="small text-muted">{{ order.shared_shop_distance_km|floatformat:2 }} km away</span>
+                                {% endif %}
+                            {% endif %}
+                        </div>
+                        <div><strong>Customer:</strong> {{ order.customer_display_name }}</div>
+                        {% if available_view %}
+                            <div class="small text-muted">
+                                Approx. parcel: {{ order.load_estimate.weight_kg|floatformat:2 }} kg · {{ order.load_estimate.volume_cubic_ft|floatformat:2 }} cu ft
+                            </div>
+                        {% endif %}
+                        {% if not order.shop.require_customer_otp_verification %}
+                            <div><strong>Customer OTP:</strong> {{ order.customer_otp }}</div>
+                        {% endif %}
+                        <!-- <div><strong>Rider OTP:</strong> {{ order.rider_otp }}</div> -->
+                        <div>
+                            <strong>Payment:</strong>
+                            {% if order.order.payment_status == "COD" %}
+                                <span class="badge text-bg-warning">Cash on delivery</span>
+                            {% elif order.order.payment_status == "PAID" %}
+                                <span class="badge text-bg-success">Paid online</span>
+                            {% else %}
+                                <span class="badge text-bg-secondary">{{ order.payment_status }}</span>
+                            {% endif %}
+                        </div>
+                        <div class="mb-2">
+                            <strong>Phone:</strong>
+                            {% if order.order.delivery_contact_no %}
+                                <a href="tel:{{ order.order.delivery_contact_no }}">{{ order.order.delivery_contact_no }}</a>
+                                <button
+                                    type="button"
+                                    class="btn btn-sm btn-outline-secondary ms-1 rider-copy-phone"
+                                    data-phone="{{ order.order.delivery_contact_no }}"
+                                >
+                                    <i class="bi bi-clipboard me-1" aria-hidden="true"></i>Copy number
+                                </button>
+                                <a
+                                    class="btn btn-sm btn-success ms-1"
+                                    href="tel:{{ order.order.delivery_contact_no }}"
+                                >
+                                    <i class="bi bi-telephone me-1" aria-hidden="true"></i>Call customer
+                                </a>
+                                <span class="small ms-1" aria-live="polite"></span>
+                            {% else %}
+                                <span class="text-muted">Not provided</span>
+                            {% endif %}
+                        </div>
+                        <div><strong>Address:</strong> {{ order.order.delivery_address }}</div>
+                        {% if active_view and order.delivery_coordinates %}
+                            <div class="small text-primary">
+                                {% if order.pickup_coordinates %}
+                                    {% if order.status != "OUT_FOR_DELIVERY" %}
+                                        <div data-order-distance>
+                                            <strong>Pickup distance from current location:</strong>
+                                            <span data-pickup-distance-value aria-live="polite">Getting your current location…</span>
+                                        </div>
+                                    {% endif %}
+                                    <div>
+                                        <strong>Pickup to delivery destination:</strong>
+                                        <span data-pickup-delivery-distance-value>Calculating…</span>
+                                    </div>
+                                {% elif order.status != "OUT_FOR_DELIVERY" %}
+                                    <div data-order-distance>
+                                        <strong>Delivery distance from current location:</strong>
+                                        <span data-pickup-distance-value aria-live="polite">Getting your current location…</span>
+                                    </div>
+                                {% endif %}
+                            </div>
+                        {% endif %}
+                        {% if order.order.delivery_location %}
+                            <div><strong>Location:</strong> {{ order.order.delivery_location }}</div>
+                        {% endif %}
+                    </div>
+
+                    {% if order.rider_voice_instruction %}
+                        <div class="alert alert-info py-2">
+                            <strong><i class="bi bi-chat-square-text me-1"></i>Customer instruction for rider</strong>
+                            {% if order.rider_voice_instruction.instruction_text %}
+                                <p class="mb-2 mt-1">{{ order.rider_voice_instruction.instruction_text|linebreaksbr }}</p>
+                            {% endif %}
+                            {% if order.rider_voice_instruction_audio_available %}
+                                <audio class="w-100" controls preload="none">
+                                    <source src="{% url 'shop_order_instruction_audio' order.rider_voice_instruction.id %}"
+                                            type="{{ order.rider_voice_instruction.audio_content_type }}">
+                                    Your browser cannot play this audio recording.
+                                </audio>
+                                <div class="small mt-1">Available until one hour after delivery.</div>
+                            {% elif order.delivery_completed_at and order.rider_voice_instruction.audio_content_type %}
+                                <div class="small">The voice instruction has expired.</div>
+                            {% endif %}
+                        </div>
+                    {% endif %}
+
+                    <details class="rider-order-items">
+                        <summary>
+                            <span class="fw-semibold">Items · {{ order.order_items.all|length }}</span>
+                            <span class="small text-muted">View details <i class="bi bi-chevron-down ms-1" aria-hidden="true"></i></span>
+                        </summary>
+                        <div class="rider-order-items-content">
+                        {% for item in order.order_items.all %}
+                            <div class="d-flex justify-content-between small text-muted">
+                                <span>
+                                    {{ item.product_name }} · {{ item.quantity_unit_calculation }}
+                                    {% if item.returned_quantity %}
+                                        <small class="d-block">{{ item.returned_quantity }} returned</small>
+                                    {% endif %}
+                                </span>
+                                <span>₹{{ item.total }}</span>
+                            </div>
+                        {% empty %}
+                            <div class="small text-muted">No items</div>
+                        {% endfor %}
+                            <div class="d-flex justify-content-between border-top mt-2 pt-2">
+                                <strong>Items subtotal</strong>
+                                <strong>₹{{ order.total_amount|floatformat:2 }}</strong>
+                            </div>
+                        </div>
+                    </details>
+                    <div class="border rounded bg-light p-2 mb-3">
+                        {% if order.order.payment_status == "COD" %}
+                            <div class="d-flex justify-content-between fw-bold">
+                                <span>Collect from customer (COD)</span>
+                                <span>₹{{ order.customer_payment_share|floatformat:2 }}</span>
+                            </div>
+                        {% elif order.order.payment_status == "PAID" %}
+                            <div class="d-flex justify-content-between fw-bold text-success">
+                                <span>Customer paid online</span>
+                                <span>₹{{ order.customer_payment_share|floatformat:2 }}</span>
+                            </div>
+                        {% else %}
+                            <div class="d-flex justify-content-between fw-bold">
+                                <span>Customer payment amount</span>
+                                <span>₹{{ order.customer_payment_share|floatformat:2 }}</span>
+                            </div>
+                        {% endif %}
+                        <details class="small mt-1">
+                            <summary class="text-muted">Charge details</summary>
+                            <div class="text-muted mt-1">
+                                Includes allocated platform charge: ₹{{ order.platform_charge_share|default:"0.00" }}
+                            </div>
+                        </details>
+                    </div>
+
+                    {% if order.can_share_live_location %}
+                        <div class="small text-muted mb-2 rider-live-location"
+                             data-location-url="{% url 'update_rider_location' order.id %}">
+                            <i class="bi bi-geo-alt me-1"></i>
+                            Share your live location to alert the customer when you arrive nearby.
+                        </div>
+                    {% endif %}
+
+                    {% if completed_view %}
+                        {% if order.status == "RETURNED" %}
+                            <div class="alert alert-warning small">
+                                <i class="bi bi-arrow-return-left me-1"></i>
+                                Full order returned to shop. Keep the parcel with you until shop staff confirms receipt.
+                            </div>
+                        {% else %}
+                            <div class="alert alert-success small">
+                                <i class="bi bi-check-circle me-1"></i>
+                                Delivery completed
+                                {% if order.delivery_completed_at %}on {{ order.delivery_completed_at|date:"d M Y, h:i A" }}{% endif %}
+                            </div>
+                        {% endif %}
+                        {% if order.delivery_completed_at %}
+                            <details class="border rounded p-3 mb-3">
+                                <summary class="fw-semibold">Correct delivery address or pin</summary>
+                                <p class="small text-muted mt-2 mb-2">
+                                    Updates this order only; the customer's saved address will not change.
+                                </p>
+                                <form method="post" action="{% url 'edit_completed_delivery_location' order.id %}">
+                                    {% csrf_token %}
+                                    <div class="mb-2">
+                                        <label class="form-label small" for="delivery-address-{{ order.id }}">Delivery address</label>
+                                        <textarea class="form-control form-control-sm" id="delivery-address-{{ order.id }}"
+                                                  name="delivery_address" rows="2" maxlength="1000" required>{{ order.order.delivery_address }}</textarea>
+                                    </div>
+                                    <div class="row g-2 mb-2">
+                                        <div class="col-6">
+                                            <label class="form-label small" for="delivery-latitude-{{ order.id }}">Latitude</label>
+                                            <input class="form-control form-control-sm" type="number" step="any" min="-90" max="90"
+                                                   id="delivery-latitude-{{ order.id }}" name="latitude"
+                                                   value="{% if order.delivery_coordinates %}{{ order.delivery_coordinates.lat }}{% endif %}">
+                                        </div>
+                                        <div class="col-6">
+                                            <label class="form-label small" for="delivery-longitude-{{ order.id }}">Longitude</label>
+                                            <input class="form-control form-control-sm" type="number" step="any" min="-180" max="180"
+                                                   id="delivery-longitude-{{ order.id }}" name="longitude"
+                                                   value="{% if order.delivery_coordinates %}{{ order.delivery_coordinates.lng }}{% endif %}">
+                                        </div>
+                                    </div>
+                                    <button type="submit" class="btn btn-sm btn-primary">Save corrected location</button>
+                                </form>
+                            </details>
+                        {% endif %}
+                        <div class="border rounded bg-light p-3 mb-3">
+                            <h6 class="fw-bold mb-2">Customer payment summary</h6>
+                            <div class="d-flex justify-content-between gap-3">
+                                <span>Cash collected from customer</span>
+                                <strong>₹{{ order.customer_cash_collected|floatformat:2 }}</strong>
+                            </div>
+                            <div class="d-flex justify-content-between gap-3 mt-1">
+                                <span>Received in personal UPI</span>
+                                <strong>₹{{ order.customer_personal_upi_collected|floatformat:2 }}</strong>
+                            </div>
+                            <div class="d-flex justify-content-between gap-3 mt-1 fw-semibold">
+                                <span>Total COD received</span>
+                                <strong>₹{{ order.customer_cod_collected|floatformat:2 }}</strong>
+                            </div>
+                            <div class="d-flex justify-content-between gap-3 mt-1 text-success">
+                                <span>Credited to customer wallet</span>
+                                <strong>₹{{ order.customer_wallet_credits|floatformat:2 }}</strong>
+                            </div>
+                            <div class="d-flex justify-content-between gap-3 mt-1 text-danger">
+                                <span>Debited from customer wallet</span>
+                                <strong>₹{{ order.customer_wallet_debits|floatformat:2 }}</strong>
+                            </div>
+                            {% if order.customer_wallet_transactions %}
+                                <details class="small mt-2">
+                                    <summary class="text-muted">Wallet transaction details</summary>
+                                    <div class="mt-2">
+                                        {% for transaction in order.customer_wallet_transactions %}
+                                            <div class="d-flex justify-content-between gap-3">
+                                                <span>{{ transaction.description|default:transaction.get_transaction_type_display }}</span>
+                                                <span class="{% if transaction.transaction_type == 'CREDIT' %}text-success{% else %}text-danger{% endif %}">
+                                                    {% if transaction.transaction_type == "CREDIT" %}+{% else %}−{% endif %}₹{{ transaction.amount|floatformat:2 }}
+                                                </span>
+                                            </div>
+                                        {% endfor %}
+                                    </div>
+                                </details>
+                            {% endif %}
+                        </div>
+                    {% endif %}
+
+                    {% if not completed_view %}
+                    {% if order.delivery_coordinates and order.status == "OUT_FOR_DELIVERY" %}
+                        <div class="d-grid gap-2 mb-2">
+                            <a href="https://www.google.com/maps/dir/?api=1&amp;destination={{ order.delivery_coordinates.lat }},{{ order.delivery_coordinates.lng }}&amp;travelmode=driving&amp;dir_action=navigate"
+                               target="_blank" rel="noopener"
+                               class="btn btn-primary">
+                                <i class="bi bi-navigation me-1"></i> Navigate from my current location
+                            </a>
+                            <a href="geo:0,0?q={{ order.delivery_coordinates.lat }},{{ order.delivery_coordinates.lng }}"
+                               class="btn btn-outline-primary">
+                                <i class="bi bi-app-indicator me-1"></i> Open in installed map app
+                            </a>
+                            <a href="https://www.google.com/maps/search/?api=1&amp;query={{ order.delivery_coordinates.lat }},{{ order.delivery_coordinates.lng }}"
+                               target="_blank" rel="noopener"
+                               class="btn btn-outline-primary">
+                                <i class="bi bi-geo-alt me-1"></i> Open Delivery Location
+                            </a>
+                            <button type="button" class="btn btn-outline-success rider-share-location"
+                                    data-coordinates="{{ order.delivery_coordinates.lat }},{{ order.delivery_coordinates.lng }}">
+                                <i class="bi bi-share me-1"></i> Share coordinates with delivery app
+                            </button>
+                            <button type="button" class="btn btn-outline-secondary rider-copy-coordinates"
+                                    data-coordinates="{{ order.delivery_coordinates.lat }},{{ order.delivery_coordinates.lng }}">
+                                <i class="bi bi-clipboard me-1"></i> Copy coordinates
+                            </button>
+                            <span class="small text-muted" aria-live="polite"></span>
+                        </div>
+                    {% endif %}
+
+                    {% if order.assigned_rider and order.assigned_rider.id == staff.id %}
+                        <div class="alert alert-success small mb-2">Assigned to you</div>
+                        {% if order.delivery_estimated_arrival %}
+                            <div class="small text-primary fw-semibold mb-2">
+                                <i class="bi bi-clock me-1"></i>
+                                Route estimate: {{ order.delivery_estimated_arrival|date:"h:i A" }}
+                            </div>
+                        {% endif %}
+                    {% elif not order.assigned_rider %}
+                        <form method="post" action="{% url 'accept_rider_order' order.id %}" class="mb-2">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-success btn-lg w-100">
+                                <i class="bi bi-check-circle me-1"></i> Accept this delivery
+                            </button>
+                        </form>
+                    {% else %}
+                        <div class="alert alert-secondary small mb-2">Assigned to another rider</div>
+                    {% endif %}
+
+                    {% if order.assigned_rider and order.assigned_rider.id == staff.id %}
+                        {% if order.status == "READY" %}
+                            <form method="post" action="{% url 'accept_rider_order' order.id %}" class="mb-3">
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-outline-success w-100">
+                                    <i class="bi bi-check-circle me-1"></i> Confirm assigned delivery
+                                </button>
+                            </form>
+                        {% elif order.status == "RIDER_ASSIGNED" %}
+                            <div class="alert alert-warning small mb-2">
+                                Accepted. Give the current pickup OTP to staff at {{ order.shop.name }}. It is valid for five minutes and only works for this order.
+                            </div>
+                            {% if order.pickup_otp %}
+                                <div class="d-flex align-items-center justify-content-center gap-3 border rounded p-2 mb-3">
+                                    <div class="text-center">
+                                        <div class="small text-muted">Pickup OTP</div>
+                                        <div class="fs-2 fw-bold font-monospace" aria-label="Pickup OTP {{ order.pickup_otp }}">{{ order.pickup_otp }}</div>
+                                        <div class="small fw-semibold mt-1">Order {{ order.shop_order_number|default:order.order.order_id }}</div>
+                                    </div>
+                                    <div class="text-center">
+                                        <img src="{{ order.pickup_qr_data_uri }}" alt="QR code for pickup OTP on order {{ order.shop_order_number|default:order.order.order_id }}"
+                                             width="88" height="88" class="img-fluid border rounded p-1">
+                                        <div class="small text-muted">Scan at shop</div>
+                                    </div>
+                                </div>
+                                <div class="small text-muted mb-3">Expires {{ order.rider_pickup_otp_expires_at|time:"H:i" }}. Refresh this page for a new OTP after expiry.</div>
+                            {% endif %}
+                            {% if order.shop.location.lat and order.shop.location.lng %}
+                                <a class="btn btn-outline-warning w-100 mb-2"
+                                   href="https://www.google.com/maps/dir/?api=1&amp;destination={{ order.shop.location.lat }},{{ order.shop.location.lng }}&amp;travelmode=driving&amp;dir_action=navigate"
+                                   target="_blank" rel="noopener">
+                                    <i class="bi bi-shop me-1"></i> Navigate to pickup shop
+                                </a>
+                            {% endif %}
+                        {% elif order.status == "PICKED_UP" %}
+                            <div class="alert alert-info small mb-3">
+                                Parcel collected. {% if pickup_pending_count %}Collect the remaining {{ pickup_pending_count }} assigned parcel{{ pickup_pending_count|pluralize }}; then use Start delivery.{% else %}All assigned active parcels are collected; use Start delivery above when ready.{% endif %}
+                            </div>
+                        {% elif order.status == "OUT_FOR_DELIVERY" %}
+                            {% if order.shop.require_customer_otp_verification %}
+                                {% if order.customer_otp_verified %}
+                                    <div class="alert alert-success small mb-2">Customer OTP verified. Record any returned items below, then complete delivery.</div>
+                                {% else %}
+                                    <div class="alert alert-info small mb-2">Verify the customer's OTP first. You can record returned items after verification.</div>
+                                    <form method="post" action="{% url 'verify_customer_otp' order.id %}" class="mt-2 border rounded p-3">
+                                        {% csrf_token %}
+                                        <div class="mb-2">
+                                            <label class="form-label small">Customer OTP</label>
+                                            <input type="text" name="otp" class="form-control form-control-sm" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" placeholder="Enter 4-digit OTP" required />
+                                        </div>
+                                        <input type="hidden" name="latitude" id="lat-{{ order.id }}" value="" />
+                                        <input type="hidden" name="longitude" id="lng-{{ order.id }}" value="" />
+                                        <button type="submit" class="btn btn-primary w-100">Verify OTP</button>
+                                    </form>
+                                    <script>
+                                        (function() {
+                                            const latInput = document.getElementById('lat-{{ order.id }}');
+                                            const lngInput = document.getElementById('lng-{{ order.id }}');
+                                            if (navigator.geolocation && latInput && lngInput) {
+                                                navigator.geolocation.getCurrentPosition(function(position) {
+                                                    latInput.value = position.coords.latitude;
+                                                    lngInput.value = position.coords.longitude;
+                                                }, function() {}, { enableHighAccuracy: true, timeout: 5000 });
+                                            }
+                                        })();
+                                    </script>
+                                {% endif %}
+                            {% else %}
+                                <div class="alert alert-secondary small mb-2">Customer OTP verification is not required for this shop.</div>
+                            {% endif %}
+                            {% if not order.shop.require_customer_otp_verification or order.customer_otp_verified %}
+                                <form method="post" action="{% url 'complete_delivery' order.id %}" class="mt-2 border rounded p-3 rider-delivery-form">
+                                    {% csrf_token %}
+                                    <div class="small text-muted mb-2">
+                                        Enter the quantity returned for each item. The customer's total/refund and the shop's wallet settlement are recalculated from the items kept. Returned items are not added back to stock.
+                                    </div>
+                                    {% for item in order.order_items.all %}
+                                        <div class="row align-items-center g-2 mb-2">
+                                            <label class="col form-label small mb-0" for="returned-{{ item.id }}">
+                                                {{ item.product_name }} (ordered {{ item.quantity }})
+                                            </label>
+                                            <div class="col-auto">
+                                                <input class="form-control form-control-sm" id="returned-{{ item.id }}"
+                                                       type="number" name="returned_quantity_{{ item.id }}"
+                                                       min="{{ item.returned_quantity }}" max="{{ item.quantity }}"
+                                                       value="{{ item.returned_quantity }}" step="1" required
+                                                       aria-label="Returned quantity for {{ item.product_name }}">
+                                            </div>
+                                        </div>
+                                    {% endfor %}
+                                    {% if order.order.payment_type == "COD" %}
+                                        <fieldset class="mb-2">
+                                            <legend class="form-label small mb-1">Payment received by</legend>
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="radio" name="cod_payment_method" id="cod-cash-{{ order.id }}" value="CASH" checked>
+                                                <label class="form-check-label small" for="cod-cash-{{ order.id }}">Cash in hand</label>
+                                            </div>
+                                            {% if order.shop_cod_upi_qr %}
+                                                <div class="form-check">
+                                                    <input class="form-check-input" type="radio" name="cod_payment_method" id="cod-shop-upi-{{ order.id }}" value="SHOP_UPI">
+                                                    <label class="form-check-label small" for="cod-shop-upi-{{ order.id }}">Paid to shop UPI</label>
+                                                </div>
+                                                <div class="small text-center mt-2 d-none" data-cod-qr="SHOP_UPI">
+                                                    <img src="{{ order.shop_cod_upi_qr }}" alt="Shop UPI QR for order {{ order.shop_order_number|default:order.order.order_id }}" width="150" height="150" class="img-fluid border rounded p-1">
+                                                    <div class="small fw-semibold mt-1">Pay shop directly · ₹{{ order.cod_due_amount|floatformat:2 }}</div>
+                                                    <div class="small text-muted">{{ order.shop.upi_id }}</div>
+                                                    <div class="small text-muted">After returns, adjust the amount in your UPI app. Enter the actual payment below and confirm it in your UPI app.</div>
+                                                </div>
+                                            {% endif %}
+                                            {% if order.staff_cod_upi_qr %}
+                                                <div class="form-check">
+                                                    <input class="form-check-input" type="radio" name="cod_payment_method" id="cod-staff-upi-{{ order.id }}" value="STAFF_UPI">
+                                                    <label class="form-check-label small" for="cod-staff-upi-{{ order.id }}">Paid to my personal UPI</label>
+                                                </div>
+                                                <div class="small text-center mt-2 d-none" data-cod-qr="STAFF_UPI">
+                                                    <img src="{{ order.staff_cod_upi_qr }}" alt="Staff personal UPI QR for order {{ order.shop_order_number|default:order.order.order_id }}" width="150" height="150" class="img-fluid border rounded p-1">
+                                                    <div class="small fw-semibold mt-1">Pay my personal UPI · ₹{{ order.cod_due_amount|floatformat:2 }}</div>
+                                                    <div class="small text-muted">{{ staff.upi_id }}</div>
+                                                    <div class="small text-warning">This amount becomes a debit in your staff wallet until handover is confirmed.</div>
+                                                    <div class="small text-muted">After returns, adjust the amount in your UPI app. Enter the actual payment below and confirm it in your UPI app.</div>
+                                                </div>
+                                            {% endif %}
+                                        </fieldset>
+                                        <div class="mb-2">
+                                            <label class="form-label small" for="received-{{ order.id }}">Actual COD payment received (₹)</label>
+                                            <input class="form-control form-control-sm" id="received-{{ order.id }}"
+                                                   type="number" name="received_amount" min="0" step="0.01"
+                                                   placeholder="Enter amount collected after returns" required>
+                                            <button type="button" class="btn btn-outline-success btn-sm w-100 mt-2"
+                                                    data-fill-full-cod="{{ order.cod_due_amount|floatformat:2 }}"
+                                                    data-received-amount-input="received-{{ order.id }}">
+                                                Fill full payment received · ₹{{ order.cod_due_amount|floatformat:2 }}
+                                            </button>
+                                            <div class="form-text">
+                                                Enter the amount actually received. Money sent to your personal UPI is debited from your staff wallet until the shop confirms handover.
+                                            </div>
+                                        </div>
+                                    {% endif %}
+                                    <div class="mb-2">
+                                        <label class="form-label small">Delivery remark</label>
+                                        <textarea name="remark" class="form-control form-control-sm" rows="2" placeholder="Optional note"></textarea>
+                                    </div>
+                                    <div class="mb-2">
+                                        <label class="form-label small">Rating (1-5)</label>
+                                        <select name="rating" class="form-select form-select-sm">
+                                            <option value="">No rating</option>
+                                            <option value="5">5 - Excellent</option>
+                                            <option value="4">4 - Good</option>
+                                            <option value="3">3 - Okay</option>
+                                            <option value="2">2 - Poor</option>
+                                            <option value="1">1 - Very poor</option>
+                                        </select>
+                                    </div>
+                                    <input type="hidden" name="latitude" value="{{ order.rider_last_location.lat|default:'' }}" />
+                                    <input type="hidden" name="longitude" value="{{ order.rider_last_location.lng|default:'' }}" />
+                                    <button type="submit" class="btn btn-success w-100" data-complete-delivery-label>Complete Delivery</button>
+                                </form>
+                            {% endif %}
+                            <form method="post" action="{% url 'complete_delivery' order.id %}" class="mt-2 border border-warning rounded p-3">
+                                {% csrf_token %}
+                                <input type="hidden" name="return_to_shop" value="1">
+                                <div class="small text-muted mb-2">
+                                    If the customer is unavailable or refuses the whole order, return every item to the shop. Do not collect COD. Keep the parcel with you until shop staff confirms receipt.
+                                </div>
+                                <label class="form-label small" for="return-reason-{{ order.id }}">Return reason</label>
+                                <input class="form-control form-control-sm mb-2" id="return-reason-{{ order.id }}" name="return_reason" maxlength="500" placeholder="Customer unavailable or refused order">
+                                <button type="submit" class="btn btn-outline-warning w-100">Return full order to shop</button>
+                            </form>
+                        {% endif %}
+                    {% endif %}
+
+                    {% if order.rider_cancel_available %}
+                        <form method="post" action="{% url 'rider_cancel_order' order.id %}" class="mt-2">
+                            {% csrf_token %}
+                            <div class="mb-2">
+                                <label class="form-label small">Why release this delivery? (optional)</label>
+                                <input type="text" name="reason" class="form-control form-control-sm" placeholder="Optional" />
+                            </div>
+                            <input type="hidden" name="latitude" value="{{ order.rider_last_location.lat|default:'' }}" />
+                            <input type="hidden" name="longitude" value="{{ order.rider_last_location.lng|default:'' }}" />
+                            <div class="small text-muted mb-2">You can release this delivery until shop staff verifies the pickup OTP. The order will stay active for another rider.</div>
+                            <button type="submit" class="btn btn-outline-danger w-100">Release delivery</button>
+                        </form>
+                    {% endif %}
+                    {% endif %}
+
+                    <a href="{% url 'shop_order_detail' order.id %}" class="btn btn-primary w-100 mt-2">
+                        Open Order Details
+                    </a>
+                </div>
+            </div>
+        </div>
+    {% empty %}
+        <div class="col-12">
+            <div class="text-center py-5">
+                <div style="font-size:60px;">🚚</div>
+                {% if completed_view %}
+                    <h4>No completed deliveries yet</h4>
+                    <p class="text-muted">Orders you complete will be listed here.</p>
+                {% elif active_view %}
+                    <h4>No active deliveries</h4>
+                    <p class="text-muted">Orders you accept will appear here. Check “Available to accept” for ready orders.</p>
+                {% else %}
+                    <h4>No ready orders to accept</h4>
+                    <p class="text-muted">New shop orders will appear here after packing is complete and the order is marked ready.</p>
+                {% endif %}
+            </div>
+        </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block extra_js %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(() => {
+    const tabsWrap = document.querySelector(".rider-dashboard-tabs-wrap");
+    const tabs = tabsWrap?.querySelector(".rider-dashboard-tabs");
+    const navbar = document.querySelector(".main-navbar");
+    if (
+        tabsWrap
+        && tabs
+        && navbar
+        && window.matchMedia("(max-width: 991.98px)").matches
+    ) {
+        const updateTabsOverlay = () => {
+            const headerVisible = !document.body.classList.contains("sellerhelper-bars-hidden");
+            const topOffset = headerVisible ? navbar.offsetHeight : 0;
+            document.documentElement.style.setProperty(
+                "--rider-dashboard-tabs-top",
+                `${topOffset}px`,
+            );
+            tabsWrap.style.height = `${tabs.offsetHeight + 12}px`;
+        };
+        window.addEventListener("scroll", updateTabsOverlay, { passive: true });
+        window.addEventListener("resize", updateTabsOverlay, { passive: true });
+        new MutationObserver(updateTabsOverlay).observe(document.body, {
+            attributes: true,
+            attributeFilter: ["class"],
+        });
+        if (window.ResizeObserver) {
+            new ResizeObserver(updateTabsOverlay).observe(navbar);
+            new ResizeObserver(updateTabsOverlay).observe(tabs);
+        }
+        updateTabsOverlay();
+    }
+
+    const distanceMeters = (first, second) => {
+        const radians = (degrees) => degrees * Math.PI / 180;
+        const lat1 = radians(first.lat);
+        const lat2 = radians(second.lat);
+        const deltaLat = lat2 - lat1;
+        const deltaLng = radians(second.lng - first.lng);
+        const value = Math.sin(deltaLat / 2) ** 2
+            + Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLng / 2) ** 2;
+        return 6371000 * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
+    };
+    const formatDistance = (meters) => meters < 1000
+        ? `${Math.round(meters)} m (straight-line)`
+        : `${(meters / 1000).toFixed(2)} km (straight-line)`;
+    document.querySelectorAll("[data-pickup-delivery-distance-value]").forEach((element) => {
+        const card = element.closest("[data-rider-order-card]");
+        if (!card) return;
+        const pickup = {
+            lat: Number(card.dataset.pickupLatitude),
+            lng: Number(card.dataset.pickupLongitude),
+        };
+        const delivery = {
+            lat: Number(card.dataset.distanceLatitude),
+            lng: Number(card.dataset.distanceLongitude),
+        };
+        const valid = (point) => (
+            Number.isFinite(point.lat)
+            && Number.isFinite(point.lng)
+            && Math.abs(point.lat) <= 90
+            && Math.abs(point.lng) <= 180
+        );
+        element.textContent = valid(pickup) && valid(delivery)
+            ? formatDistance(distanceMeters(pickup, delivery))
+            : "No usable coordinates.";
+    });
+    let updateRiderMapLocation = () => {};
+    const updateOrderDistanceLabels = (currentLocation) => {
+        document.querySelectorAll("[data-order-distance]").forEach((element) => {
+            const valueElement = element.querySelector("[data-pickup-distance-value]");
+            const card = element.closest("[data-rider-order-card]");
+            if (!valueElement || !card) return;
+            const target = {
+                lat: Number(card.dataset.pickupLatitude || card.dataset.distanceLatitude),
+                lng: Number(card.dataset.pickupLongitude || card.dataset.distanceLongitude),
+            };
+            if (!currentLocation) {
+                valueElement.textContent = "Location unavailable; allow location access.";
+                return;
+            }
+            if (
+                !Number.isFinite(target.lat)
+                || !Number.isFinite(target.lng)
+                || Math.abs(target.lat) > 90
+                || Math.abs(target.lng) > 180
+            ) {
+                valueElement.textContent = "No usable coordinates.";
+                return;
+            }
+            const meters = distanceMeters(currentLocation, target);
+            valueElement.textContent = formatDistance(meters);
+        });
+    };
+    const routeMapElement = document.getElementById("riderActiveRouteMap");
+    const routeMapData = document.getElementById("rider-combined-map-stops");
+    const routeMapStatus = document.getElementById("riderActiveRouteMapStatus");
+    const currentLocationStatus = document.getElementById("riderCurrentLocationStatus");
+    if (routeMapElement && routeMapData) {
+        const mapStatus = routeMapStatus;
+        const stopList = document.getElementById("riderActiveRouteStopList");
+        const fitButton = document.getElementById("fitRiderRouteStops");
+        const stopGroups = JSON.parse(routeMapData.textContent || "[]");
+        const routeStops = stopGroups.flatMap((group, groupIndex) => group.map((stop) => ({
+            ...stop,
+            stop_type: groupIndex === 0 ? "Pickup" : "Delivery",
+            display_name: groupIndex === 0
+                ? stop.shop_name
+                : (stop.customer_name || "Customer"),
+            order_numbers: Array.isArray(stop.order_numbers)
+                ? stop.order_numbers
+                : (stop.order_id ? [stop.order_id] : []),
+        }))).filter((stop) => (
+            Number.isFinite(Number(stop.lat))
+            && Number.isFinite(Number(stop.lng))
+        ));
+        routeStops.forEach((stop, index) => {
+            const entry = document.createElement("li");
+            const label = `${index + 1}. ${stop.display_name} · ${stop.stop_type}`;
+            const orderNumbers = stop.order_numbers.length
+                ? ` — Order${stop.order_numbers.length === 1 ? "" : "s"} ${stop.order_numbers.join(", ")}`
+                : "";
+            entry.textContent = `${label}${orderNumbers}`;
+            stopList.append(entry);
+        });
+        if (!window.L) {
+            mapStatus.textContent = "The route map could not load. Use the stop list and Google Maps navigation buttons.";
+        } else if (routeStops.length) {
+            const map = L.map(routeMapElement, {scrollWheelZoom: false});
+            const normalLayer = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+                maxZoom: 20,
+                attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+                subdomains: "abcd",
+            });
+            const satelliteLayer = L.tileLayer(
+                "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+                {maxZoom: 19, attribution: "Tiles &copy; Esri"},
+            ).addTo(map);
+            L.control.layers(
+                {"Satellite": satelliteLayer, "Normal": normalLayer},
+                null,
+                {position: "topright"},
+            ).addTo(map);
+            const markers = L.featureGroup().addTo(map);
+            let riderLocationMarker = null;
+            let hasInitialRiderLocation = false;
+            const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (character) => ({
+                "&": "&amp;",
+                "<": "&lt;",
+                ">": "&gt;",
+                '"': "&quot;",
+                "'": "&#39;",
+            })[character]);
+            const stopsByLocation = new Map();
+            routeStops.forEach((stop, index) => {
+                const stopNumber = index + 1;
+                const locatedStop = {...stop, stop_number: stopNumber};
+                const locationKey = `${Number(stop.lat).toFixed(6)},${Number(stop.lng).toFixed(6)}`;
+                if (!stopsByLocation.has(locationKey)) {
+                    stopsByLocation.set(locationKey, []);
+                }
+                stopsByLocation.get(locationKey).push(locatedStop);
+            });
+            const buildStopPopup = (locationStops) => {
+                const popup = document.createElement("div");
+                locationStops.forEach((stop, index) => {
+                    if (index > 0) {
+                        const separator = document.createElement("hr");
+                        separator.className = "my-2";
+                        popup.append(separator);
+                    }
+                    const heading = document.createElement("strong");
+                    heading.textContent = `${stop.stop_number}. ${stop.display_name} · ${stop.stop_type}`;
+                    const detail = document.createElement("div");
+                    detail.textContent = stop.order_numbers.length
+                        ? `Order${stop.order_numbers.length === 1 ? "" : "s"} ${stop.order_numbers.join(", ")}`
+                        : `${stop.order_count || 1} parcel${Number(stop.order_count) === 1 ? "" : "s"}`;
+                    popup.append(heading, detail);
+                    if (stop.address) {
+                        const address = document.createElement("div");
+                        address.textContent = stop.address;
+                        popup.append(address);
+                    }
+                });
+                return popup;
+            };
+            stopsByLocation.forEach((locationStops) => {
+                const shortLabel = (stop) => (
+                    `${stop.stop_type === "Pickup" ? "P" : "D"}${stop.stop_number} · ${stop.display_name}`
+                );
+                const stackedLabels = locationStops
+                    .map((stop) => `<div>${escapeHtml(shortLabel(stop))}</div>`)
+                    .join("");
+                const marker = L.marker([
+                    Number(locationStops[0].lat),
+                    Number(locationStops[0].lng),
+                ]).addTo(markers);
+                marker.bindTooltip(stackedLabels, {
+                    permanent: true,
+                    direction: "top",
+                    offset: [0, -8],
+                    className: locationStops.every((stop) => stop.stop_type === "Pickup")
+                        ? "rider-route-pickup-label"
+                        : "rider-route-customer-label",
+                });
+                marker.bindPopup(buildStopPopup(locationStops));
+            });
+            if (routeStops.length > 1) {
+                const routePoints = routeStops.map((stop) => [
+                    Number(stop.lat),
+                    Number(stop.lng),
+                ]);
+                L.polyline(routePoints, {
+                    color: "#0759c7",
+                    weight: 5,
+                    opacity: 0.85,
+                }).addTo(map);
+                for (let index = 0; index < routePoints.length - 1; index += 1) {
+                    const [lat1, lng1] = routePoints[index];
+                    const [lat2, lng2] = routePoints[index + 1];
+                    const radians = (degrees) => degrees * Math.PI / 180;
+                    const phi1 = radians(lat1);
+                    const phi2 = radians(lat2);
+                    const deltaLambda = radians(lng2 - lng1);
+                    const bearing = (
+                        Math.atan2(
+                            Math.sin(deltaLambda) * Math.cos(phi2),
+                            Math.cos(phi1) * Math.sin(phi2)
+                                - Math.sin(phi1) * Math.cos(phi2) * Math.cos(deltaLambda),
+                        ) * 180 / Math.PI + 360
+                    ) % 360;
+                    const midpoint = [(lat1 + lat2) / 2, (lng1 + lng2) / 2];
+                    L.marker(midpoint, {
+                        interactive: false,
+                        icon: L.divIcon({
+                            className: "",
+                            html: `<div class="rider-route-direction-arrow" style="transform:rotate(${bearing}deg)">▲</div>`,
+                            iconSize: [22, 22],
+                            iconAnchor: [11, 11],
+                        }),
+                    }).addTo(map);
+                }
+            }
+            const fitStops = () => {
+                if (markers.getLayers().length) {
+                    map.fitBounds(markers.getBounds().pad(0.15), {maxZoom: 15});
+                }
+            };
+            updateRiderMapLocation = (location) => {
+                if (
+                    !Number.isFinite(location.lat)
+                    || !Number.isFinite(location.lng)
+                    || Math.abs(location.lat) > 90
+                    || Math.abs(location.lng) > 180
+                ) {
+                    return;
+                }
+                if (!riderLocationMarker) {
+                    riderLocationMarker = L.circleMarker(
+                        [location.lat, location.lng],
+                        {
+                            radius: 9,
+                            color: "#ffffff",
+                            weight: 3,
+                            fillColor: "#0877e8",
+                            fillOpacity: 1,
+                        },
+                    ).addTo(markers);
+                    riderLocationMarker.bindTooltip("Your current location");
+                } else {
+                    riderLocationMarker.setLatLng([location.lat, location.lng]);
+                }
+                if (!hasInitialRiderLocation) {
+                    hasInitialRiderLocation = true;
+                    fitStops();
+                }
+            };
+            fitButton.classList.remove("d-none");
+            fitButton.addEventListener("click", fitStops);
+            fitStops();
+            setTimeout(() => map.invalidateSize(), 0);
+            map.on("tileerror", () => {
+                mapStatus.textContent = "Map tiles could not load. The named stop list and Google Maps navigation remain available.";
+            });
+        } else {
+            mapStatus.textContent = "No active pickup or customer delivery locations have coordinates.";
+        }
+    }
+    const nearestOrdersButton = document.getElementById("showNearbyRiderOrders");
+    const allOrdersButton = document.getElementById("showAllRiderOrders");
+    const nearbyOrdersStatus = document.getElementById("nearbyRiderOrdersStatus");
+    if (nearestOrdersButton && allOrdersButton && nearbyOrdersStatus) {
+        const orderCards = Array.from(document.querySelectorAll("[data-rider-order-card]"));
+        allOrdersButton.addEventListener("click", () => {
+            orderCards.forEach((card) => {
+                card.classList.remove("d-none");
+            });
+            allOrdersButton.classList.add("d-none");
+            nearestOrdersButton.classList.remove("d-none");
+            nearbyOrdersStatus.textContent = "All orders are shown.";
+        });
+        nearestOrdersButton.addEventListener("click", () => {
+            nearbyOrdersStatus.textContent = "Getting your current location…";
+            if (!navigator.geolocation) {
+                nearbyOrdersStatus.textContent = "Location is unavailable in this browser. All orders remain visible.";
+                return;
+            }
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const currentLocation = {
+                        lat: position.coords.latitude,
+                        lng: position.coords.longitude,
+                    };
+                    const locatedOrders = orderCards.map((card) => ({
+                        card,
+                        latitude: Number(card.dataset.locationLatitude),
+                        longitude: Number(card.dataset.locationLongitude),
+                    })).filter((entry) => (
+                        Number.isFinite(entry.latitude)
+                        && Number.isFinite(entry.longitude)
+                        && Math.abs(entry.latitude) <= 90
+                        && Math.abs(entry.longitude) <= 180
+                    )).map((entry) => ({
+                        ...entry,
+                        distance: distanceMeters(currentLocation, {
+                            lat: entry.latitude,
+                            lng: entry.longitude,
+                        }),
+                    })).sort((first, second) => first.distance - second.distance);
+
+                    if (!locatedOrders.length) {
+                        nearbyOrdersStatus.textContent = "No orders have usable location coordinates. All orders remain visible.";
+                        return;
+                    }
+
+                    const visibleOrders = locatedOrders.filter((entry, index) => (
+                        index === 0 || entry.distance <= 100
+                    ));
+                    const visibleCards = new Set(visibleOrders.map((entry) => entry.card));
+                    orderCards.forEach((card) => {
+                        card.classList.toggle("d-none", !visibleCards.has(card));
+                    });
+                    const orderGrid = orderCards[0].parentElement;
+                    visibleOrders.forEach((entry) => orderGrid.appendChild(entry.card));
+                    nearestOrdersButton.classList.add("d-none");
+                    allOrdersButton.classList.remove("d-none");
+                    const nearestDistance = Math.round(visibleOrders[0].distance);
+                    nearbyOrdersStatus.textContent = (
+                        `Showing ${visibleOrders.length} nearest order${visibleOrders.length === 1 ? "" : "s"}. `
+                        + `Nearest is ${nearestDistance} m away; other shown orders are within 100 m.`
+                    );
+                },
+                () => {
+                    nearbyOrdersStatus.textContent = "Could not access your location. Allow location access and try again; all orders remain visible.";
+                },
+                {enableHighAccuracy: true, timeout: 10000, maximumAge: 30000},
+            );
+        });
+    }
+    document.querySelectorAll("[data-fill-full-cod]").forEach((button) => {
+        button.addEventListener("click", () => {
+            const amountInput = document.getElementById(button.dataset.receivedAmountInput);
+            if (!amountInput) {
+                console.error("Could not find the COD amount input for the selected order.");
+                return;
+            }
+            amountInput.value = button.dataset.fillFullCod || "";
+            amountInput.dispatchEvent(new Event("input", {bubbles: true}));
+            amountInput.dispatchEvent(new Event("change", {bubbles: true}));
+        });
+    });
+    const configureRoute = (buttonId, statusId, stopsId, stopType, groupedStopsId = null) => {
+        const routeButton = document.getElementById(buttonId);
+        const routeStatus = document.getElementById(statusId);
+        const stopsElement = document.getElementById(stopsId);
+        if (!routeButton || !routeStatus || !stopsElement) return;
+        const groupedStopsElement = groupedStopsId
+            ? document.getElementById(groupedStopsId)
+            : null;
+        const stopGroups = groupedStopsElement
+            ? JSON.parse(groupedStopsElement.textContent || "[]")
+            : null;
+        const stops = stopGroups
+            ? stopGroups.flat()
+            : JSON.parse(stopsElement.textContent || "[]");
+        if (!stops.length) return;
+
+        const openRoute = (origin, optimize = true) => {
+            let ordered = [...stops];
+            if (optimize && origin) {
+                ordered = [];
+                let current = origin;
+                const groups = stopGroups || [stops];
+                for (const group of groups) {
+                    const remaining = [...group];
+                    while (remaining.length) {
+                        let closestIndex = 0;
+                        let closestDistance = distanceMeters(current, remaining[0]);
+                        for (let index = 1; index < remaining.length; index += 1) {
+                            const distance = distanceMeters(current, remaining[index]);
+                            if (distance < closestDistance) {
+                                closestIndex = index;
+                                closestDistance = distance;
+                            }
+                        }
+                        current = remaining.splice(closestIndex, 1)[0];
+                        ordered.push(current);
+                    }
+                }
+            }
+
+            const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+            const waypointLimit = isMobile ? 3 : 9;
+            const routeStops = ordered.slice(0, waypointLimit + 1);
+            const parameters = new URLSearchParams({
+                api: "1",
+                origin: origin ? `${origin.lat},${origin.lng}` : "Current Location",
+                destination: `${routeStops[routeStops.length - 1].lat},${routeStops[routeStops.length - 1].lng}`,
+                travelmode: "driving",
+                dir_action: "navigate",
+            });
+            if (routeStops.length > 1) {
+                parameters.set(
+                    "waypoints",
+                    routeStops.slice(0, -1).map((stop) => `${stop.lat},${stop.lng}`).join("|"),
+                );
+            }
+            const routeUrl = `https://www.google.com/maps/dir/?${parameters.toString()}`;
+            if (ordered.length > routeStops.length) {
+                routeStatus.textContent = `Opening Google Maps for the first ${routeStops.length} ${stopType} stops. Refresh the dashboard after completing them to navigate the remaining stops.`;
+            } else {
+                routeStatus.textContent = `Opening Google Maps for ${routeStops.length} ${stopType} stop${routeStops.length === 1 ? "" : "s"}…`;
+            }
+            try {
+                window.location.assign(routeUrl);
+            } catch (error) {
+                console.error("Could not open the rider navigation route.", error);
+                routeStatus.textContent = "Could not open Google Maps. Please try again.";
+            }
+        };
+
+        routeButton.addEventListener("click", () => {
+            routeStatus.textContent = "Getting your current location…";
+            if (!navigator.geolocation) {
+                routeStatus.textContent = "Location is unavailable; opening the route in listed order.";
+                openRoute(null, false);
+                return;
+            }
+            navigator.geolocation.getCurrentPosition(
+                (position) => openRoute({
+                    lat: position.coords.latitude,
+                    lng: position.coords.longitude,
+                }),
+                () => {
+                    routeStatus.textContent = "Could not access your location; opening the route in listed order.";
+                    openRoute(null, false);
+                },
+                {enableHighAccuracy: true, timeout: 10000, maximumAge: 30000},
+            );
+        });
+    };
+    configureRoute(
+        "pickupRouteNavigation",
+        "pickupRouteNavigationStatus",
+        "rider-pickup-stops",
+        "shop pickup",
+    );
+    configureRoute(
+        "multiStopNavigation",
+        "multiStopNavigationStatus",
+        "rider-navigation-stops",
+        "customer delivery",
+    );
+    configureRoute(
+        "completeActiveRouteNavigation",
+        "completeActiveRouteNavigationStatus",
+        "rider-combined-route-groups",
+        "pickup and delivery",
+        "rider-combined-route-groups",
+    );
+
+    const trackingElements = document.querySelectorAll(".rider-live-location[data-location-url]");
+    const statusElements = Array.from(trackingElements);
+    const needsCurrentLocation = Boolean(
+        statusElements.length
+        || routeMapElement
+        || document.querySelector("[data-order-distance]"),
+    );
+    if (!needsCurrentLocation) return;
+    if (currentLocationStatus) {
+        currentLocationStatus.textContent = "Getting your current location…";
+    }
+    if (!navigator.geolocation) {
+        statusElements.forEach((element) => {
+            element.textContent = "Live location is not supported by this browser.";
+        });
+        updateOrderDistanceLabels(null);
+        if (currentLocationStatus) {
+            currentLocationStatus.textContent = "Current location is not supported by this browser.";
+        }
+        return;
+    }
+
+    const csrfToken = document.cookie.split("; ")
+        .find((cookie) => cookie.startsWith("csrftoken="))
+        ?.split("=")[1];
+    let lastSentAt = 0;
+    let sending = false;
+    const watchId = navigator.geolocation.watchPosition(async (position) => {
+        const currentLocation = {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+        };
+        updateRiderMapLocation(currentLocation);
+        updateOrderDistanceLabels(currentLocation);
+        if (currentLocationStatus) {
+            currentLocationStatus.textContent = "Your current location is shown on the map; distances are straight-line estimates.";
+        }
+        const now = Date.now();
+        if (!statusElements.length || sending || now - lastSentAt < 15000) return;
+        sending = true;
+        lastSentAt = now;
+        const payload = new URLSearchParams({
+            latitude: String(position.coords.latitude),
+            longitude: String(position.coords.longitude),
+        });
+        try {
+            const results = await Promise.all(statusElements.map(async (element) => {
+                const response = await fetch(element.dataset.locationUrl, {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: {
+                        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                        "X-CSRFToken": csrfToken || "",
+                    },
+                    body: payload.toString(),
+                });
+                return response.ok;
+            }));
+            statusElements.forEach((element, index) => {
+                element.textContent = results[index]
+                    ? "Live location sharing is on. Customer will be notified when you arrive nearby."
+                    : "Could not update your live location. Please refresh and try again.";
+            });
+        } catch (error) {
+            console.error("Rider live location update failed.", error);
+            statusElements.forEach((element) => {
+                element.textContent = "Live location update failed. Check your connection.";
+            });
+        } finally {
+            sending = false;
+        }
+    }, () => {
+        updateOrderDistanceLabels(null);
+        statusElements.forEach((element) => {
+            element.textContent = "Allow location access to send the customer a nearby-rider alert.";
+        });
+        if (currentLocationStatus) {
+            currentLocationStatus.textContent = "Allow location access to show your current position and calculate order distances.";
+        }
+    }, {enableHighAccuracy: true, maximumAge: 5000, timeout: 15000});
+
+    window.addEventListener("pagehide", () => navigator.geolocation.clearWatch(watchId), {once: true});
+})();
+
+document.querySelectorAll(".rider-share-location").forEach((button) => {
+    button.addEventListener("click", async () => {
+        const coordinates = button.dataset.coordinates || "";
+        const payload = {
+            text: coordinates,
+        };
+        const status = button.parentElement.querySelector('[aria-live="polite"]');
+        try {
+            if (navigator.share) {
+                await navigator.share(payload);
+                status.textContent = "Coordinates shared. Choose a delivery or map app.";
+            } else {
+                await copyTextToClipboard(coordinates);
+                status.textContent = "Coordinates copied. Paste them into your delivery app.";
+            }
+        } catch (error) {
+            if (error.name !== "AbortError") {
+                status.textContent = "Could not share coordinates. Use Copy coordinates instead.";
+            }
+        }
+    });
+});
+
+async function copyTextToClipboard(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return;
+    }
+    const input = document.createElement("textarea");
+    input.value = text;
+    input.setAttribute("readonly", "");
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    document.body.appendChild(input);
+    input.select();
+    const copied = document.execCommand("copy");
+    input.remove();
+    if (!copied) {
+        throw new Error("Clipboard access is unavailable.");
+    }
+}
+
+document.querySelectorAll(".rider-copy-coordinates").forEach((button) => {
+    button.addEventListener("click", async () => {
+        const status = button.parentElement.querySelector('[aria-live="polite"]');
+        try {
+            await copyTextToClipboard(button.dataset.coordinates || "");
+            status.textContent = "Coordinates copied.";
+        } catch (error) {
+            status.textContent = "Could not copy coordinates. Check browser clipboard permission.";
+        }
+    });
+});
+
+document.querySelectorAll(".rider-copy-phone").forEach((button) => {
+button.addEventListener("click", async () => {
+    const status = button.parentElement.querySelector('[aria-live="polite"]');
+    try {
+        await copyTextToClipboard(button.dataset.phone || "");
+        status.textContent = "Phone number copied.";
+    } catch (error) {
+        status.textContent = "Could not copy the phone number. Check browser clipboard permission.";
+    }
+});
+});
+
+document.querySelectorAll(".rider-delivery-form").forEach((form) => {
+    const updateCodQr = () => {
+        const selectedMethod = form.querySelector('input[name="cod_payment_method"]:checked')?.value;
+        form.querySelectorAll("[data-cod-qr]").forEach((qr) => {
+            qr.classList.toggle("d-none", qr.dataset.codQr !== selectedMethod);
+        });
+    };
+    const updateReturnLabel = () => {
+        const inputs = Array.from(
+            form.querySelectorAll('input[name^="returned_quantity_"]')
+        );
+        const hasReturns = inputs.some((input) => Number(input.value) > 0);
+        const fullReturn = inputs.length > 0 && inputs.every(
+            (input) => Number(input.value) === Number(input.max)
+        );
+        const button = form.querySelector("[data-complete-delivery-label]");
+        if (button) {
+            button.textContent = fullReturn
+                ? "Use Return Full Order to Shop"
+                : hasReturns
+                    ? "Complete Delivery with Partial Return"
+                    : "Complete Delivery";
+            button.disabled = fullReturn;
+        }
+    };
+    form.querySelectorAll('input[name="cod_payment_method"]').forEach((radio) => {
+        radio.addEventListener("change", updateCodQr);
+    });
+    form.querySelectorAll('input[name^="returned_quantity_"]').forEach((input) => {
+        input.addEventListener("input", updateReturnLabel);
+    });
+    updateCodQr();
+    updateReturnLabel();
+});
+</script>
+{% if available_view and next_shared_order_available_in %}
+<script>
+window.setTimeout(() => window.location.reload(), {{ next_shared_order_available_in }} * 1000);
+</script>
+{% endif %}
+{% endblock %}

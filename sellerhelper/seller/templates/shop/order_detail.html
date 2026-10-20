@@ -1,0 +1,1037 @@
+{% extends "base.html" %}
+
+{% block title %}
+Order {{ shop_order.shop_order_number|default:shop_order.order.order_id }}
+{% endblock %}
+
+{% block content %}
+
+<style>
+
+.order-box {
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 15px;
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+.order-title {
+    font-size: 22px;
+    font-weight: 700;
+}
+
+.item-row {
+    padding: 15px 0;
+    border-bottom: 1px solid #eee;
+}
+
+.item-row:last-child {
+    border-bottom: 0;
+}
+
+.order-item-image {
+    width: 72px;
+    height: 72px;
+    flex: 0 0 72px;
+    object-fit: cover;
+    border-radius: 10px;
+    background: #f8f9fa;
+}
+
+.status-btn {
+    min-width: 130px;
+}
+
+.timeline {
+    border-left: 3px solid #dee2e6;
+    padding-left: 20px;
+}
+
+.timeline-item {
+    margin-bottom: 20px;
+}
+
+.timeline-status {
+    font-weight: 700;
+}
+
+.order-location-map {
+    height: 300px;
+    border-radius: 12px;
+    z-index: 0;
+}
+
+</style>
+
+
+<!-- HEADER -->
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+
+    <div>
+
+        <div class="order-title">
+
+            📦 Order #{{ shop_order.shop_order_number|default:shop_order.order.order_id }}
+
+        </div>
+
+        <div class="text-muted">
+
+            {{ shop_order.created_at|date:"d M Y, h:i A" }}
+
+        </div>
+
+    </div>
+
+
+    <div class="d-flex flex-wrap gap-2">
+        {% if can_edit_order_items %}
+            <a href="{% url 'shop_edit_order_items' shop_order.id %}" class="btn btn-outline-primary">
+                <i class="bi bi-pencil me-1"></i>Edit items
+            </a>
+        {% endif %}
+        <a href="{% url 'shop_detail' shop_order.shop.id %}" class="btn btn-outline-secondary">
+            <i class="bi bi-shop me-1"></i> Shop dashboard
+        </a>
+        <a href="{% url 'shop_order_list' %}?shop={{ shop_order.shop.id }}" class="btn btn-outline-primary">
+            <i class="bi bi-receipt me-1"></i> Orders
+        </a>
+    </div>
+
+</div>
+
+{% if voice_instruction %}
+<div class="order-box border-primary-subtle">
+    <h5 class="mb-2"><i class="bi bi-chat-square-text me-1"></i>Customer instruction for shop team</h5>
+    {% if voice_instruction.instruction_text %}
+        <p class="mb-3">{{ voice_instruction.instruction_text|linebreaksbr }}</p>
+    {% endif %}
+    {% if voice_instruction_audio_available %}
+        <audio class="w-100" controls preload="none">
+            <source src="{% url 'shop_order_instruction_audio' voice_instruction.id %}"
+                    type="{{ voice_instruction.audio_content_type }}">
+            Your browser cannot play this audio recording.
+        </audio>
+        <div class="small text-muted mt-2">
+            Available until one hour after delivery.
+        </div>
+    {% elif shop_order.delivery_completed_at and voice_instruction.audio_content_type %}
+        <div class="small text-muted">The voice instruction has expired.</div>
+    {% endif %}
+</div>
+{% endif %}
+
+
+<div class="row">
+
+    <div class="col-lg-8">
+
+
+        <!-- ORDER ITEMS -->
+
+        <div class="order-box">
+
+            <h5 class="mb-3">
+                Order Items
+            </h5>
+            <a href="{% url 'packing_slip' shop_order.id %}" target="_blank" rel="noopener" class="btn btn-sm btn-outline-primary mb-2">
+                <i class="bi bi-printer me-1"></i>{% if shop_order.seller_gstin %}Print tax invoice{% else %}Print bill / packing slip{% endif %}
+            </a>
+
+            {% for item in shop_order.order_items.all %}
+
+            <div class="item-row">
+
+                <div class="row align-items-center">
+
+                    <div class="col">
+                        <div class="d-flex align-items-center gap-3">
+                            {% if item.product_shop and item.product_shop.display_image_url %}
+                                <img src="{{ item.product_shop.display_image_url }}"
+                                     class="order-item-image border"
+                                     alt="{{ item.product_name }}"
+                                     loading="lazy"
+                                     decoding="async">
+                            {% else %}
+                                <div class="order-item-image border d-flex align-items-center justify-content-center text-muted"
+                                     role="img"
+                                     aria-label="No image available for {{ item.product_name }}">
+                                    <i class="bi bi-image fs-4" aria-hidden="true"></i>
+                                </div>
+                            {% endif %}
+
+                            <div class="min-w-0">
+                                <strong>
+                                    {{ item.product_name }}
+                                </strong>
+
+                                {% if item.sku %}
+                                    <div class="small text-muted">
+                                        SKU: {{ item.sku }}
+                                    </div>
+                                {% endif %}
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <div class="col-auto">
+                       {% if item.is_approximate_weight %}
+                           {% if item.final_weight %}{{ item.final_weight }} {{ item.weight_display_unit }}{% else %}{{ item.estimated_weight_calculation }}{% endif %}
+                           {% if item.final_weight %}<span class="badge text-bg-success">Final</span>{% else %}<span class="badge text-bg-warning">Estimated</span>{% endif %}
+                       {% else %}
+                           {% if item.is_bulk_order %}<span class="badge text-bg-primary">Bulk</span>{% endif %}
+                           {{ item.quantity_unit_calculation }}
+                       {% endif %}
+                    </div>
+
+                    <div class="col-auto">
+                        ₹{{ item.total }}
+                    </div>
+
+                    {% if item.returned_quantity %}
+                        <div class="col-12 small mt-2 {% if item.returned_received_quantity < item.returned_quantity %}text-warning-emphasis{% else %}text-success{% endif %}">
+                            Returned {{ item.returned_quantity }} ·
+                            {% if item.returned_received_quantity < item.returned_quantity %}
+                                {{ item.pending_return_quantity }} awaiting shop receipt
+                            {% else %}
+                                Received back into shop stock
+                            {% endif %}
+                        </div>
+                    {% endif %}
+
+                </div>
+
+            </div>
+
+            {% empty %}
+
+            <div class="text-muted">
+                No items found.
+            </div>
+
+            {% endfor %}
+
+            {% if has_pending_returns %}
+                <div class="alert alert-warning mt-3 mb-0">
+                    <strong>Returned items are with the rider.</strong>
+                    {% if can_receive_returns %}
+                        Confirm receipt only after the items are physically back at the shop. Confirmation restocks the listed quantities and removes them from the rider’s pending returns.
+                        <form method="post" action="{% url 'confirm_returned_items_received' shop_order.id %}" class="mt-3">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-success">
+                                <i class="bi bi-box-arrow-in-down me-1"></i>Confirm returned items received
+                            </button>
+                        </form>
+                    {% else %}
+                        Ask the shop owner or a staff member with stock-management permission to confirm the handoff.
+                    {% endif %}
+                </div>
+            {% endif %}
+
+            {% if cash_collection %}
+                <div class="card border-info mt-3">
+                    <div class="card-body">
+                        <h6 class="fw-bold mb-2">
+                            <i class="bi bi-cash-stack me-1"></i>
+                            {% if cash_collection.payment_method == "STAFF_UPI" %}Rider personal-UPI COD handover{% else %}Rider COD cash handover{% endif %}
+                        </h6>
+                        <div class="d-flex flex-wrap justify-content-between gap-2">
+                            <span>{% if cash_collection.payment_method == "STAFF_UPI" %}Personal UPI received{% else %}Cash collected{% endif %}: <strong>₹{{ cash_collection.amount|floatformat:2 }}</strong></span>
+                            <span>Rider: {{ cash_collection.rider.user.get_full_name|default:cash_collection.rider.user.username }}</span>
+                        </div>
+                        {% if can_edit_rider_cod_collection %}
+                            <form method="post" action="{% url 'edit_rider_cod_collection' shop_order.id %}" class="border rounded p-3 mt-3">
+                                {% csrf_token %}
+                                <label class="form-label small fw-semibold" for="edit-received-cod-{{ shop_order.id }}">Correct COD amount received from customer</label>
+                                <div class="input-group">
+                                    <span class="input-group-text">₹</span>
+                                    <input class="form-control" id="edit-received-cod-{{ shop_order.id }}"
+                                           type="number" name="received_amount" min="{{ cash_handover_amount|floatformat:2 }}"
+                                           max="{{ cod_collection_edit_max|floatformat:2 }}"
+                                           step="0.01" value="{{ cash_collection.amount|floatformat:2 }}" required>
+                                    <button type="submit" class="btn btn-outline-primary">Update amount</button>
+                                </div>
+                                <div class="form-text">You can correct this amount until the full handover is complete. Amount above the bill is credited to the customer's wallet. The amount cannot be lower than what the shop has already received.</div>
+                            </form>
+                        {% endif %}
+                        <div class="border rounded bg-light p-3 mt-3">
+                            <div class="d-flex justify-content-between gap-3">
+                                <span>This shop’s items subtotal</span>
+                                <strong>₹{{ shop_order.total_amount|floatformat:2 }}</strong>
+                            </div>
+                            {% if shop_order.delivery_fee %}
+                                <div class="d-flex justify-content-between gap-3 small text-muted mt-1">
+                                    <span>This shop’s delivery fee</span>
+                                    <span>₹{{ shop_order.delivery_fee|floatformat:2 }}</span>
+                                </div>
+                            {% endif %}
+                            <hr class="my-2">
+                            <div class="d-flex justify-content-between gap-3 small">
+                                <span>Full customer order bill</span>
+                                <strong>₹{{ shop_order.order.final_billing_amount|floatformat:2 }}</strong>
+                            </div>
+                            <div class="d-flex justify-content-between gap-3 small">
+                                <span>Cash applied to full order bill</span>
+                                <span>₹{{ shop_order.order.finally_received_amount|floatformat:2 }}</span>
+                            </div>
+                            {% if shop_order.order.wallet_amount_used %}
+                                <div class="d-flex justify-content-between gap-3 small">
+                                    <span>Paid from customer wallet</span>
+                                    <span>₹{{ shop_order.order.wallet_amount_used|floatformat:2 }}</span>
+                                </div>
+                            {% endif %}
+                            {% if shop_order.wallet_funded_proceeds %}
+                                <div class="d-flex justify-content-between gap-3 small text-success fw-semibold">
+                                    <span>Shop proceeds released from customer wallet</span>
+                                    <span>₹{{ shop_order.wallet_funded_proceeds|floatformat:2 }}</span>
+                                </div>
+                            {% endif %}
+                            {% if cod_overpayment_refund %}
+                                <div class="d-flex justify-content-between gap-3 small text-danger fw-semibold">
+                                    <span>Extra payment credited to customer wallet and debited from shop wallet</span>
+                                    <span>−₹{{ cod_overpayment_refund.amount|floatformat:2 }}</span>
+                                </div>
+                            {% endif %}
+                            {% if shop_order.order.payment_type|upper == "COD" %}
+                                <div class="d-flex justify-content-between gap-3 small fw-bold {% if shop_order.order.payment_amount > 0 %}text-danger{% else %}text-success{% endif %}">
+                                    <span>Remaining COD balance</span>
+                                    <span>₹{{ shop_order.order.payment_amount|floatformat:2 }}</span>
+                                </div>
+                            {% endif %}
+                            <div class="small text-muted mt-2">
+                                The shop subtotal is for this shop only. Rider cash is compared with the full customer bill, which can also include delivery, tax, and checkout charges.
+                            </div>
+                        </div>
+                        {% if cash_handover and cash_handover_remaining <= 0 %}
+                            <div class="alert alert-success mt-3 mb-0">
+                                <i class="bi bi-check-circle me-1"></i>
+                                Handover confirmed by {{ cash_handover.created_by.get_full_name|default:cash_handover.created_by.username|default:"shop staff" }}
+                                on {{ cash_handover.created_at|date:"d M Y, h:i A" }}.
+                                {% if shop_order.order.is_payment_done %}
+                                    Shop proceeds have been credited to the shop wallet after platform commission.
+                                {% else %}
+                                    The handover is recorded. Any wallet-funded proceeds shown above are released; ₹{{ shop_order.order.payment_amount|floatformat:2 }} is still due on the full customer order, so the remaining shop proceeds and commission are pending. Record later customer payments below.
+                                {% endif %}
+                            </div>
+                        {% elif cash_handover_remaining <= 0 %}
+                            <div class="alert alert-info mt-3 mb-0">No COD amount remains to be handed over.</div>
+                        {% elif can_confirm_rider_cash %}
+                            <p class="small text-muted mt-2 mb-3">
+                                {% if cash_collection.payment_method == "STAFF_UPI" %}
+                                    Confirm the amount transferred by the rider. Partial confirmations reduce the rider's outstanding personal-UPI balance.
+                                {% else %}
+                                    Confirm the amount physically received from the rider. You may confirm the full amount or a partial amount; the remaining balance stays outstanding.
+                                {% endif %}
+                            </p>
+                            <form method="post" action="{% url 'confirm_rider_cash_handover' shop_order.id %}">
+                                {% csrf_token %}
+                                <label class="form-label small" for="handover-amount-{{ shop_order.id }}">Amount received now (₹)</label>
+                                <input class="form-control mb-2" id="handover-amount-{{ shop_order.id }}"
+                                       type="number" name="received_amount" min="0.01"
+                                       max="{{ cash_handover_remaining|floatformat:2 }}"
+                                       step="0.01" value="{{ cash_handover_remaining|floatformat:2 }}" required>
+                                {% if cash_handover_amount > 0 %}
+                                    <div class="small text-muted mb-2">
+                                        Received so far ₹{{ cash_handover_amount|floatformat:2 }} · Remaining ₹{{ cash_handover_remaining|floatformat:2 }}
+                                    </div>
+                                {% endif %}
+                                <button type="submit" class="btn btn-success">
+                                    <i class="bi bi-cash-coin me-1"></i>
+                                    {% if cash_collection.payment_method == "STAFF_UPI" %}Confirm amount transferred{% else %}Confirm amount received{% endif %}
+                                </button>
+                            </form>
+                        {% else %}
+                            {% if cash_handover_amount > 0 %}
+                                <div class="alert alert-info mt-3 mb-0">
+                                    ₹{{ cash_handover_amount|floatformat:2 }} handed over so far; ₹{{ cash_handover_remaining|floatformat:2 }} remains outstanding.
+                                </div>
+                            {% else %}
+                            <div class="alert alert-warning mt-3 mb-0">
+                                Awaiting confirmation by the shop owner or an active manager.
+                            </div>
+                            {% endif %}
+                        {% endif %}
+                    </div>
+                </div>
+            {% endif %}
+
+            {% if shop_order.order.payment_type|upper == "COD" and shop_order.status == "DELIVERED" and shop_order.order.payment_amount > 0 %}
+                <div class="card border-warning mt-3">
+                    <div class="card-body">
+                        <h6 class="fw-bold">
+                            <i class="bi bi-cash-coin me-1"></i> Collect remaining COD balance
+                        </h6>
+                        <p class="small text-muted">
+                            Full order balance due: <strong>₹{{ shop_order.order.payment_amount|floatformat:2 }}</strong>.
+                            Record only cash actually received from the customer. Multiple partial payments are supported.
+                        </p>
+                        {% if can_collect_cod_balance %}
+                            <form method="post" action="{% url 'collect_cod_balance' shop_order.id %}" class="row g-2 align-items-end">
+                                {% csrf_token %}
+                                <div class="col-sm">
+                                    <label class="form-label small" for="cod-balance-amount">Amount received (₹)</label>
+                                    <input class="form-control" id="cod-balance-amount" name="amount"
+                                           type="number" min="0.01" max="{{ shop_order.order.payment_amount }}"
+                                           step="0.01" required>
+                                </div>
+                                <div class="col-sm-auto">
+                                    <button type="submit" class="btn btn-warning w-100">
+                                        Record payment
+                                    </button>
+                                </div>
+                            </form>
+                        {% else %}
+                            <div class="small text-muted">Only the shop owner or an active manager can record this payment.</div>
+                        {% endif %}
+                    </div>
+                </div>
+            {% endif %}
+
+            {% if cod_balance_payments %}
+                <div class="card border-0 bg-light mt-3">
+                    <div class="card-body">
+                        <h6 class="fw-bold">Later COD payments recorded</h6>
+                        <div class="list-group list-group-flush">
+                            {% for payment in cod_balance_payments %}
+                                <div class="list-group-item bg-transparent px-0 d-flex flex-wrap justify-content-between gap-2">
+                                    <span>
+                                        ₹{{ payment.amount|floatformat:2 }} · {{ payment.received_by.get_full_name|default:payment.received_by.username }}
+                                    </span>
+                                    <small class="text-muted">{{ payment.created_at|date:"d M Y, h:i A" }}</small>
+                                </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            {% endif %}
+
+            {% if approximate_items %}
+                <div class="alert alert-info mt-3 mb-2">
+                    This order contains weight-priced items. The final bill is updated after packing.
+                </div>
+                {% if can_finalize_weights %}
+                    <form method="post" action="{% url 'finalize_approximate_weights' shop_order.id %}" class="border rounded p-3 mt-3">
+                        {% csrf_token %}
+                        <h6 class="fw-bold">Enter packed weights</h6>
+                        {% for item in approximate_items %}
+                            <div class="mb-3">
+                                <label class="form-label" for="final-weight-{{ item.id }}">
+                                    {{ item.product_name }} · final packed weight ({{ item.weight_display_unit }}) · price ₹{{ item.price }}/{{ item.unit|default:item.product.unit|default:"unit" }}
+                                </label>
+                                <input class="form-control" id="final-weight-{{ item.id }}"
+                                       type="number" name="final_weight_{{ item.id }}"
+                                       min="0.001" step="0.001"
+                                       value="{{ item.final_weight|default:item.estimated_weight }}"
+                                       required>
+                                <small class="text-muted">Estimated: {{ item.estimated_weight_calculation }}</small>
+                            </div>
+                        {% endfor %}
+                        <button type="submit" class="btn btn-success">
+                            <i class="bi bi-check2-circle me-1"></i>Save weights and notify customer
+                        </button>
+                    </form>
+                {% endif %}
+            {% endif %}
+
+            <hr>
+
+
+            <div class="d-flex justify-content-between">
+
+                <strong>
+                    Shop items subtotal
+                </strong>
+
+                <strong>
+                    ₹{{ shop_order.total_amount }}
+                </strong>
+
+            </div>
+
+        </div>
+
+
+        <!-- CUSTOMER -->
+
+        <div class="order-box">
+
+            <h5>
+                👤 Customer
+            </h5>
+
+            <div class="mt-3">
+
+                <div>
+                    <strong>Customer:</strong>
+                    {{ customer_name }}
+                </div>
+
+                <div class="mt-2">
+
+                    <strong>Phone:</strong>
+
+                    {{ shop_order.order.delivery_contact_no }}
+
+                </div>
+
+                <div class="mt-2">
+
+                    <strong>Delivery Address:</strong>
+
+                    <div class="text-muted">
+
+                        {{ shop_order.order.delivery_address }}
+
+                    </div>
+
+                </div>
+
+                {% if shop_order.order.delivery_location %}
+
+                <div class="mt-2">
+
+                    <strong>
+                        Location:
+                    </strong>
+
+                    {% if customer_coordinates %}
+                        <span class="text-muted">{{ customer_coordinates.lat|floatformat:6 }}, {{ customer_coordinates.lng|floatformat:6 }}</span>
+                    {% else %}
+                        <span class="text-muted">{{ shop_order.order.delivery_location }}</span>
+                    {% endif %}
+
+                    <div class="mt-2">
+                        <a href="{% if customer_coordinates %}https://www.google.com/maps/dir/?api=1&amp;destination={{ customer_coordinates.lat }},{{ customer_coordinates.lng }}{% else %}https://www.google.com/maps/search/?api=1&amp;query={{ shop_order.order.delivery_location|urlencode }}{% endif %}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-primary">
+                            📍 Open in map
+                        </a>
+                        {% if customer_coordinates %}
+                            <button type="button" class="btn btn-sm btn-outline-secondary copy-coordinates"
+                                    data-coordinates="{{ customer_coordinates.lat }},{{ customer_coordinates.lng }}">
+                                <i class="bi bi-copy me-1"></i>Copy coordinates
+                            </button>
+                        {% endif %}
+                    </div>
+
+                </div>
+
+                {% endif %}
+
+            </div>
+
+            {% if customer_coordinates or rider_coordinates %}
+                <div class="mt-3">
+                    <div id="orderLocationMap" class="order-location-map border"
+                         role="region" aria-label="Customer and rider locations on map"></div>
+                    <div id="riderLocationStatus" class="small text-muted mt-2" aria-live="polite"></div>
+                </div>
+            {% endif %}
+
+        </div>
+
+
+        <!-- STATUS HISTORY -->
+
+        <div class="order-box">
+
+            <h5 class="mb-3">
+                Order Timeline
+            </h5>
+
+            {% with status_history=shop_order.status_history.all %}
+                {% if status_history|length > 1 %}
+                    <button class="btn btn-sm btn-outline-secondary mb-3" type="button"
+                            data-bs-toggle="collapse" data-bs-target="#order-timeline-history-{{ shop_order.id }}"
+                            aria-expanded="false" aria-controls="order-timeline-history-{{ shop_order.id }}">
+                        Show earlier updates ({{ status_history|length|add:"-1" }})
+                    </button>
+                    <div class="collapse" id="order-timeline-history-{{ shop_order.id }}">
+                        <div class="timeline">
+                            {% for history in status_history %}
+                                {% if not forloop.last %}
+                                    <div class="timeline-item">
+                                        <div class="timeline-status">{{ history.get_status_display|default:history.status }}</div>
+                                        <div class="small text-muted">{{ history.created_at|date:"d M Y, h:i A" }}</div>
+                                        {% if history.remark %}<div class="mt-1">{{ history.remark }}</div>{% endif %}
+                                    </div>
+                                {% endif %}
+                            {% endfor %}
+                        </div>
+                    </div>
+                {% endif %}
+
+                {% for history in status_history %}
+                    {% if forloop.last %}
+                        <div class="timeline">
+                            <div class="timeline-item mb-0">
+                                <div class="timeline-status">{{ history.get_status_display|default:history.status }}</div>
+                                <div class="small text-muted">{{ history.created_at|date:"d M Y, h:i A" }}</div>
+                                {% if history.remark %}<div class="mt-1">{{ history.remark }}</div>{% endif %}
+                            </div>
+                        </div>
+                    {% endif %}
+                {% empty %}
+                    <div class="text-muted">No status history.</div>
+                {% endfor %}
+            {% endwith %}
+
+        </div>
+
+    </div>
+
+
+    <!-- RIGHT -->
+
+    <div class="col-lg-4">
+
+
+        <!-- STATUS -->
+
+        <div class="order-box">
+
+            <h5>
+                Order Status
+            </h5>
+
+            <div class="mt-3">
+
+                <span
+                    class="badge bg-primary fs-6"
+                >
+
+                    {% if shop_order.status == "RIDER_ASSIGNED" %}Accepted by Rider{% elif shop_order.status == "PICKED_UP" %}Picked Up{% elif shop_order.status == "OUT_FOR_DELIVERY" %}Out for Delivery{% else %}{{ shop_order.status }}{% endif %}
+
+                </span>
+
+            </div>
+
+
+            <hr>
+
+
+            {% if can_change_order_status %}
+            <form method="post" action="{% url 'shop_order_status' shop_order.id %}">
+
+                {% csrf_token %}
+
+
+                <label class="form-label">
+
+                    Change Status
+
+                </label>
+                <div class="small text-muted mb-2">
+                    The rider confirms parcel pickup. Out for delivery starts automatically after the rider collects every accepted parcel.
+                </div>
+
+
+                <select
+                    name="status"
+                    id="orderStatusSelect"
+                    class="form-select mb-3"
+                    aria-label="Change order status"
+                    onchange="this.form.requestSubmit()"
+                >
+
+                    <option value="PLACED" {% if shop_order.status == "PLACED" %}selected{% endif %}>
+                        Placed
+                    </option>
+
+                    <option value="CONFIRMED" {% if shop_order.status == "CONFIRMED" %}selected{% endif %}>
+                        Confirmed
+                    </option>
+
+                    <option value="PACKING" {% if shop_order.status == "PACKING" %}selected{% endif %}>
+                        Packing
+                    </option>
+
+                    <option value="READY" {% if shop_order.status == "READY" %}selected{% endif %}>
+                        Ready for Pickup
+                    </option>
+
+                    {% if shop_order.status == "RIDER_ASSIGNED" %}
+                    <option value="RIDER_ASSIGNED" selected disabled>
+                        Accepted by Rider
+                    </option>
+                    {% endif %}
+
+                    <option value="PICKED_UP" {% if shop_order.status == "PICKED_UP" %}selected{% endif %} disabled>
+                        Picked Up
+                    </option>
+
+                    <option value="OUT_FOR_DELIVERY" {% if shop_order.status == "OUT_FOR_DELIVERY" %}selected{% endif %} disabled>
+                        Out for Delivery
+                    </option>
+
+                    <option value="DELIVERED" {% if shop_order.status == "DELIVERED" %}selected{% endif %}>
+                        Delivered
+                    </option>
+
+                    <option value="CANCELLED" {% if shop_order.status == "CANCELLED" %}selected{% endif %}>
+                        Cancelled
+                    </option>
+
+                </select>
+
+
+                <noscript><button class="btn btn-primary w-100">Update Status</button></noscript>
+
+            </form>
+            {% else %}
+            <p class="small text-muted mb-0">Your staff permissions do not allow changing this order’s status.</p>
+            {% endif %}
+
+        </div>
+
+
+        <!-- SHOP -->
+
+        <div class="order-box">
+
+            <h5>
+                🏪 Shop
+            </h5>
+
+            <div class="mt-3">
+
+                <strong>
+                    {{ shop_order.shop.name }}
+                </strong>
+
+            </div>
+
+            <div class="small text-muted mt-2">
+                {% if shop_order.shop.location.lat is not None and shop_order.shop.location.lng is not None %}
+                    <div>Shop coordinates: {{ shop_order.shop.location.lat|floatformat:5 }}, {{ shop_order.shop.location.lng|floatformat:5 }}</div>
+                    <a href="https://www.google.com/maps/search/?api=1&amp;query={{ shop_order.shop.location.lat }},{{ shop_order.shop.location.lng }}"
+                       target="_blank" rel="noopener noreferrer">Open shop location in Maps</a>
+                {% else %}
+                    Shop location not available.
+                {% endif %}
+            </div>
+
+        </div>
+
+
+        <!-- PACKER ASSIGNMENT -->
+
+        <div class="order-box">
+
+            <h5>
+                📦 Packer Assignment
+            </h5>
+
+            <div class="mt-3">
+                {% if shop_order.assigned_packer %}
+                    <div>
+                        Assigned packer:
+                        <strong>
+                            {{ shop_order.assigned_packer.user.username }}
+                        </strong>
+                    </div>
+                    {% if shop_order.assigned_packer.mobile_no %}
+                        <a class="small" href="tel:{{ shop_order.assigned_packer.mobile_no }}">{{ shop_order.assigned_packer.mobile_no }}</a>
+                    {% endif %}
+                {% else %}
+                    <div class="text-muted">
+                        No packer assigned yet.
+                    </div>
+                {% endif %}
+            </div>
+
+            {% if can_assign_packer %}
+                <form method="post" action="{% url 'assign_packer' shop_order.id %}" class="mt-3">
+                    {% csrf_token %}
+                    <label class="form-label">Assign packer</label>
+                    <select name="packer" class="form-select mb-3">
+                        <option value="">Select packer</option>
+                        {% for packer in available_packers %}
+                            <option value="{{ packer.id }}" {% if shop_order.assigned_packer and shop_order.assigned_packer.id == packer.id %}selected{% endif %}>
+                                {{ packer.user.get_full_name|default:packer.user.username }}{% if packer.mobile_no %} · {{ packer.mobile_no }}{% endif %}
+                            </option>
+                        {% empty %}
+                            <option value="" disabled>No active packers available</option>
+                        {% endfor %}
+                    </select>
+                    <button type="submit" class="btn btn-warning w-100">Assign Packer</button>
+                </form>
+            {% endif %}
+
+            {% if current_packer_can_accept or current_packer_can_self_accept %}
+                <form method="post" action="{% url 'accept_packer_order' shop_order.id %}" class="mt-3">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-success w-100">Accept This Packing Order</button>
+                </form>
+            {% endif %}
+        </div>
+
+        <!-- RIDER ASSIGNMENT -->
+
+        <div class="order-box">
+
+            <h5>
+                🚚 Rider Assignment
+            </h5>
+
+            <div class="mt-3">
+                {% if shop_order.assigned_rider %}
+                    <div>
+                        Assigned rider:
+                        <strong>
+                            {{ shop_order.assigned_rider.user.username }}
+                        </strong>
+                    </div>
+                    {% if shop_order.assigned_rider.mobile_no %}
+                        <a class="small" href="tel:{{ shop_order.assigned_rider.mobile_no }}">{{ shop_order.assigned_rider.mobile_no }}</a>
+                    {% endif %}
+                {% else %}
+                    <div class="text-muted">
+                        No rider assigned yet.
+                    </div>
+                {% endif %}
+            </div>
+
+            {% if can_confirm_rider_pickup and shop_order.status == "RIDER_ASSIGNED" and shop_order.assigned_rider %}
+                <div class="alert alert-warning small mt-3 mb-2">
+                    Check the rider matches the person collecting this parcel, then enter the OTP shown on their rider dashboard.
+                </div>
+                <div class="border rounded p-3">
+                    <div><strong>Shop:</strong> {{ shop_order.shop.name }}</div>
+                    <div><strong>Order:</strong> {{ shop_order.shop_order_number|default:shop_order.order.order_id }}</div>
+                    <div><strong>Expected rider:</strong> {{ shop_order.assigned_rider.user.get_full_name|default:shop_order.assigned_rider.user.username }}</div>
+                    <div class="small text-muted mb-3">
+                        This OTP is valid for five minutes and is tied to this rider, shop, and order.
+                    </div>
+                    <form method="post" action="{% url 'rider_pickup_order' shop_order.id %}">
+                        {% csrf_token %}
+                        <label class="form-label small" for="pickupOtp">Rider's six-digit pickup OTP</label>
+                        <input type="text" class="form-control mb-2" id="pickupOtp" name="pickup_otp"
+                               data-pickup-otp-input
+                               inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+                               autocomplete="one-time-code" required>
+                        <button type="button" class="btn btn-outline-secondary w-100 mb-2"
+                                data-sellerhelper-scan-order="pickup-otp">
+                            <i class="bi bi-qr-code-scan me-1"></i> Scan rider OTP QR
+                        </button>
+                        <button type="submit" class="btn btn-warning w-100">
+                            <i class="bi bi-box-seam me-1"></i> Verify rider and confirm parcel pickup
+                        </button>
+                    </form>
+                </div>
+            {% endif %}
+
+            {% if can_assign_rider %}
+                <form method="post" action="{% url 'assign_rider' shop_order.id %}" class="mt-3">
+                    {% csrf_token %}
+                    <label class="form-label">Assign rider</label>
+                    <select name="rider" class="form-select mb-3">
+                        <option value="">Select rider</option>
+                        {% for rider in available_riders %}
+                            <option value="{{ rider.id }}" {% if shop_order.assigned_rider and shop_order.assigned_rider.id == rider.id %}selected{% endif %}>
+                                {{ rider.user.get_full_name|default:rider.user.username }}{% if rider.mobile_no %} · {{ rider.mobile_no }}{% endif %}
+                            </option>
+                        {% empty %}
+                            <option value="" disabled>No active riders available</option>
+                        {% endfor %}
+                    </select>
+                    <button type="submit" class="btn btn-warning w-100">Assign Rider</button>
+                </form>
+            {% endif %}
+
+            {% if current_rider_can_accept %}
+                <form method="post" action="{% url 'accept_rider_order' shop_order.id %}" class="mt-3">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-success w-100">Accept This Order</button>
+                </form>
+            {% endif %}
+
+            {% if shop_order.assigned_rider %}
+                <div class="mt-3">
+                    {% if shop_order.rider_last_location %}
+                        <div class="mt-2 small text-muted">
+                            <strong>Last update:</strong>
+                            <span id="riderLocationText">{{ rider_coordinates.lat|floatformat:6 }}, {{ rider_coordinates.lng|floatformat:6 }}</span>
+                        </div>
+                    {% endif %}
+                    {% if shop_order.rider_cancel_reason %}
+                        <div class="mt-2"><strong>Cancellation reason:</strong> {{ shop_order.rider_cancel_reason }}</div>
+                    {% endif %}
+                    {% if shop_order.order.payment_status %}
+                        <div class="mt-2"><strong>Payment status:</strong> {{ shop_order.order.payment_status }}</div>
+                    {% endif %}
+                </div>
+            {% endif %}
+        </div>
+
+        <!-- DELIVERY -->
+
+        <div class="order-box">
+
+            <h5>
+                🚚 Delivery
+            </h5>
+
+            <div class="mt-3">
+
+                <div>
+
+                    Packing estimate:
+                    <strong>
+                        {% if shop_order.packing_minutes %}{{ shop_order.packing_minutes }} min{% else %}Not available{% endif %}
+                    </strong>
+
+                </div>
+
+                <div class="mt-2">
+
+                    Rider travel estimate:
+                    <strong>
+                        {% if shop_order.rider_eta_minutes %}{{ shop_order.rider_eta_minutes }} min{% else %}Not available{% endif %}
+                    </strong>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+{% if customer_coordinates or rider_coordinates %}
+    {{ customer_coordinates|json_script:"customer-location-data" }}
+    {{ rider_coordinates|json_script:"rider-location-data" }}
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        (() => {
+            const mapElement = document.getElementById("orderLocationMap");
+            if (!mapElement) return;
+            if (!window.L) {
+                const status = document.getElementById("riderLocationStatus");
+                if (status) status.textContent = "The map library could not load. Check network access and reload this page.";
+                return;
+            }
+
+            const customer = JSON.parse(document.getElementById("customer-location-data").textContent);
+            let rider = JSON.parse(document.getElementById("rider-location-data").textContent);
+            const map = L.map(mapElement);
+            const normalLayer = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+                maxZoom: 20,
+                attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+                subdomains: "abcd"
+            });
+            const satelliteLayer = L.tileLayer(
+                "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+                {maxZoom: 19, attribution: "Tiles &copy; Esri"}
+            );
+            satelliteLayer.addTo(map);
+            L.control.layers({
+                "Normal": normalLayer,
+                "Satellite": satelliteLayer
+            }).addTo(map);
+            const mapStatus = document.getElementById("riderLocationStatus");
+            let currentLocationMarker = null;
+            [normalLayer, satelliteLayer].forEach((layer) => {
+                layer.on("tileerror", () => {
+                    if (mapStatus) mapStatus.textContent = "Map tiles could not be loaded. Try the other layer or check network access.";
+                });
+                layer.on("tileload", () => {
+                    if (mapStatus) mapStatus.textContent = "";
+                });
+            });
+            const markers = [];
+            let riderMarker = null;
+
+            if (customer) {
+                markers.push(L.marker([customer.lat, customer.lng]).addTo(map).bindPopup("Customer delivery location"));
+            }
+            const showRider = (location, name) => {
+                if (!location) return;
+                const point = [location.lat, location.lng];
+                if (riderMarker) riderMarker.setLatLng(point);
+                else riderMarker = L.marker(point).addTo(map);
+                riderMarker.bindPopup(name ? `Rider: ${L.Util.escapeHTML(name)}` : "Rider’s latest location");
+                if (!markers.includes(riderMarker)) markers.push(riderMarker);
+                const text = document.getElementById("riderLocationText");
+                if (text) text.textContent = `${Number(location.lat).toFixed(6)}, ${Number(location.lng).toFixed(6)}`;
+            };
+            const locateButton = L.control({position: "topright"});
+            locateButton.onAdd = () => {
+                const button = L.DomUtil.create("button", "btn btn-sm btn-light border");
+                button.type = "button";
+                button.textContent = "Current location";
+                button.setAttribute("aria-label", "Center map on my current location");
+                L.DomEvent.disableClickPropagation(button);
+                L.DomEvent.on(button, "click", () => {
+                    if (!navigator.geolocation) {
+                        if (mapStatus) mapStatus.textContent = "Location is not supported by this browser.";
+                        return;
+                    }
+                    if (mapStatus) mapStatus.textContent = "Getting your current location…";
+                    navigator.geolocation.getCurrentPosition(
+                        (position) => {
+                            const point = [position.coords.latitude, position.coords.longitude];
+                            if (currentLocationMarker) currentLocationMarker.setLatLng(point);
+                            else currentLocationMarker = L.marker(point).addTo(map);
+                            currentLocationMarker.bindPopup("Your current location").openPopup();
+                            map.setView(point, 16);
+                            if (mapStatus) mapStatus.textContent = "Map centered on your current location.";
+                        },
+                        (error) => {
+                            if (mapStatus) mapStatus.textContent = error.code === error.PERMISSION_DENIED
+                                ? "Location access is blocked. Allow browser location permission and try again."
+                                : "Could not get your location. Check the device location service and try again.";
+                        },
+                        {enableHighAccuracy: true, timeout: 10000, maximumAge: 60000}
+                    );
+                });
+                return button;
+            };
+            locateButton.addTo(map);
+            showRider(rider, "");
+            if (markers.length) map.fitBounds(L.featureGroup(markers).getBounds().pad(0.2), {maxZoom: 15});
+            else map.setView([rider.lat, rider.lng], 15);
+            setTimeout(() => map.invalidateSize(), 0);
+
+            document.querySelectorAll(".copy-coordinates").forEach((button) => {
+                button.addEventListener("click", async () => {
+                    try {
+                        await navigator.clipboard.writeText(button.dataset.coordinates);
+                        button.innerHTML = '<i class="bi bi-check2 me-1"></i>Copied';
+                    } catch (error) {
+                        console.error("Could not copy delivery coordinates.", error);
+                    }
+                });
+            });
+
+            const status = document.getElementById("riderLocationStatus");
+            const refreshRiderLocation = async () => {
+                try {
+                    const response = await fetch("{% url 'shop_order_rider_location' shop_order.id %}", {
+                        headers: {"Accept": "application/json"}
+                    });
+                    if (!response.ok) throw new Error(`Location request failed (${response.status}).`);
+                    const data = await response.json();
+                    rider = data.location;
+                    showRider(rider, data.rider_name);
+                    if (status) status.textContent = rider
+                        ? `Live rider location${data.rider_name ? ` · ${data.rider_name}` : ""}`
+                        : "Rider location is not currently available.";
+                    if (rider && customer) {
+                        map.fitBounds(L.featureGroup(markers).getBounds().pad(0.2), {maxZoom: 15});
+                    }
+                } catch (error) {
+                    console.error("Could not refresh rider location.", error);
+                    if (status) status.textContent = "Rider location could not be refreshed.";
+                }
+            };
+            refreshRiderLocation();
+            window.setInterval(refreshRiderLocation, 15000);
+        })();
+    </script>
+{% endif %}
+{% endblock %}

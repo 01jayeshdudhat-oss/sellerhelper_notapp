@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+
+{% block title %}Shared rider groups · {{ site_branding.site_name|default:'Seller Helper' }}{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+        <div>
+            <h1 class="h2 fw-bold mb-1">Shared rider groups</h1>
+            <p class="text-muted mb-0">Approved shops can use ready orders to find an available rider from any group member shop.</p>
+        </div>
+        <a href="{% url 'dashboard' %}" class="btn btn-outline-secondary">Back to dashboard</a>
+    </div>
+
+    {% if can_create_group %}
+        <section class="card border-0 shadow-sm mb-4">
+            <div class="card-body">
+                <h2 class="h5 fw-bold">Create a group</h2>
+                <p class="small text-muted">Group creation is enabled by the administrator for the managing shop. The managing shop joins automatically.</p>
+                <form method="post" class="row g-3 align-items-end">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="create">
+                    <div class="col-md-5">
+                        <label class="form-label" for="{{ create_form.name.id_for_label }}">Group name</label>
+                        {{ create_form.name }}
+                        {{ create_form.name.errors }}
+                    </div>
+                    <div class="col-md-5">
+                        <label class="form-label" for="{{ create_form.created_from_shop.id_for_label }}">Managing shop</label>
+                        {{ create_form.created_from_shop }}
+                        {{ create_form.created_from_shop.errors }}
+                    </div>
+                    <div class="col-md-2 d-grid">
+                        <button class="btn btn-primary" type="submit">Create group</button>
+                    </div>
+                </form>
+            </div>
+        </section>
+    {% endif %}
+
+    {% if pending_requests %}
+        <section class="card border-warning shadow-sm mb-4">
+            <div class="card-header bg-warning-subtle fw-semibold">Shop requests awaiting your approval</div>
+            <div class="list-group list-group-flush">
+                {% for membership in pending_requests %}
+                    <div class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-3">
+                        <div>
+                            <strong>{{ membership.group.name }}</strong>
+                            <div class="small text-muted">
+                                {{ membership.group.created_from_shop.name }} requests to share with {{ membership.shop.name }}
+                                · {{ membership.requested_at|date:"d M Y, h:i A" }}
+                            </div>
+                        </div>
+                        <div class="d-flex gap-2">
+                            <form method="post" action="{% url 'review_shared_rider_group_shop' membership.pk %}">
+                                {% csrf_token %}
+                                <input type="hidden" name="action" value="approve">
+                                <button class="btn btn-sm btn-success" type="submit">Approve</button>
+                            </form>
+                            <form method="post" action="{% url 'review_shared_rider_group_shop' membership.pk %}">
+                                {% csrf_token %}
+                                <input type="hidden" name="action" value="reject">
+                                <button class="btn btn-sm btn-outline-danger" type="submit">Reject</button>
+                            </form>
+                        </div>
+                    </div>
+                {% endfor %}
+            </div>
+        </section>
+    {% endif %}
+
+    {% if shop_group_memberships %}
+        <section class="card border-0 shadow-sm mb-4">
+            <div class="card-header fw-semibold">Groups involving your shops</div>
+            <div class="list-group list-group-flush">
+                {% for membership in shop_group_memberships %}
+                    <div class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2">
+                        <span>{{ membership.group.name }} · {{ membership.shop.name }}</span>
+                        <div class="d-flex align-items-center gap-2">
+                            {% if membership.status == "APPROVED" %}
+                                <span class="badge text-bg-success">Approved</span>
+                            {% elif membership.status == "PENDING" %}
+                                <span class="badge text-bg-warning">Awaiting your approval</span>
+                            {% else %}
+                                <span class="badge text-bg-secondary">Declined</span>
+                            {% endif %}
+                            {% if membership.group.owner_id != user.id %}
+                                <form method="post" action="{% url 'exit_shared_rider_group' membership.pk %}">
+                                    {% csrf_token %}
+                                    <button class="btn btn-sm btn-outline-danger" type="submit">Exit group</button>
+                                </form>
+                            {% endif %}
+                        </div>
+                    </div>
+                {% endfor %}
+            </div>
+        </section>
+    {% endif %}
+
+    <section>
+        <h2 class="h4 fw-bold mb-3">Your groups</h2>
+        <div class="row g-3">
+            {% for group in groups %}
+                <div class="col-12 col-xl-6">
+                    <article class="card border-0 shadow-sm h-100">
+                        <div class="card-body">
+                            <h3 class="h5 fw-bold mb-1">{{ group.name }}</h3>
+                            <p class="small text-muted mb-3">Managed by {{ group.created_from_shop.name }}</p>
+                            <h4 class="small text-uppercase text-muted">Member shops</h4>
+                            <ul class="list-group list-group-flush mb-3">
+                                {% for membership in group.shop_memberships.all %}
+                                    <li class="list-group-item px-0 d-flex justify-content-between align-items-center gap-2">
+                                        <span>{{ membership.shop.name }} <span class="text-muted">(#{{ membership.shop_id }})</span></span>
+                                        <div class="d-flex align-items-center gap-2">
+                                            {% if membership.status == "APPROVED" %}
+                                                <span class="badge text-bg-success">Approved</span>
+                                            {% elif membership.status == "PENDING" %}
+                                                <span class="badge text-bg-warning">Awaiting owner</span>
+                                            {% else %}
+                                                <span class="badge text-bg-secondary">Declined</span>
+                                            {% endif %}
+                                            <form method="post">
+                                                {% csrf_token %}
+                                                <input type="hidden" name="action" value="remove-shop">
+                                                <input type="hidden" name="membership_id" value="{{ membership.pk }}">
+                                                <button class="btn btn-sm btn-outline-danger" type="submit">Remove</button>
+                                            </form>
+                                        </div>
+                                    </li>
+                                {% empty %}
+                                    <li class="list-group-item px-0 text-muted">No shops have joined.</li>
+                                {% endfor %}
+                            </ul>
+                            <form method="post" class="row g-2 align-items-end">
+                                {% csrf_token %}
+                                <input type="hidden" name="action" value="add-shop">
+                                <input type="hidden" name="group_id" value="{{ group.pk }}">
+                                <div class="col">
+                                    <label class="form-label small" for="shop-id-{{ group.pk }}">Request a shop by ID</label>
+                                    <input class="form-control" type="number" min="1" id="shop-id-{{ group.pk }}" name="shop_id" placeholder="Shop ID" required>
+                                </div>
+                                <div class="col-auto">
+                                    <button class="btn btn-outline-primary" type="submit">Add shop</button>
+                                </div>
+                            </form>
+                            {% if add_shop_form.shop_id.errors %}
+                                <div class="small text-danger mt-2">{{ add_shop_form.shop_id.errors }}</div>
+                            {% endif %}
+                        </div>
+                    </article>
+                </div>
+            {% empty %}
+                <div class="col-12">
+                    <div class="alert alert-light border">You have not created any rider-sharing groups yet.</div>
+                </div>
+            {% endfor %}
+        </div>
+    </section>
+</div>
+{% endblock %}

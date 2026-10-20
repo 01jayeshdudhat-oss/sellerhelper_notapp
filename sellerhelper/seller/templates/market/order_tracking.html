@@ -1,0 +1,494 @@
+{% extends "base.html" %}
+
+{% block title %}
+Order Tracking - {{ order.tracking_code|default:order.order_id }}
+{% endblock %}
+
+{% block content %}
+
+<div class="container py-4" id="order-tracking-live"
+     data-updates-url="{% url 'order_tracking_updates' order.tracking_code|default:order.order_id %}">
+    <form class="d-none" aria-hidden="true">{% csrf_token %}</form>
+
+    <!-- Order Header -->
+
+    <div class="card shadow-sm border-0 mb-4">
+
+        <div class="card-body">
+
+            <div class="d-flex justify-content-between align-items-center">
+
+                <div>
+
+                    <h4 class="mb-1">
+                        Tracking #{{ order.tracking_code|default:order.order_id }}
+                    </h4>
+
+                    <small class="text-muted">
+                        {{ order.created_at|date:"d M Y, h:i A" }}
+                    </small>
+
+                </div>
+
+                <span class="badge bg-success">
+                    {{ order.status|default:"PLACED" }}
+                </span>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- Delivery -->
+
+    <div class="card shadow-sm border-0 mb-4">
+
+        <div class="card-body">
+
+            <h5 class="mb-3">
+                📍 Delivery Address
+            </h5>
+
+            <div>
+                {{ order.delivery_address }}
+            </div>
+
+            {% if order.delivery_contact_no %}
+
+                <div class="text-muted mt-1">
+                    📞 {{ order.delivery_contact_no }}
+                </div>
+
+            {% endif %}
+
+            <div class="row mt-3 g-3">
+                <div class="col-md-6">
+                    <div class="border rounded p-3 bg-light">
+                        <div class="small text-muted">Customer OTP</div>
+                        <div class="fs-5 fw-bold">{{ customer_otp }}</div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="border rounded p-3 bg-light">
+                        <div class="small text-muted">Rider OTP</div>
+                        <div class="fs-5 fw-bold">{{ rider_otp }}</div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- Shops -->
+
+    {% for shop_order in shop_orders %}
+
+    <div class="card shadow-sm border-0 mb-4">
+
+        <div class="card-header bg-white">
+
+            <div class="d-flex justify-content-between">
+
+                <strong>
+                    🏪 {{ shop_order.shop.name }} · #{{ shop_order.shop_order_number|default:shop_order.order.order_id }}
+                </strong>
+
+                <span class="badge bg-primary">
+                    {{ shop_order.status }}
+                </span>
+
+            </div>
+            {% if shop_order.is_scheduled_delivery %}
+                <div class="alert alert-warning py-2 mt-2 mb-0" role="status">
+                    <strong>Scheduled delivery</strong> — this order was placed while the shop was closed.
+                    The shop will confirm the delivery timing.
+                </div>
+            {% endif %}
+
+        </div>
+
+
+        <div class="card-body">
+
+            <!-- Products -->
+
+            {% for item in shop_order.order_items.all %}
+
+            <div class="d-flex align-items-center border-bottom py-3">
+
+                <div class="flex-grow-1">
+
+                    <div class="fw-semibold">
+                        {{ item.product_name }}
+                    </div>
+
+                    {% if item.sku %}
+
+                        <small class="text-muted">
+                            SKU: {{ item.sku }}
+                        </small>
+
+                    {% endif %}
+
+                    <div class="small text-muted">
+                        ₹{{ item.price }}
+                        ×
+                        {% if item.is_approximate_weight %}
+                            {% if item.final_weight %}{{ item.final_weight }} {{ item.weight_display_unit }}{% else %}about {{ item.estimated_weight_calculation }}{% endif %}
+                        {% else %}
+                            {{ item.quantity_unit_calculation }}
+                        {% endif %}
+
+                    </div>
+
+                </div>
+
+
+                <div class="fw-semibold">
+
+                    ₹{{ item.total }}
+
+                </div>
+
+            </div>
+
+            {% endfor %}
+
+
+            <!-- Shop Total -->
+
+            <div class="d-flex justify-content-between mt-3 small text-muted">
+                <span>Delivery fee · {{ shop_order.shop.name }}</span>
+                <span>
+                    {% if shop_order.delivery_fee %}₹{{ shop_order.delivery_fee|floatformat:2 }}{% else %}<span class="text-success">Free</span>{% endif %}
+                </span>
+            </div>
+
+            <div class="d-flex justify-content-between mt-3">
+
+                <strong>
+                    Shop Total
+                </strong>
+
+                <strong>
+                    ₹{{ shop_order.total_amount }}
+                </strong>
+
+            </div>
+
+            {% if order.final_billing_notified_at %}
+                <div class="alert alert-info mt-3 mb-0">
+                    Final packed weight and billing total updated
+                    {{ order.final_billing_notified_at|date:"d M Y, h:i A" }}.
+                    {% if order.payment_amount > 0 %}Remaining payment: ₹{{ order.payment_amount }}.{% endif %}
+                </div>
+            {% endif %}
+
+
+            <!-- Separate stage timers -->
+            <div class="row g-2 mt-2" data-shop-order-timers="{{ shop_order.id }}">
+                <div class="col-md-6">
+                    <div class="alert alert-warning mb-0 h-100"
+                         data-order-stage-timer="{{ shop_order.id }}-packing"
+                         data-timer-state="{{ shop_order.customer_timers.packing.state }}"
+                         data-timer-elapsed-seconds="{{ shop_order.customer_timers.packing.elapsed_seconds|default_if_none:'' }}"
+                         data-timer-estimated-seconds="{{ shop_order.customer_timers.packing.estimated_seconds }}"
+                         data-timer-elapsed-active="{{ shop_order.customer_timers.packing.elapsed_active|yesno:'true,false' }}"
+                         {% if shop_order.customer_timers.packing.remaining_seconds != None %}data-timer-remaining-seconds="{{ shop_order.customer_timers.packing.remaining_seconds }}"{% endif %}>
+                        <div class="small text-muted"><i class="bi bi-box-seam me-1"></i>Packing time</div>
+                        <strong data-stage-timer-output>
+                            {% if shop_order.customer_timers.packing.state == "terminal" %}0
+                            {% elif shop_order.customer_timers.packing.state == "complete" %}Packing complete
+                            {% elif shop_order.customer_timers.packing.state == "active" %}Updating timer…
+                            {% elif shop_order.customer_timers.packing.state == "unavailable" %}Status time unavailable
+                            {% else %}Starts when order is packing{% endif %}
+                        </strong>
+                        <div class="small mt-1" data-stage-timer-comparison></div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="alert alert-info mb-0 h-100"
+                         data-order-stage-timer="{{ shop_order.id }}-delivery"
+                         data-timer-state="{{ shop_order.customer_timers.delivery.state }}"
+                         data-timer-elapsed-seconds="{{ shop_order.customer_timers.delivery.elapsed_seconds|default_if_none:'' }}"
+                         data-timer-estimated-seconds="{{ shop_order.customer_timers.delivery.estimated_seconds }}"
+                         data-timer-elapsed-active="{{ shop_order.customer_timers.delivery.elapsed_active|yesno:'true,false' }}"
+                         {% if shop_order.customer_timers.delivery.remaining_seconds != None %}data-timer-remaining-seconds="{{ shop_order.customer_timers.delivery.remaining_seconds }}"{% endif %}>
+                        <div class="small text-muted"><i class="bi bi-bicycle me-1"></i>Delivery time</div>
+                        <strong data-stage-timer-output>
+                            {% if shop_order.customer_timers.delivery.state == "terminal" %}0
+                            {% elif shop_order.customer_timers.delivery.state == "active" %}Updating timer…
+                            {% elif shop_order.customer_timers.delivery.state == "unavailable" %}Status time unavailable
+                            {% else %}Starts after all rider parcels are collected{% endif %}
+                        </strong>
+                        <div class="small mt-1" data-stage-timer-comparison></div>
+                    </div>
+                </div>
+            </div>
+
+
+            <!-- Status History -->
+
+            <div class="mt-4">
+
+                <h6>
+                    Order Status
+                </h6>
+
+                {% with status_history=shop_order.status_history.all %}
+                {% if status_history|length > 1 %}
+                    <button class="btn btn-sm btn-outline-secondary mb-3" type="button"
+                            data-bs-toggle="collapse" data-bs-target="#earlier-statuses-{{ shop_order.id }}"
+                            aria-expanded="false" aria-controls="earlier-statuses-{{ shop_order.id }}">
+                        Show earlier updates ({{ status_history|length|add:"-1" }})
+                    </button>
+                    <div class="collapse" id="earlier-statuses-{{ shop_order.id }}">
+                        {% for history in status_history %}
+                            {% if not forloop.last %}
+                            <div class="d-flex gap-3 mb-3">
+                                <div><span class="badge bg-secondary">✓</span></div>
+                                <div>
+                                    <strong>{{ history.get_status_display }}</strong>
+                                    <div class="small text-muted">{{ history.created_at|date:"d M Y, h:i A" }}</div>
+                                    {% if history.remark %}<div class="small mt-1">{{ history.remark }}</div>{% endif %}
+                                </div>
+                            </div>
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+                {% endif %}
+                {% for history in status_history %}
+                    {% if forloop.last %}
+
+                <div class="d-flex gap-3 mb-3">
+
+                    <div>
+                        <span class="badge bg-success">
+                            ✓
+                        </span>
+                    </div>
+
+                    <div>
+
+                        <strong>
+                            {{ history.get_status_display }}
+                        </strong>
+
+                        <div class="small text-muted">
+
+                            {{ history.created_at|date:"d M Y, h:i A" }}
+
+                        </div>
+
+                        {% if history.remark %}
+
+                            <div class="small mt-1">
+                                {{ history.remark }}
+                            </div>
+
+                        {% endif %}
+
+                    </div>
+
+                </div>
+
+                    {% endif %}
+                {% endfor %}
+                {% endwith %}
+
+            </div>
+
+        </div>
+
+    </div>
+
+    {% endfor %}
+
+
+    <!-- Grand Total -->
+
+    <div class="card shadow-sm border-0">
+
+        <div class="card-body">
+
+            <div class="d-flex justify-content-between">
+
+                <h5 class="mb-0">
+                    Total Order Amount
+                </h5>
+
+                <h5 class="mb-0 text-success">
+                    ₹{{ order.payment_amount }}
+                </h5>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(() => {
+    const tracker = document.getElementById("order-tracking-live");
+    if (!tracker) return;
+    const csrfToken = tracker.querySelector('input[name="csrfmiddlewaretoken"]')?.value || "";
+    const deadlines = new Map();
+    const elapsedClocks = new Map();
+
+    tracker.querySelectorAll("[data-order-stage-timer]").forEach((panel) => {
+        const initialSeconds = Number(panel.dataset.timerRemainingSeconds);
+        if (Number.isFinite(initialSeconds)) {
+            deadlines.set(panel.dataset.orderStageTimer, Date.now() + initialSeconds * 1000);
+        }
+        const elapsedSeconds = Number(panel.dataset.timerElapsedSeconds);
+        if (panel.dataset.timerElapsedSeconds !== "" && Number.isFinite(elapsedSeconds)) {
+            elapsedClocks.set(panel.dataset.orderStageTimer, {
+                seconds: elapsedSeconds,
+                updatedAt: Date.now(),
+                active: panel.dataset.timerElapsedActive === "true",
+                estimatedSeconds: Number(panel.dataset.timerEstimatedSeconds),
+            });
+        }
+    });
+
+    const renderCountdowns = (shopOrders) => {
+        for (const update of shopOrders) {
+            for (const stage of ["packing", "delivery"]) {
+                const timer = update.timers?.[stage];
+                const key = `${update.id}-${stage}`;
+                const panel = tracker.querySelector(`[data-order-stage-timer="${key}"]`);
+                if (!panel || !timer) continue;
+                const terminalStatus = ["CANCELLED", "DELIVERED", "COMPLETED"].includes((update.status || "").toUpperCase());
+                if (terminalStatus) {
+                    panel.dataset.timerState = "terminal";
+                    deadlines.delete(key);
+                    const terminalOutput = panel.querySelector("[data-stage-timer-output]");
+                    if (terminalOutput) terminalOutput.textContent = "0";
+                    continue;
+                }
+                panel.dataset.timerState = timer.state;
+                panel.dataset.timerElapsedSeconds = timer.elapsed_seconds ?? "";
+                panel.dataset.timerElapsedActive = String(Boolean(timer.elapsed_active));
+                panel.dataset.timerEstimatedSeconds = timer.estimated_seconds ?? "";
+                if (
+                    timer.elapsed_seconds !== null
+                    && timer.elapsed_seconds !== undefined
+                    && Number.isFinite(Number(timer.elapsed_seconds))
+                ) {
+                    elapsedClocks.set(key, {
+                        seconds: Number(timer.elapsed_seconds),
+                        updatedAt: Date.now(),
+                        active: Boolean(timer.elapsed_active),
+                        estimatedSeconds: Number(timer.estimated_seconds),
+                    });
+                } else {
+                    elapsedClocks.delete(key);
+                }
+                if (timer.state === "active" && Number.isFinite(Number(timer.remaining_seconds))) {
+                    deadlines.set(key, Date.now() + Number(timer.remaining_seconds) * 1000);
+                } else {
+                    deadlines.delete(key);
+                    const output = panel.querySelector("[data-stage-timer-output]");
+                    if (output) {
+                        if (timer.state === "terminal") output.textContent = "0";
+                        else if (timer.state === "complete") output.textContent = "Packing complete";
+                        else if (timer.state === "unavailable") output.textContent = "Status time unavailable";
+                        else output.textContent = stage === "packing"
+                            ? "Starts when order is packing"
+                            : "Starts when order is out for delivery";
+                    }
+                }
+            }
+        }
+        updateVisibleTimers();
+    };
+
+    const formatDuration = (seconds) => {
+        const absoluteSeconds = Math.max(1, Math.abs(seconds));
+        const hours = Math.floor(absoluteSeconds / 3600);
+        const minutes = Math.floor((absoluteSeconds % 3600) / 60);
+        const remainder = absoluteSeconds % 60;
+        const duration = hours
+            ? `${hours} hr ${minutes} min`
+            : minutes
+                ? `${minutes} min ${remainder} sec`
+                : `${remainder} sec`;
+        return seconds <= 0 ? `Overdue by ${duration}` : duration;
+    };
+
+    const formatElapsedDuration = (seconds) => {
+        const safeSeconds = Math.max(0, Math.floor(seconds));
+        const hours = Math.floor(safeSeconds / 3600);
+        const minutes = Math.floor((safeSeconds % 3600) / 60);
+        const remainder = safeSeconds % 60;
+        if (hours) return `${hours} hr ${minutes} min`;
+        if (minutes) return `${minutes} min ${remainder} sec`;
+        return `${remainder} sec`;
+    };
+
+    const updateVisibleTimers = () => {
+        tracker.querySelectorAll("[data-order-stage-timer]").forEach((panel) => {
+            const key = panel.dataset.orderStageTimer;
+            const clock = elapsedClocks.get(key);
+            const comparison = panel.querySelector("[data-stage-timer-comparison]");
+            if (!comparison || !clock) return;
+            const elapsed = clock.seconds + (
+                clock.active ? Math.floor((Date.now() - clock.updatedAt) / 1000) : 0
+            );
+            const difference = elapsed - clock.estimatedSeconds;
+            const comparisonText = difference > 0
+                ? `Over estimate by ${formatElapsedDuration(difference)}`
+                : `Within estimate by ${formatElapsedDuration(-difference)}`;
+            comparison.textContent = `Time taken: ${formatElapsedDuration(elapsed)} · Estimated: ${formatElapsedDuration(clock.estimatedSeconds)} · ${comparisonText}`;
+        });
+        tracker.querySelectorAll('[data-order-stage-timer][data-timer-state="active"]').forEach((panel) => {
+            const output = panel.querySelector("[data-stage-timer-output]");
+            const deadline = deadlines.get(panel.dataset.orderStageTimer);
+            if (!output || !Number.isFinite(deadline)) return;
+            const seconds = Math.ceil((deadline - Date.now()) / 1000);
+            output.textContent = formatDuration(seconds);
+        });
+    };
+
+    const refresh = async () => {
+        try {
+            const response = await fetch(tracker.dataset.updatesUrl, {
+                method: "POST",
+                headers: {"X-CSRFToken": csrfToken},
+                credentials: "same-origin",
+            });
+            if (!response.ok) return;
+            const payload = await response.json();
+            renderCountdowns(payload.shop_orders || []);
+        } catch (error) {
+            console.error("Could not refresh order delivery estimates.", error);
+        }
+    };
+
+    document.addEventListener("sellerhelper:live-event", (event) => {
+        if (event.detail?.type === "orders.updated") refresh();
+    });
+    document.addEventListener("sellerhelper:live-fallback", refresh);
+    updateVisibleTimers();
+    refresh();
+    window.setInterval(() => {
+        if (
+            window.sellerHelperLiveConnected
+            && document.visibilityState === "visible"
+        ) {
+            refresh();
+        }
+    }, 300000);
+    window.setInterval(updateVisibleTimers, 1000);
+})();
+</script>
+{% endblock %}

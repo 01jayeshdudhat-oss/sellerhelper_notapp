@@ -1,0 +1,611 @@
+{% extends 'base.html' %}
+
+{% block title %}{{ form_title }}{% endblock %}
+
+{% block content %}
+
+<style>
+    .product-form-shell { max-width: 1180px; margin-inline: auto; }
+    .product-form-heading {
+        border-radius: 1rem;
+        background: linear-gradient(120deg, #f0fdf4, #eff6ff);
+        padding: 1.25rem 1.5rem;
+    }
+    .product-form-card { border-radius: 1rem; overflow: hidden; }
+    .product-form-card .card-header { border-bottom: 1px solid #edf0f2; }
+    .product-form-card .form-label { margin-bottom: .4rem; }
+    .product-form-card .form-control,
+    .product-form-card .form-select { min-height: 44px; }
+    .catalog-note { border-left: 4px solid #198754; }
+</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const categoryField = document.querySelector('[data-product-category-select="true"]');
+    const nameField = document.querySelector('[data-product-name-select="true"]');
+    const imageField = document.querySelector('[data-product-image-url="true"]');
+
+    if (!categoryField || !nameField) {
+        return;
+    }
+
+    const catalogDataElement = document.getElementById('product-catalog-data');
+    const catalogDefaultsElement = document.getElementById('product-catalog-defaults');
+    const catalogData = catalogDataElement ? JSON.parse(catalogDataElement.textContent) : {};
+    const catalogDefaults = catalogDefaultsElement ? JSON.parse(catalogDefaultsElement.textContent) : {};
+    const hsnField = document.getElementById("id_hsn_code");
+    const gstRateField = document.getElementById("id_gst_rate");
+    const catalogStatus = document.getElementById("product-name-catalog-status");
+
+    function refreshCatalogOptions(preserveSelection) {
+        const selectedCategory = categoryField.value;
+        const currentValue = preserveSelection ? nameField.value : "";
+
+        const categoryMap = {
+            ...(catalogData[selectedCategory] || {}),
+            ...(catalogDefaults[selectedCategory] || {})
+        };
+        const productNames = Object.keys(categoryMap).sort();
+
+        nameField.disabled = !selectedCategory || !productNames.length;
+        nameField.replaceChildren(new Option(
+            productNames.length ? 'Select a product' : (selectedCategory ? 'No products available' : 'Select a category first'),
+            ''
+        ));
+        productNames.forEach(function (productName) {
+            nameField.add(new Option(productName, productName, false, productName === currentValue));
+        });
+        if (catalogStatus) {
+            catalogStatus.textContent = selectedCategory && !productNames.length
+                ? 'No products are listed for this category yet. Ask an administrator to add products to the shared catalog.'
+                : '';
+        }
+
+        applyCatalogDefaults(selectedCategory, nameField.value, false);
+    }
+
+    function applyCatalogDefaults(category, productName, replaceExisting) {
+        const defaults = (catalogDefaults[category] || {})[productName];
+        const fallbackImage = (catalogData[category] || {})[productName];
+        const imageUrl = defaults ? defaults.image_url : fallbackImage;
+        if (replaceExisting) {
+            if (imageField) {
+                imageField.value = imageUrl || "";
+            }
+            if (hsnField) {
+                hsnField.value = defaults ? (defaults.hsn_code || "") : "";
+            }
+            if (gstRateField) {
+                gstRateField.value = defaults ? (defaults.gst_rate || "0.00") : "";
+            }
+        }
+        if (defaults) {
+            if (imageField && imageUrl && !replaceExisting && !imageField.value) {
+                imageField.value = imageUrl;
+            }
+            if (hsnField && !replaceExisting && !hsnField.value) {
+                hsnField.value = defaults.hsn_code || "";
+            }
+            if (gstRateField && !replaceExisting && !gstRateField.value) {
+                gstRateField.value = defaults.gst_rate || "0.00";
+            }
+            if (catalogStatus) {
+                catalogStatus.textContent = "Catalog defaults filled in. You can edit the image URL, HSN code, and GST rate.";
+            }
+        } else {
+            if (imageField && imageUrl && !replaceExisting && !imageField.value) {
+                imageField.value = imageUrl;
+            }
+            if (catalogStatus && productName) {
+                catalogStatus.textContent = "No admin tax defaults for this item. Enter the correct HSN and GST details if applicable.";
+            }
+        }
+    }
+
+    categoryField.addEventListener('change', function () {
+        if (imageField) {
+            imageField.value = '';
+        }
+        if (hsnField) {
+            hsnField.value = "";
+        }
+        if (gstRateField) {
+            gstRateField.value = "";
+        }
+        refreshCatalogOptions(false);
+    });
+
+    nameField.addEventListener('change', function () {
+        applyCatalogDefaults(categoryField.value, nameField.value, true);
+    });
+
+    refreshCatalogOptions(true);
+});
+</script>
+{{ form.catalog_data|json_script:"product-catalog-data" }}
+{{ form.catalog_defaults|json_script:"product-catalog-defaults" }}
+
+<div class="container-fluid px-0 product-form-shell">
+
+    <!-- Header -->
+    <div class="product-form-heading d-flex justify-content-between align-items-center gap-3 mb-4">
+
+        <div>
+            <div class="text-success small fw-bold text-uppercase mb-1">Product setup</div>
+            <h2 class="mb-1 fw-bold">
+                {{ form_title }}
+            </h2>
+
+            <p class="text-muted mb-0">
+                Complete the required product inputs first. Catalog-filled image and tax details are available below if you need to review them.
+            </p>
+        </div>
+
+        <div class="d-flex flex-wrap justify-content-end gap-2">
+            {% if user.is_superuser %}
+                <a href="{% url 'admin_catalog_dashboard' %}" class="btn btn-outline-primary">
+                    <i class="bi bi-tags me-1"></i>Manage shared catalog
+                </a>
+            {% endif %}
+            <a href="{% url 'product_list' %}" class="btn btn-outline-secondary">
+                ← Products
+            </a>
+        </div>
+
+    </div>
+
+
+    <form method="post">
+
+        {% csrf_token %}
+
+
+        {% if form.non_field_errors %}
+
+            <div class="alert alert-danger">
+
+                {{ form.non_field_errors }}
+
+            </div>
+
+        {% endif %}
+
+
+        <!-- Product Information -->
+        <div class="card product-form-card border-0 shadow-sm mb-4">
+
+            <div class="card-header bg-white py-3">
+
+                <div class="d-flex align-items-center gap-3">
+                    <span class="badge rounded-pill text-bg-primary">1</span>
+                    <div>
+                        <h5 class="mb-0">Product information</h5>
+                        <small class="text-muted">Choose the product, then add its price and listing details.</small>
+                    </div>
+                </div>
+
+            </div>
+
+
+            <div class="card-body">
+
+                <div class="alert alert-light catalog-note small mb-4">
+                    <strong>Start here:</strong> choose the category and product, enter the price, then set the sellable unit (for example, 500 and gm).
+                </div>
+
+                <div class="row g-3">
+                    {% for field in form %}
+                        {% if field.field.required or field.name == "product_category" or field.name == "unit_value" or field.name == "unit_text" %}
+                            {% include "seller/_product_form_field.html" with field=field %}
+                        {% endif %}
+                    {% endfor %}
+                </div>
+
+                <div class="border-top mt-4 pt-3">
+                    <h6 class="fw-semibold mb-1">Additional product details</h6>
+                    <p class="small text-muted mb-0">Optional listing, inventory, and display settings.</p>
+                    <div class="row g-3">
+                        {% for field in form %}
+                            {% if not field.field.required and field.name != "product_category" and field.name != "unit_value" and field.name != "unit_text" and field.name != "image_url" and field.name != "hsn_code" and field.name != "gst_rate" %}
+                                {% include "seller/_product_form_field.html" with field=field %}
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <details class="border rounded-3 mt-4 p-3" {% if form.image_url.errors or form.hsn_code.errors or form.gst_rate.errors %}open{% endif %}>
+                    <summary class="fw-semibold">Auto-filled catalog details (image, HSN, GST)</summary>
+                    <p class="form-text mt-2 mb-3">
+                        These values may be filled from the catalog when you choose a product. Review or change them here; available admin defaults are used for blank HSN or GST values when saving.
+                    </p>
+                    <div class="row g-3">
+                        {% for field in form %}
+                            {% if field.name == "image_url" or field.name == "hsn_code" or field.name == "gst_rate" %}
+                                {% include "seller/_product_form_field.html" with field=field %}
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+                </details>
+            </div>
+
+        </div>
+
+
+        <!-- Shop Assignment -->
+        {% if assignment_forms %}
+
+        <div class="card border-0 shadow-sm mt-4">
+
+            <div class="card-body">
+
+                <div class="mb-3">
+
+                    <h4 class="mb-1">
+                        🏪 Shop Assignment
+                    </h4>
+
+                    <p class="text-muted mb-0">
+                        Assign this product to one or more of your shops
+                        and optionally set a shop-specific price.
+                    </p>
+
+                </div>
+
+                <div class="alert alert-info small">
+
+                    <strong>Pricing:</strong>
+
+                    If you leave <strong>Shop Price</strong> empty,
+                    the product's default price will be used.
+
+                </div>
+
+                <div class="table-responsive">
+
+                    <table class="table table-hover align-middle">
+
+                        <thead class="table-light">
+
+                            <tr>
+
+                                <th style="width:100px;">
+                                    Assign
+                                </th>
+
+                                <th>
+                                    Shop
+                                </th>
+
+                                <th style="width:200px;">
+                                    Shop Price
+                                </th>
+
+                                <th style="width:180px;">
+                                    Stock
+                                </th>
+
+                                <th style="width:100px;">
+                                    Active
+                                </th>
+
+                            </tr>
+
+                        </thead>
+
+                        <tbody>
+
+                            {% for assignment_form in assignment_forms %}
+
+                            <tr>
+
+                                <!-- ASSIGN -->
+
+                                <td>
+
+                                    <div class="form-check">
+
+                                        {{ assignment_form.assigned }}
+
+                                        <label
+                                            class="form-check-label"
+                                            for="{{ assignment_form.assigned.id_for_label }}"
+                                        >
+                                            Assign
+                                        </label>
+
+                                    </div>
+
+                                </td>
+
+
+                                <!-- SHOP -->
+
+                                <td>
+
+                                    {{ assignment_form.shop }}
+
+                                    <div class="fw-semibold">
+
+                                        🏪
+                                        {{ assignment_form.shop.initial.name }}
+
+                                    </div>
+
+                                    {% if assignment_form.shop.initial.location %}
+
+                                        <small class="text-muted">
+
+                                            {{ assignment_form.shop.initial.location }}
+
+                                        </small>
+
+                                    {% endif %}
+
+                                </td>
+
+
+                                <!-- SHOP PRICE -->
+
+                                <td>
+
+                                    <label class="form-label small text-muted">
+
+                                        Shop Price
+
+                                    </label>
+
+                                    {{ assignment_form.price }}
+
+                                    <small class="text-muted">
+
+                                        Leave empty for default price
+
+                                    </small>
+
+                                    {% for error in assignment_form.price.errors %}
+
+                                        <div class="text-danger small">
+                                            {{ error }}
+                                        </div>
+
+                                    {% endfor %}
+
+                                </td>
+
+
+                                <!-- STOCK -->
+
+                                <td>
+
+                                    <label class="form-label small text-muted">
+
+                                        Stock
+
+                                    </label>
+
+                                    {{ assignment_form.stock }}
+
+                                </td>
+
+
+                                <!-- ACTIVE -->
+
+                                <td>
+
+                                    <div class="form-check">
+
+                                        {{ assignment_form.is_active }}
+
+                                        <label
+                                            class="form-check-label"
+                                            for="{{ assignment_form.is_active.id_for_label }}"
+                                        >
+                                            Active
+                                        </label>
+
+                                    </div>
+
+                                </td>
+
+                            </tr>
+
+                            {% endfor %}
+
+                        </tbody>
+
+                    </table>
+
+                </div>
+
+            </div>
+
+        </div>
+
+        {% endif %}
+        <!-- <div class="card border-0 shadow-sm mb-4">
+
+            <div class="card-header bg-white py-3">
+
+                <div class="d-flex justify-content-between align-items-center">
+
+                    <div>
+
+                        <h5 class="mb-0">
+                            🏪 Shop Assignment
+                        </h5>
+
+                        <small class="text-muted">
+                            Assign this product to one or more of your shops.
+                        </small>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+
+            <div class="card-body p-0">
+
+                {% if assignment_forms %}
+
+                    <div class="table-responsive">
+
+                        <table class="table table-hover align-middle mb-0">
+
+                            <thead class="table-light">
+
+                                <tr>
+
+                                    <th>
+                                        Assign
+                                    </th>
+
+                                    <th>
+                                        Shop
+                                    </th>
+
+                                    <th style="width:150px;">
+                                        Stock
+                                    </th>
+
+                                    <th>
+                                        Active
+                                    </th>
+
+                                </tr>
+
+                            </thead>
+
+
+                            <tbody>
+
+                                {% for assignment_form in assignment_forms %}
+
+                                    <tr>
+
+                                        <td>
+
+                                            {{ assignment_form.shop }}
+
+                                            <div class="form-check">
+
+                                                {{ assignment_form.assigned }}
+
+                                                <label
+                                                    class="form-check-label"
+                                                >
+                                                    Assign
+                                                </label>
+
+                                            </div>
+
+                                        </td>
+
+
+                                        <td>
+
+                                            {% with shop=assignment_form.shop.value %}
+                                                {% for s in shops %}
+                                                    {% if s.id|stringformat:"s" == shop|stringformat:"s" %}
+
+                                                        <strong>
+                                                            🏪 {{ s.name }}
+                                                        </strong>
+
+                                                        {% if s.location %}
+                                                            <div class="small text-muted">
+                                                                {{ s.location }}
+                                                            </div>
+                                                        {% endif %}
+
+                                                    {% endif %}
+                                                {% endfor %}
+                                            {% endwith %}
+
+                                        </td>
+
+
+                                        <td>
+
+                                            {{ assignment_form.stock }}
+
+                                        </td>
+
+
+                                        <td>
+
+                                            <div class="form-check form-switch">
+
+                                                {{ assignment_form.is_active }}
+
+                                            </div>
+
+                                        </td>
+
+                                    </tr>
+
+                                {% endfor %}
+
+                            </tbody>
+
+                        </table>
+
+                    </div>
+
+                {% else %}
+
+                    <div class="p-4 text-center">
+
+                        <div class="fs-2">
+                            🏪
+                        </div>
+
+                        <p class="text-muted mb-3">
+                            You don't have any shops yet.
+                        </p>
+
+                        <a
+                            href="{% url 'shop_add' %}"
+                            class="btn btn-primary"
+                        >
+                            ➕ Add Shop
+                        </a>
+
+                    </div>
+
+                {% endif %}
+
+            </div>
+
+        </div> -->
+
+
+        <!-- Buttons -->
+        <div class="d-flex justify-content-end gap-2 mb-4">
+
+            <a
+                href="{% url 'product_list' %}"
+                class="btn btn-outline-secondary"
+            >
+                Cancel
+            </a>
+
+            <button
+                type="submit"
+                class="btn btn-primary px-4"
+            >
+                {% if form_action == "create" %}
+                    ➕ Create Product
+                {% else %}
+                    💾 Update Product
+                {% endif %}
+            </button>
+
+        </div>
+
+    </form>
+
+</div>
+
+{% endblock %}

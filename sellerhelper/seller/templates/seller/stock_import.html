@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+
+{% block title %}Update stock · {{ shop.name }}{% endblock %}
+
+{% block content %}
+<main class="container py-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+        <div>
+            <a href="{% url 'shop_detail' shop.id %}" class="small text-decoration-none">← {{ shop.name }}</a>
+            <h1 class="h3 fw-bold mt-2 mb-1">Update stock from CSV</h1>
+            <p class="text-muted mb-0">Upload a UTF-8 CSV file to update this shop’s inventory.</p>
+        </div>
+        <a class="btn btn-outline-primary" href="{% url 'stock_report' shop.id %}">
+            <i class="bi bi-clipboard-data me-1"></i> View stock report
+        </a>
+    </div>
+
+    <div class="row g-4">
+        <div class="col-lg-7">
+            <section class="card border-0 shadow-sm">
+                <div class="card-body p-4">
+                    <h2 class="h5 fw-bold">Upload inventory file</h2>
+                    <p class="text-muted">Download your current stock CSV, edit the <code>stock</code> values, then upload the saved file. Keep the product identifiers unchanged.</p>
+
+                    <form id="stockImportForm" method="post" enctype="multipart/form-data"
+                          action="{% url 'stock_import' shop.id %}">
+                        {% csrf_token %}
+                        <label for="stockCsv" class="form-label fw-semibold">CSV file</label>
+                        <input id="stockCsv" class="form-control" type="file" name="file" accept=".csv,text/csv" required>
+                        <div class="form-text mb-3">CSV only. Maximum upload size is controlled by the server configuration.</div>
+                        <button id="stockImportButton" class="btn btn-primary" type="submit">
+                            <i class="bi bi-upload me-1"></i> Upload and update stock
+                        </button>
+                    </form>
+                    <div id="stockImportResult" class="alert d-none mt-3 mb-0" role="status" aria-live="polite"></div>
+                </div>
+            </section>
+        </div>
+
+        <div class="col-lg-5">
+            <aside class="card border-0 shadow-sm h-100">
+                <div class="card-body p-4">
+                    <h2 class="h5 fw-bold">CSV columns</h2>
+                    <p class="text-muted">The update file contains your shop’s current products and stock. Edit the stock column and upload it; the sample CSV is available as a blank example.</p>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle mb-3">
+                            <thead><tr><th>Column</th><th>Required</th><th>Example</th></tr></thead>
+                            <tbody>
+                                <tr><td><code>product_shop_id</code></td><td>One ID/SKU/name</td><td>17</td></tr>
+                                <tr><td><code>sku</code></td><td>Alternative</td><td>SKU-001</td></tr>
+                                <tr><td><code>product_name</code></td><td>Alternative</td><td>Potato</td></tr>
+                                <tr><td><code>stock</code></td><td>Yes</td><td>50</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="d-flex flex-wrap gap-2">
+                    <a href="{% url 'stock_import' shop.id %}?format=update" class="btn btn-primary">
+                        <i class="bi bi-download me-1"></i> Download current stock CSV
+                    </a>
+                    <a href="{% url 'stock_import' shop.id %}?format=sample" class="btn btn-outline-secondary">
+                        <i class="bi bi-download me-1"></i> Download sample CSV
+                    </a>
+                    </div>
+                </div>
+            </aside>
+        </div>
+    </div>
+</main>
+
+<script>
+(() => {
+    const form = document.getElementById("stockImportForm");
+    const result = document.getElementById("stockImportResult");
+    const button = document.getElementById("stockImportButton");
+
+    form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        button.disabled = true;
+        result.className = "alert alert-info mt-3 mb-0";
+        result.textContent = "Uploading stock file…";
+
+        try {
+            const response = await fetch(form.action, {
+                method: "POST",
+                body: new FormData(form),
+                headers: {"Accept": "application/json"},
+                credentials: "same-origin"
+            });
+            const payload = await response.json();
+            if (!response.ok || !payload.success) {
+                throw new Error(payload.message || "Stock upload failed.");
+            }
+            result.className = "alert alert-success mt-3 mb-0";
+            result.textContent = `Stock updated for ${payload.updated} product(s).`;
+            form.reset();
+        } catch (error) {
+            result.className = "alert alert-danger mt-3 mb-0";
+            result.textContent = error.message || "Could not upload this file.";
+        } finally {
+            button.disabled = false;
+        }
+    });
+
+})();
+</script>
+{% endblock %}

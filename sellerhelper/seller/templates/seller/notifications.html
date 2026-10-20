@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block title %}Notifications{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+        <div>
+            <h2 class="fw-bold mb-1">🔔 Notifications</h2>
+            <div class="text-muted">Updates for your orders, jobs, and shop activity</div>
+        </div>
+        <div class="d-flex align-items-center gap-2">
+            {% if unread_count %}
+                <span class="badge bg-danger rounded-pill fs-6">{{ unread_count }} unread</span>
+                <form method="post" action="{% url 'mark_all_notifications_read' %}">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm btn-outline-success">
+                        <i class="bi bi-check2-all me-1"></i>Read all
+                    </button>
+                </form>
+            {% endif %}
+            <button type="button" class="btn btn-sm btn-outline-primary"
+                    data-notification-sound-toggle aria-pressed="false">
+                <i class="bi bi-volume-mute me-1" data-sound-icon></i>
+                <span data-sound-label>Enable sound</span>
+            </button>
+        </div>
+    </div>
+
+    <div class="d-flex gap-2 mb-3">
+        <a href="{% url 'notifications' %}" class="btn btn-sm {% if not show_all %}btn-primary{% else %}btn-outline-primary{% endif %}">
+            Unread ({{ unread_count }})
+        </a>
+        <a href="{% url 'notifications' %}?view=all" class="btn btn-sm {% if show_all %}btn-primary{% else %}btn-outline-primary{% endif %}">
+            View all
+        </a>
+    </div>
+
+    <div class="list-group shadow-sm">
+        {% for notification in notifications %}
+            <a href="{% url 'mark_notification_read' notification.id %}" class="list-group-item list-group-item-action {% if not notification.is_read %}list-group-item-light{% endif %}">
+                <div class="d-flex justify-content-between align-items-start gap-3">
+                    <div>
+                        <div class="fw-bold">{{ notification.title }}</div>
+                        <div class="small text-muted mt-1">{{ notification.notification_type }}</div>
+                        <div class="mt-2">{{ notification.message }}</div>
+                    </div>
+                    <div class="text-end">
+                        <small class="text-muted">{{ notification.created_at|date:"d M Y, h:i A" }}</small>
+                        {% if not notification.is_read %}
+                            <div class="mt-2"><span class="badge bg-primary">New</span></div>
+                        {% endif %}
+                    </div>
+                </div>
+            </a>
+        {% empty %}
+            <div class="list-group-item text-muted text-center py-5">
+                {% if show_all %}No notifications yet.{% else %}You’re all caught up. No unread notifications.{% endif %}
+            </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

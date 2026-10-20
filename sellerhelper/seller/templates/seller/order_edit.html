@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Edit order items{% endblock %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 760px;">
+    <div class="mb-4">
+        <h1 class="h3 fw-bold mb-1">Edit order items</h1>
+        <p class="text-muted mb-0">
+            Order {{ order.order_id }}{% if shop_order %} · {{ shop_order.shop.name }}{% endif %}
+        </p>
+    </div>
+
+    <div class="alert alert-info">
+        Set a quantity to zero to remove an item. Totals, GST, discounts, platform charges, stock and payment balance
+        will be recalculated together. Razorpay increases cannot be collected until a verified additional-payment flow is available;
+        Razorpay reductions are saved only after the refund is confirmed.
+    </div>
+
+    <form method="post" class="card border-0 shadow-sm">
+        {% csrf_token %}
+        <div class="card-body p-4">
+            {% for item in order_items %}
+                <div class="row align-items-center g-3 py-3 {% if not forloop.last %}border-bottom{% endif %}">
+                    <div class="col">
+                        <div class="fw-semibold">{{ item.product_name }}</div>
+                        <div class="small text-muted">
+                            {{ item.shop_order.shop.name }} · ₹{{ item.price|floatformat:2 }} each
+                        </div>
+                    </div>
+                    <div class="col-auto">
+                        <label class="form-label small mb-1" for="quantity-{{ item.id }}">Quantity</label>
+                        <input class="form-control" id="quantity-{{ item.id }}"
+                               type="number" min="0" max="9999999" step="1"
+                               name="quantity_{{ item.id }}" value="{{ item.quantity }}" required>
+                    </div>
+                </div>
+            {% empty %}
+                <p class="mb-0 text-muted">There are no editable items in this order.</p>
+            {% endfor %}
+        </div>
+        <div class="card-footer bg-white d-flex flex-wrap justify-content-between gap-2 p-3">
+            {% if shop_order %}
+                <a class="btn btn-outline-secondary" href="{% url 'shop_order_detail' shop_order.id %}">Back to shop order</a>
+            {% else %}
+                <a class="btn btn-outline-secondary" href="{% url 'order_list' %}">Back to my orders</a>
+            {% endif %}
+            <button class="btn btn-primary" type="submit" {% if not order_items %}disabled{% endif %}>
+                Save changes and recalculate bill
+            </button>
+        </div>
+    </form>
+</div>
+{% endblock %}

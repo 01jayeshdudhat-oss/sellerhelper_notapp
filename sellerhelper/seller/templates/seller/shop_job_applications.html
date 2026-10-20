@@ -1,0 +1,70 @@
+{% extends 'base.html' %}
+
+{% block title %}Job applications{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2 class="mb-1">{{ shop.name }} applications</h2>
+            <p class="text-muted mb-0">Review job requests submitted by candidates</p>
+        </div>
+        <div class="d-flex gap-2">
+            <a href="{% url 'shop_job_openings' shop.id %}" class="btn btn-outline-secondary">Job openings</a>
+            <a href="{% url 'shop_job_opening_create' shop.id %}" class="btn btn-primary">New opening</a>
+        </div>
+    </div>
+
+    <div class="card shadow-sm border-0">
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table mb-0 align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Candidate</th>
+                            <th>Role</th>
+                            <th>Location</th>
+                            <th>Status</th>
+                            <th>Submitted</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for app in applications %}
+                        <tr>
+                            <td>
+                                <div class="fw-semibold">{{ app.full_name }}</div>
+                                <div class="small text-muted">{{ app.email }}</div>
+                            </td>
+                            <td>{{ app.job_title|default:app.job_opening.title }}</td>
+                            <td>{{ app.location|default:'Not specified' }}</td>
+                            <td>
+                                <span class="badge text-bg-primary">{{ app.status }}</span>
+                            </td>
+                            <td>{{ app.created_at|date:'d M Y' }}</td>
+                        </tr>
+                        <tr>
+                            <td colspan="5" class="bg-light">
+                                <div class="d-flex flex-wrap align-items-center gap-2 py-2">
+                                    <form method="post" action="{% url 'shop_job_application_status' shop.id app.id %}" class="d-flex flex-wrap align-items-center gap-2">
+                                        {% csrf_token %}
+                                        <input type="datetime-local" name="interview_time" class="form-control form-control-sm" value="{% if app.interview_datetime %}{{ app.interview_datetime|date:'Y-m-d\\TH:i' }}{% endif %}" />
+                                        <input type="text" name="interview_notes" class="form-control form-control-sm" placeholder="Interview notes" value="{{ app.interview_notes }}" />
+                                        <button type="submit" name="status" value="INTERVIEW" class="btn btn-sm btn-warning">Interview</button>
+                                        <button type="submit" name="status" value="APPROVED" class="btn btn-sm btn-success">Approve</button>
+                                        <button type="submit" name="status" value="REJECTED" class="btn btn-sm btn-danger">Reject</button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="5" class="text-center text-muted py-4">No applications received yet.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

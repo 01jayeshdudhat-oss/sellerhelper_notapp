@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+
+{% block title %}My favourites{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4 marketplace-shell">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+        <div>
+            <h1 class="h2 fw-bold mb-1">My favourites</h1>
+            <p class="text-muted mb-0">Browse products from your saved shops and products.</p>
+        </div>
+        <a class="btn btn-success" href="{% url 'marketplace' %}">
+            <i class="bi bi-search me-1"></i>Browse marketplace
+        </a>
+    </div>
+
+    <div class="row row-cols-1 row-cols-sm-2 row-cols-lg-3 row-cols-xl-4 g-3">
+        {% for item in favorite_products %}
+            <div class="col">
+                <article class="card border-0 shadow-sm h-100 overflow-hidden">
+                    {% if item.display_image_url %}
+                        <img src="{{ item.display_image_url }}"
+                             alt="{{ item.product.product_name }}"
+                             class="card-img-top bg-light"
+                             style="height: 190px; object-fit: contain; padding: 14px;"
+                             loading="lazy">
+                    {% else %}
+                        <div class="bg-light d-flex align-items-center justify-content-center text-muted"
+                             role="img" aria-label="No product image available"
+                             style="height: 190px; font-size: 3rem;">
+                            <i class="bi bi-box-seam" aria-hidden="true"></i>
+                        </div>
+                    {% endif %}
+                    <div class="card-body d-flex flex-column">
+                        <div class="small text-muted text-truncate">{{ item.shop.name }}</div>
+                        <h2 class="h5 fw-bold mt-1 mb-2">{{ item.product.product_title|default:item.product.product_name }}</h2>
+                        {% if item.product.product_description %}
+                            <p class="small text-muted mb-2">{{ item.product.product_description|truncatewords:22 }}</p>
+                        {% endif %}
+                        <div class="d-flex justify-content-between align-items-baseline gap-2 mt-auto">
+                            <strong class="fs-5 text-success">₹{{ item.marketplace_price|floatformat:2 }}</strong>
+                            {% if item.marketplace_unit %}<span class="small text-muted">/ {{ item.marketplace_unit }}</span>{% endif %}
+                        </div>
+                        {% if item.has_bulk_offer %}
+                            <div class="small text-primary mt-1">
+                                Bulk: ₹{{ item.bulk_marketplace_price }} / {{ item.bulk_marketplace_unit }}
+                                <span class="text-muted">(minimum {{ item.bulk_min_quantity }})</span>
+                            </div>
+                        {% endif %}
+                        <div class="small mt-1 {% if item.marketplace_stock > 0 %}text-success{% else %}text-danger{% endif %}">
+                            {% if item.marketplace_stock > 0 %}{{ item.marketplace_stock }} available{% else %}Out of stock{% endif %}
+                        </div>
+                    </div>
+                    <div class="card-footer bg-white border-0 pt-0">
+                        <div class="d-grid gap-2">
+                            <a class="btn btn-success" href="{% url 'marketplace' %}?shop={{ item.shop_id }}">Shop this product</a>
+                            {% if item.is_favorite_product %}
+                                <form method="post" action="{% url 'toggle_favorite_product' item.pk %}">
+                                    {% csrf_token %}
+                                    <button class="btn btn-sm btn-outline-danger w-100" type="submit">
+                                        <i class="bi bi-heartbreak me-1"></i>Remove product favourite
+                                    </button>
+                                </form>
+                            {% endif %}
+                            {% if item.is_favorite_shop %}
+                                <form method="post" action="{% url 'toggle_favorite_shop' item.shop_id %}">
+                                    {% csrf_token %}
+                                    <button class="btn btn-sm btn-outline-secondary w-100" type="submit">
+                                        <i class="bi bi-shop me-1"></i>Remove shop favourite
+                                    </button>
+                                </form>
+                            {% endif %}
+                        </div>
+                    </div>
+                </article>
+            </div>
+        {% empty %}
+            <div class="col-12">
+                <div class="market-empty text-center">
+                    <i class="bi bi-heart fs-1 text-danger"></i>
+                    <h2 class="h5 mt-3">No favourite products to show</h2>
+                    <p class="text-muted">Save a product or favourite a shop to see its products here.</p>
+                    <a class="btn btn-success" href="{% url 'marketplace' %}">Browse products</a>
+                </div>
+            </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

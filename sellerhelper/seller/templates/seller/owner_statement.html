@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+
+{% block title %}All-shop statement{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+        <div>
+            <h1 class="h3 fw-bold mb-1">All-shop business statement</h1>
+            <p class="text-muted mb-0">A consolidated view of your shops, products, orders, wallets, and staff.</p>
+        </div>
+        <a href="{% url 'dashboard' %}" class="btn btn-outline-secondary">Back to dashboard</a>
+    </div>
+
+    <div class="row g-3 mb-4">
+        <div class="col-6 col-lg"><div class="card h-100 border-0 shadow-sm"><div class="card-body"><div class="small text-muted">Shops</div><div class="h3 mb-0">{{ shops|length }}</div></div></div></div>
+        <div class="col-6 col-lg"><div class="card h-100 border-0 shadow-sm"><div class="card-body"><div class="small text-muted">Products</div><div class="h3 mb-0">{{ total_products }}</div></div></div></div>
+        <div class="col-6 col-lg"><div class="card h-100 border-0 shadow-sm"><div class="card-body"><div class="small text-muted">Staff</div><div class="h3 mb-0">{{ total_staff }}</div></div></div></div>
+        <div class="col-6 col-lg"><div class="card h-100 border-0 shadow-sm"><div class="card-body"><div class="small text-muted">Orders / delivered</div><div class="h3 mb-0">{{ total_orders }} / {{ total_delivered_orders }}</div></div></div></div>
+        <div class="col-12 col-lg"><div class="card h-100 border-0 shadow-sm"><div class="card-body"><div class="small text-muted">Combined shop wallet balance</div><div class="h3 mb-0 text-success">₹{{ wallet_balance|floatformat:2 }}</div></div></div></div>
+    </div>
+
+    <section class="card border-0 shadow-sm mb-4">
+        <div class="card-header bg-white fw-semibold">Shop summary</div>
+        <div class="table-responsive">
+            <table class="table table-sm table-striped align-middle mb-0 small">
+                <thead class="table-light"><tr><th>Shop</th><th class="text-end">Products</th><th class="text-end">Staff</th><th class="text-end">Orders</th><th class="text-end">Delivered</th><th class="text-end">Wallet</th></tr></thead>
+                <tbody>
+                    {% for row in shop_rows %}
+                        <tr>
+                            <td><a href="{% url 'shop_detail' row.shop.pk %}">{{ row.shop.name }}</a></td>
+                            <td class="text-end">{{ row.product_count }} <span class="text-muted">({{ row.active_product_count }} active)</span></td>
+                            <td class="text-end">{{ row.staff_count }}</td>
+                            <td class="text-end">{{ row.order_count }}</td>
+                            <td class="text-end">{{ row.delivered_order_count }}</td>
+                            <td class="text-end text-nowrap">₹{{ row.wallet_balance|floatformat:2 }}</td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="6" class="text-center text-muted py-3">No shops yet.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="card border-0 shadow-sm mb-4">
+        <div class="card-header bg-white fw-semibold">Products across your shops</div>
+        <div class="table-responsive">
+            <table class="table table-sm table-striped align-middle mb-0 small">
+                <thead class="table-light"><tr><th>Shop</th><th>Product</th><th class="text-end">Stock</th><th class="text-end">Price</th><th>Status</th></tr></thead>
+                <tbody>
+                    {% for assignment in product_assignments %}
+                        <tr>
+                            <td class="text-nowrap">{{ assignment.shop.name }}</td>
+                            <td>{{ assignment.product.product_name }}</td>
+                            <td class="text-end">{{ assignment.stock }}</td>
+                            <td class="text-end text-nowrap">₹{{ assignment.price|floatformat:2 }}</td>
+                            <td>{% if assignment.is_active and assignment.product.is_active %}Active{% else %}Inactive{% endif %}</td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="5" class="text-center text-muted py-3">No products assigned.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="card border-0 shadow-sm mb-4">
+        <div class="card-header bg-white fw-semibold">Staff across your shops</div>
+        <div class="table-responsive">
+            <table class="table table-sm table-striped align-middle mb-0 small">
+                <thead class="table-light"><tr><th>Shop</th><th>Staff member</th><th>Role</th><th>Status</th></tr></thead>
+                <tbody>
+                    {% for member in staff_members %}
+                        <tr>
+                            <td>{{ member.shop.name }}</td>
+                            <td>{{ member.user.get_full_name|default:member.user.username }}</td>
+                            <td>{{ member.get_role_display }}</td>
+                            <td>{% if member.is_active %}Active{% else %}Inactive{% endif %}</td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="4" class="text-center text-muted py-3">No staff assigned.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="card border-0 shadow-sm mb-4">
+        <div class="card-header bg-white fw-semibold">Recent wallet transactions <span class="small text-muted">(up to 100)</span></div>
+        <div class="table-responsive">
+            <table class="table table-sm table-striped align-middle mb-0 small">
+                <thead class="table-light"><tr><th>Date</th><th>Shop</th><th>Type</th><th>Description</th><th class="text-end">Amount</th><th class="text-end">Balance after</th></tr></thead>
+                <tbody>
+                    {% for entry in wallet_transactions %}
+                        <tr>
+                            <td class="text-nowrap">{{ entry.created_at|date:"d M Y H:i" }}</td>
+                            <td>{{ entry.wallet.shop.name }}</td>
+                            <td>{{ entry.get_transaction_type_display }}</td>
+                            <td>{{ entry.description }}</td>
+                            <td class="text-end text-nowrap">₹{{ entry.amount|floatformat:2 }}</td>
+                            <td class="text-end text-nowrap">₹{{ entry.balance_after|floatformat:2 }}</td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="6" class="text-center text-muted py-3">No wallet transactions yet.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="card border-0 shadow-sm">
+        <div class="card-header bg-white fw-semibold">Recent orders <span class="small text-muted">(up to 100)</span></div>
+        <div class="table-responsive">
+            <table class="table table-sm table-striped align-middle mb-0 small">
+                <thead class="table-light"><tr><th>Date</th><th>Order</th><th>Shop</th><th>Status</th><th class="text-end">Total</th></tr></thead>
+                <tbody>
+                    {% for shop_order in shop_orders %}
+                        <tr>
+                            <td class="text-nowrap">{{ shop_order.created_at|date:"d M Y H:i" }}</td>
+                            <td><a href="{% url 'shop_order_detail' shop_order.pk %}">{{ shop_order.shop_order_number|default:shop_order.order.order_id }}</a></td>
+                            <td>{{ shop_order.shop.name }}</td>
+                            <td>{{ shop_order.get_status_display|default:shop_order.status }}</td>
+                            <td class="text-end text-nowrap">₹{{ shop_order.total_amount|floatformat:2 }}</td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="5" class="text-center text-muted py-3">No orders yet.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+</div>
+{% endblock %}

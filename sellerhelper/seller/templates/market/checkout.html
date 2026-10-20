@@ -1,0 +1,789 @@
+{% extends "base.html" %}
+
+{% block title %}Checkout{% endblock %}
+
+{% block content %}
+
+<style>
+    .checkout-shell {
+        background: linear-gradient(180deg, #f8fbff 0%, #eef4ff 100%);
+        border-radius: 28px;
+        padding: 22px;
+    }
+    .checkout-card {
+        background: rgba(255,255,255,0.96);
+        border: 1px solid rgba(148,163,184,0.2);
+        border-radius: 22px;
+        box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+    }
+    .checkout-summary {
+        position: sticky;
+        top: 20px;
+        border-radius: 22px;
+        background: linear-gradient(135deg, #0f172a 0%, #1d4ed8 100%);
+        color: white;
+        box-shadow: 0 18px 40px rgba(29, 78, 216, 0.25);
+    }
+    .checkout-item {
+        border-bottom: 1px solid #edf2f7;
+        padding: 16px 0;
+    }
+    .checkout-address-label {
+        border: 1px solid #dfe7f5;
+        border-radius: 18px;
+        background: #f8fbff;
+        padding: 16px;
+        display: block;
+        transition: all 0.2s ease;
+    }
+    .checkout-address-label:hover {
+        border-color: #93c5fd;
+        transform: translateY(-1px);
+    }
+</style>
+
+<div class="container py-4 checkout-shell">
+
+    <div class="mb-4">
+        <h2 class="fw-bold mb-1 text-primary">
+            Checkout
+        </h2>
+
+        <p class="text-muted mb-0">
+            Review your order and select a delivery address.
+        </p>
+    </div>
+
+
+    <form method="post" id="checkoutForm" enctype="multipart/form-data">
+
+        {% csrf_token %}
+        <input type="hidden" name="use_wallet_balance" value="0">
+
+        <div class="row g-4">
+
+            <!-- LEFT -->
+            <div class="col-lg-8">
+
+                <!-- DELIVERY ADDRESS -->
+
+                <div class="card border-0 checkout-card mb-4">
+
+                    <div class="card-body">
+
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+
+                            <h5 class="fw-bold mb-0">
+                                📍 Delivery Address
+                            </h5>
+
+                            <a
+                                href="{% url 'delivery_address_list' %}"
+                                class="btn btn-sm btn-outline-primary"
+                            >
+                                Manage
+                            </a>
+
+                        </div>
+
+
+                        {% for address in addresses %}
+
+                        <label
+                            class="checkout-address-label mb-2 d-block"
+                            style="cursor:pointer;"
+                        >
+
+                            <div class="d-flex">
+
+                                <input
+                                    type="radio"
+                                    name="address"
+                                    value="{{ address.id }}"
+                                    class="form-check-input me-3"
+                                    {% if selected_address.id == address.id %}
+                                        checked
+                                    {% endif %}
+                                    required
+                                >
+
+                                <div>
+
+                                    <strong>
+                                        {{ address.label }}
+                                    </strong>
+
+                                    {% if address.is_default %}
+
+                                        <span class="badge bg-success ms-2">
+                                            Default
+                                        </span>
+
+                                    {% endif %}
+
+                                    <div class="text-muted mt-1">
+                                        {{ address.address }}
+                                    </div>
+
+                                    {% if address.pincode %}
+
+                                        <small class="text-muted">
+                                            PIN: {{ address.pincode }}
+                                        </small>
+
+                                    {% endif %}
+                                    {% if address.state_code %}
+                                        <small class="text-muted ms-2">State: {{ address.state_code }}</small>
+                                    {% endif %}
+
+                                </div>
+
+                            </div>
+
+                        </label>
+
+                        {% empty %}
+
+                        <div class="alert alert-warning">
+
+                            No delivery address found.
+
+                            <a href="{% url 'delivery_address_list' %}">
+                                Add an address
+                            </a>
+
+                        </div>
+
+                        {% endfor %}
+
+                    </div>
+
+                </div>
+
+
+                <!-- ORDER ITEMS -->
+
+                <div class="card border-0 checkout-card">
+                    <div class="card-body">
+                        <h5 class="fw-bold mb-3">
+                            🛒 Your Items
+                        </h5>
+
+                        {% if scheduled_delivery_shop_names %}
+                            <div class="alert alert-warning" role="alert">
+                                <strong>Scheduled delivery:</strong>
+                                {% for shop_name in scheduled_delivery_shop_names %}{{ shop_name }}{% if not forloop.last %}, {% endif %}{% endfor %}
+                                {% if scheduled_delivery_shop_names|length == 1 %}is{% else %}are{% endif %} currently closed. The shop will confirm the delivery timing after you place the order.
+                            </div>
+                        {% endif %}
+
+                        {% for item in items %}
+
+                        <div class="d-flex align-items-center checkout-item">
+
+                            {% if item.assignment.display_image_url %}
+
+                                <img
+                                    src="{{ item.assignment.display_image_url }}"
+                                    width="70"
+                                    height="70"
+                                    class="rounded object-fit-cover me-3"
+                                >
+
+                            {% else %}
+
+                                <div
+                                    class="bg-light rounded d-flex align-items-center justify-content-center me-3"
+                                    style="width:70px;height:70px;"
+                                >
+                                    📦
+                                </div>
+
+                            {% endif %}
+
+
+                            <div class="flex-grow-1">
+
+                                <div class="fw-semibold">
+                                    {{ item.assignment.product.product_name }}
+                                    {% if item.is_bulk_order %}<span class="badge text-bg-primary ms-1">Bulk</span>{% endif %}
+                                </div>
+
+                                <small class="text-muted">
+                                    {{ item.assignment.shop.name }}
+                                </small>
+                                {% if item.is_scheduled_delivery %}
+                                    <div class="small text-warning-emphasis fw-semibold">
+                                        Delivery timing will be scheduled with this shop.
+                                    </div>
+                                {% endif %}
+
+                                <div class="small">
+                                    ₹{{ item.price }}
+                                    ×
+                                    {{ item.unit_calculation }}
+                                </div>
+
+                            </div>
+
+
+                            <strong>
+                                ₹{{ item.total }}
+                            </strong>
+
+                        </div>
+
+                        {% endfor %}
+
+                    </div>
+
+                </div>
+
+                <div class="card border-0 checkout-card mt-4">
+                    <div class="card-body">
+                        <h5 class="fw-bold mb-2">Order instruction</h5>
+                        <p class="small text-muted">
+                            Add a written note or voice recording for the shop team or the rider assigned to one shop order. Audio is available until one hour after delivery.
+                        </p>
+                        <label class="form-label" for="orderInstructionRecipient">Instruction for</label>
+                        <select class="form-select mb-3" id="orderInstructionRecipient" name="order_instruction_recipient">
+                            <option value="SHOP" {% if order_instruction_draft.recipient != "RIDER" %}selected{% endif %}>Shop team (owner and staff)</option>
+                            <option value="RIDER" {% if order_instruction_draft.recipient == "RIDER" %}selected{% endif %}>Assigned rider</option>
+                        </select>
+                        <label class="form-label" for="orderInstructionShop">Shop order</label>
+                        <select class="form-select mb-3" id="orderInstructionShop" name="order_instruction_shop">
+                            <option value="">Select a shop</option>
+                            {% for shop in checkout_shops %}
+                                <option value="{{ shop.id }}"
+                                        {% if order_instruction_draft.shop_id == shop.id %}selected{% endif %}>
+                                    {{ shop.name }}
+                                </option>
+                            {% endfor %}
+                        </select>
+                        <label class="form-label" for="orderInstructionText">Written instruction (optional)</label>
+                        <textarea class="form-control mb-3" id="orderInstructionText" name="order_instruction_text"
+                                  rows="2" maxlength="1000"
+                                  placeholder="For example: Please call when you arrive.">{{ order_instruction_draft.instruction_text|default:"" }}</textarea>
+
+                        <div class="d-flex flex-wrap gap-2 align-items-center">
+                            <button class="btn btn-outline-primary" type="button" id="startInstructionRecording">
+                                <i class="bi bi-mic me-1"></i>Record audio instruction
+                            </button>
+                            <button class="btn btn-outline-danger" type="button" id="stopInstructionRecording" disabled>
+                                Stop recording
+                            </button>
+                            <label class="btn btn-outline-secondary mb-0" for="orderInstructionAudio">
+                                Choose audio file
+                            </label>
+                            <button class="btn btn-link text-danger" type="button" id="clearInstructionAudio">
+                                Clear recording
+                            </button>
+                        </div>
+                        <input class="visually-hidden" type="file" id="orderInstructionAudio"
+                               name="order_instruction_audio" accept="audio/*">
+                        <input type="hidden" id="clearOrderInstructionAudio"
+                               name="clear_order_instruction_audio" value="0">
+                        {% if order_instruction_draft.audio_file %}
+                            <div class="small text-success mt-2" id="instructionRecordingStatus">
+                                Voice recording ready to send with this order.
+                            </div>
+                        {% else %}
+                            <div class="small text-muted mt-2" id="instructionRecordingStatus" aria-live="polite">
+                                Recording limit: 2 minutes and 10 MB. Microphone access requires HTTPS.
+                            </div>
+                        {% endif %}
+                        <audio class="w-100 mt-2" id="instructionAudioPreview" controls hidden></audio>
+                    </div>
+                </div>
+
+                <div class="card border-0 checkout-card mt-4">
+                    <div class="card-body">
+                        <h5 class="fw-bold mb-3">Delivery fee by shop</h5>
+                        {% for shop in checkout_shop_summary %}
+                        <div class="d-flex justify-content-between align-items-center gap-3 py-2 {% if not forloop.last %}border-bottom{% endif %}">
+                            <span class="text-break">{{ shop.shop_name }}</span>
+                            <strong class="text-nowrap">
+                                {% if shop.delivery_free %}<span class="text-success">Free</span>{% else %}₹{{ shop.delivery_fee|floatformat:2 }}{% endif %}
+                            </strong>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <div class="card border-0 checkout-card mt-4">
+                    <div class="card-body">
+                        <h5 class="fw-bold mb-3">Savings</h5>
+                        <label for="couponCode" class="form-label">Coupon code</label>
+                        <input id="couponCode" name="coupon_code" class="form-control"
+                               type="text" placeholder="Enter coupon code" autocomplete="off">
+                        <div class="form-text mb-3">Eligible coupon cashback is credited to your wallet after the order is completed and paid.</div>
+                        <div class="d-flex justify-content-between align-items-center rounded bg-light p-3">
+                            <div>
+                                <label class="fw-semibold" for="useWalletBalance">Use wallet balance</label>
+                                <small class="d-block text-muted">Apply wallet balance after discounts, delivery, GST, and platform charges.</small>
+                            </div>
+                            <div class="text-end">
+                                <span class="badge text-bg-success">₹{{ client.wallet_balance|default:"0.00" }}</span>
+                                <div class="form-check form-switch mt-2">
+                                    <input class="form-check-input float-none ms-0" type="checkbox"
+                                           id="useWalletBalance" name="use_wallet_balance" value="1"
+                                           {% if use_wallet_balance or use_wallet_balance is None %}checked{% endif %}>
+                                    <label class="form-check-label small" for="useWalletBalance">Use by default</label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card border-0 checkout-card mt-4">
+                    <div class="card-body">
+                        <h5 class="fw-bold mb-3">Payment method</h5>
+                        <label class="checkout-address-label mb-2">
+                            <span class="d-flex align-items-start gap-3">
+                                <input type="radio" class="form-check-input mt-1" name="payment_method"
+                                       value="COD" {% if not razorpay_checkout %}checked{% endif %} required>
+                                <span>
+                                    <strong>Cash on Delivery</strong>
+                                    <span class="d-block small text-muted">Pay the remaining amount when your order arrives.</span>
+                                </span>
+                            </span>
+                        </label>
+                        <label class="checkout-address-label mb-2">
+                            <span class="d-flex align-items-start gap-3">
+                                <input type="radio" class="form-check-input mt-1" name="payment_method"
+                                       value="RAZORPAY"
+                                       {% if razorpay_checkout %}checked{% endif %}>
+                                <span>
+                                    <strong>Pay online with Razorpay</strong>
+                                    <span class="d-block small text-muted">
+                                        Secure payment by UPI, cards, or supported payment methods.
+                                    </span>
+                                </span>
+                            </span>
+                        </label>
+                        {% if not razorpay_configured and not razorpay_checkout %}
+                            <div class="alert alert-warning small mb-0" role="status">
+                                Online payment needs Razorpay credentials. The shop administrator must configure
+                                <code>RAZORPAY_KEY_ID</code> and <code>RAZORPAY_KEY_SECRET</code> on the server.
+                                Your order will not be placed if you continue with Razorpay before setup.
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+
+            </div>
+
+
+            <!-- RIGHT -->
+
+            <div class="col-lg-4">
+
+                <div class="card border-0 checkout-summary"
+                     id="checkoutSummary"
+                     data-cod-due="{{ cod_due|default:'0.00' }}"
+                     data-razorpay-due="{{ razorpay_due|default:'0.00' }}"
+                     data-cod-base="{{ cod_base|default:'0.00' }}"
+                     data-razorpay-base="{{ razorpay_base|default:'0.00' }}"
+                     data-wallet-balance="{{ client.wallet_balance|default:'0.00' }}"
+                     data-razorpay-fee-percent="{{ razorpay_fee_percent|default:'2.00' }}"
+                     data-platform-charge="{{ platform_charge|default:0 }}"
+                     data-razorpay-fee="{{ razorpay_fee|default:0 }}">
+
+                    <div class="card-body p-4">
+
+                        <h5 class="fw-bold mb-4">
+                            Order Summary
+                        </h5>
+
+
+                        <div class="d-flex justify-content-between mb-2">
+
+                            <span>
+                                Items
+                            </span>
+
+                            <span>
+                                ₹{{ subtotal }}
+                            </span>
+
+                        </div>
+
+
+                        {% if delivery_total %}
+                        <div class="d-flex justify-content-between mb-2">
+                            <span>Delivery service</span>
+                            <span>₹{{ delivery_total|floatformat:2 }}</span>
+                        </div>
+                        {% endif %}
+                        {% if gst_amount %}
+                        <div class="d-flex justify-content-between mb-2">
+                            <span>GST</span>
+                            <span>₹{{ gst_amount|floatformat:2 }}</span>
+                        </div>
+                        {% endif %}
+                        <div class="d-flex justify-content-between mb-2">
+                            <span>Platform charge</span>
+                            <span>₹{{ platform_charge|default:"0.00" }}</span>
+                        </div>
+                        <div class="d-flex justify-content-between mb-2" id="razorpayFeeRow"
+                             {% if not razorpay_checkout %}hidden{% endif %}>
+                            <span>Razorpay fee ({{ razorpay_fee_percent|default:"2.00" }}%)</span>
+                            <span id="razorpayFeeAmount">₹{{ razorpay_fee|default:"0.00" }}</span>
+                        </div>
+                        <div class="d-flex justify-content-between mb-2" id="walletAppliedRow"
+                             {% if not wallet_amount_used %}hidden{% endif %}>
+                            <span>Wallet applied</span>
+                            <span id="walletAppliedAmount">−₹{{ wallet_amount_used|default:0|floatformat:2 }}</span>
+                        </div>
+                        <hr>
+                        <div class="d-flex justify-content-between">
+                            <strong>Amount due</strong>
+                            <strong class="fs-4" id="checkoutDueAmount">
+                                ₹{% if razorpay_checkout %}{{ razorpay_due|floatformat:2 }}{% else %}{{ cod_due|floatformat:2 }}{% endif %}
+                            </strong>
+                        </div>
+                        <div class="small text-white-50 mt-2">
+                            Platform charge: ₹10 + 0.1% of item total. Razorpay fees apply only to online payments.
+                        </div>
+
+                        <button
+                            id="checkoutSubmitButton"
+                            type="submit"
+                            class="btn btn-success btn-lg w-100 mt-4"
+                            {% if razorpay_checkout %}disabled{% endif %}
+                        >
+                            🛍️ Place COD Order
+                        </button>
+
+
+                        <a
+                            href="{% url 'cart' %}"
+                            class="btn btn-outline-secondary w-100 mt-2"
+                        >
+                            ← Back to Cart
+                        </a>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </form>
+
+</div>
+
+{{ checkout_shop_summary|json_script:"checkout-shop-summary" }}
+
+<div class="modal fade" id="orderConfirmationModal" tabindex="-1"
+     aria-labelledby="orderConfirmationTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 rounded-4 shadow">
+            <div class="modal-header border-0 pb-0">
+                <div>
+                    <span class="badge rounded-pill text-bg-primary-subtle text-primary mb-2">ORDER REVIEW</span>
+                    <h2 class="modal-title fs-5 fw-bold" id="orderConfirmationTitle">Confirm your purchase</h2>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted mb-3">
+                    Your order includes <strong id="confirmationShopCount">0 shops</strong>.
+                    Delivery fees are shown for each shop. Shop amounts include products, delivery, and applicable GST.
+                </p>
+                <div id="confirmationShopRows" class="d-grid gap-2"></div>
+                <div class="d-flex justify-content-between align-items-center border-top mt-3 pt-3">
+                    <span class="fw-semibold">Total amount due</span>
+                    <strong class="fs-4 text-success" id="confirmationGrandTotal">₹0.00</strong>
+                </div>
+                <p class="small text-muted mt-2 mb-0">
+                    The total includes the charges shown at checkout. A valid coupon code is checked when you place the order and may reduce the final amount.
+                </p>
+            </div>
+            <div class="modal-footer border-0 pt-0">
+                <button type="button" class="btn btn-light border" data-bs-dismiss="modal">Review checkout</button>
+                <button type="button" class="btn btn-success px-4" id="confirmOrderSubmit">Confirm &amp; place order</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if razorpay_checkout %}
+<form id="razorpayVerifyForm" method="post" action="{% url 'verify_razorpay_payment' %}" class="d-none">
+    {% csrf_token %}
+    <input type="hidden" name="razorpay_order_id">
+    <input type="hidden" name="razorpay_payment_id">
+    <input type="hidden" name="razorpay_signature">
+</form>
+{% endif %}
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(() => {
+    const fileInput = document.getElementById("orderInstructionAudio");
+    const startButton = document.getElementById("startInstructionRecording");
+    const stopButton = document.getElementById("stopInstructionRecording");
+    const clearButton = document.getElementById("clearInstructionAudio");
+    const clearValue = document.getElementById("clearOrderInstructionAudio");
+    const status = document.getElementById("instructionRecordingStatus");
+    const preview = document.getElementById("instructionAudioPreview");
+    if (!fileInput || !startButton || !stopButton || !status || !preview) return;
+
+    let recorder;
+    let mediaStream;
+    let chunks = [];
+    let recordingTimeout;
+    const maximumBytes = 10 * 1024 * 1024;
+    const maximumDurationMs = 2 * 60 * 1000;
+
+    const clearPreview = () => {
+        if (preview.dataset.objectUrl) URL.revokeObjectURL(preview.dataset.objectUrl);
+        preview.removeAttribute("src");
+        delete preview.dataset.objectUrl;
+        preview.hidden = true;
+    };
+    const stopTracks = () => {
+        mediaStream?.getTracks().forEach((track) => track.stop());
+        mediaStream = undefined;
+        startButton.disabled = false;
+        stopButton.disabled = true;
+        if (recordingTimeout) window.clearTimeout(recordingTimeout);
+    };
+    const stopRecording = () => {
+        if (recorder?.state === "recording") recorder.stop();
+    };
+
+    startButton.addEventListener("click", async () => {
+        if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+            status.textContent = "Audio recording is not supported in this browser. Choose an audio file instead.";
+            return;
+        }
+        try {
+            mediaStream = await navigator.mediaDevices.getUserMedia({audio: true});
+            const preferredType = ["audio/webm;codecs=opus", "audio/mp4", "audio/ogg;codecs=opus"]
+                .find((type) => MediaRecorder.isTypeSupported(type));
+            recorder = new MediaRecorder(
+                mediaStream,
+                preferredType ? {mimeType: preferredType} : undefined
+            );
+            chunks = [];
+            recorder.addEventListener("dataavailable", (event) => {
+                if (event.data.size) chunks.push(event.data);
+            });
+            recorder.addEventListener("stop", () => {
+                stopTracks();
+                const blob = new Blob(chunks, {type: recorder.mimeType || "audio/webm"});
+                if (blob.size > maximumBytes) {
+                    fileInput.value = "";
+                    clearPreview();
+                    status.textContent = "This recording is larger than 10 MB. Please record a shorter message.";
+                    return;
+                }
+                const extension = blob.type.includes("mp4") ? "m4a"
+                    : blob.type.includes("ogg") ? "ogg"
+                    : blob.type.includes("wav") ? "wav"
+                    : "webm";
+                const file = new File([blob], `order-instruction.${extension}`, {type: blob.type});
+                const transfer = new DataTransfer();
+                transfer.items.add(file);
+                fileInput.files = transfer.files;
+                clearValue.value = "0";
+                clearPreview();
+                preview.src = URL.createObjectURL(blob);
+                preview.dataset.objectUrl = preview.src;
+                preview.hidden = false;
+                status.textContent = "Voice recording ready to send with this order.";
+            }, {once: true});
+            recorder.start(1000);
+            startButton.disabled = true;
+            stopButton.disabled = false;
+            status.textContent = "Recording… Stop when your instruction is complete.";
+            recordingTimeout = window.setTimeout(stopRecording, maximumDurationMs);
+        } catch (error) {
+            stopTracks();
+            status.textContent = "Could not access the microphone. Allow microphone access or choose an audio file.";
+        }
+    });
+    stopButton.addEventListener("click", stopRecording);
+    fileInput.addEventListener("change", () => {
+        const file = fileInput.files?.[0];
+        if (!file) return;
+        clearValue.value = "0";
+        clearPreview();
+        preview.src = URL.createObjectURL(file);
+        preview.dataset.objectUrl = preview.src;
+        preview.hidden = false;
+        status.textContent = file.size > maximumBytes
+            ? "This audio file is larger than 10 MB."
+            : "Audio file ready to send with this order.";
+    });
+    clearButton?.addEventListener("click", () => {
+        stopRecording();
+        fileInput.value = "";
+        clearPreview();
+        clearValue.value = "1";
+        status.textContent = "Recording cleared.";
+    });
+})();
+</script>
+<script>
+(() => {
+    const checkoutForm = document.getElementById("checkoutForm");
+    const submitButton = document.getElementById("checkoutSubmitButton");
+    const paymentChoices = document.querySelectorAll('input[name="payment_method"]');
+    const walletChoice = document.getElementById("useWalletBalance");
+    const summary = document.getElementById("checkoutSummary");
+    const dueAmount = document.getElementById("checkoutDueAmount");
+    const feeRow = document.getElementById("razorpayFeeRow");
+    const feeAmount = document.getElementById("razorpayFeeAmount");
+    const walletRow = document.getElementById("walletAppliedRow");
+    const walletAppliedAmount = document.getElementById("walletAppliedAmount");
+    const confirmationModal = document.getElementById("orderConfirmationModal");
+    const confirmOrderButton = document.getElementById("confirmOrderSubmit");
+    const shopRows = document.getElementById("confirmationShopRows");
+    const shopCount = document.getElementById("confirmationShopCount");
+    const grandTotal = document.getElementById("confirmationGrandTotal");
+    if (!submitButton || !paymentChoices.length) return;
+    let confirmed = false;
+    const updateButtonLabel = () => {
+        const selected = document.querySelector('input[name="payment_method"]:checked');
+        const online = selected?.value === "RAZORPAY";
+        if (!document.getElementById("razorpayVerifyForm")) {
+            submitButton.textContent = online ? "Continue to Razorpay" : "🛍️ Place COD Order";
+        }
+        if (confirmOrderButton) {
+            confirmOrderButton.textContent = online
+                ? "Confirm & continue to payment"
+                : "Confirm & place COD order";
+        }
+        if (summary && dueAmount) {
+            const codBase = Number(summary.dataset.codBase);
+            const razorpayBase = Number(summary.dataset.razorpayBase);
+            const walletBalance = Number(summary.dataset.walletBalance);
+            const feePercent = Number(summary.dataset.razorpayFeePercent);
+            const useWallet = Boolean(walletChoice?.checked);
+            const walletApplied = useWallet && Number.isFinite(walletBalance)
+                ? Math.min(Math.max(walletBalance, 0), Math.max(codBase, 0))
+                : 0;
+            const codDue = Math.max(0, codBase - walletApplied);
+            const onlineBase = Math.max(0, razorpayBase - walletApplied);
+            const onlineFee = Math.round((onlineBase * feePercent / 100 + Number.EPSILON) * 100) / 100;
+            const amount = online ? onlineBase + onlineFee : codDue;
+            if (Number.isFinite(amount)) dueAmount.textContent = `₹${amount.toFixed(2)}`;
+            if (walletRow && walletAppliedAmount) {
+                walletRow.hidden = walletApplied <= 0;
+                walletAppliedAmount.textContent = `−₹${walletApplied.toFixed(2)}`;
+            }
+            if (feeAmount) feeAmount.textContent = `₹${onlineFee.toFixed(2)}`;
+        }
+        if (feeRow) feeRow.hidden = !online;
+    };
+    paymentChoices.forEach((choice) => choice.addEventListener("change", updateButtonLabel));
+    walletChoice?.addEventListener("change", updateButtonLabel);
+    updateButtonLabel();
+
+    if (checkoutForm && confirmationModal && confirmOrderButton && shopRows) {
+        const summaryElement = document.getElementById("checkout-shop-summary");
+        const shopSummary = JSON.parse(summaryElement.textContent);
+
+        checkoutForm.addEventListener("submit", (event) => {
+            if (confirmed) return;
+            event.preventDefault();
+
+            shopRows.replaceChildren();
+            shopSummary.forEach((shop) => {
+                const row = document.createElement("div");
+                row.className = "d-flex justify-content-between gap-3 rounded-3 bg-light px-3 py-2";
+                const name = document.createElement("span");
+                name.className = "text-break";
+                name.textContent = shop.shop_name;
+                const amount = document.createElement("strong");
+                amount.className = "text-nowrap";
+                amount.textContent = `₹${Number(shop.shop_total).toFixed(2)}`;
+                const delivery = document.createElement("small");
+                delivery.className = "d-block text-muted";
+                const deliveryAmount = Number(shop.delivery_fee);
+                delivery.textContent = Number.isFinite(deliveryAmount) && deliveryAmount > 0
+                    ? `Delivery: ₹${deliveryAmount.toFixed(2)}`
+                    : "Delivery: Free";
+                const shopDetails = document.createElement("span");
+                shopDetails.append(name, delivery);
+                row.append(shopDetails, amount);
+                shopRows.append(row);
+            });
+            if (shopCount) {
+                shopCount.textContent = `${shopSummary.length} ${shopSummary.length === 1 ? "shop" : "shops"}`;
+            }
+            if (grandTotal && dueAmount) {
+                grandTotal.textContent = dueAmount.textContent.trim();
+            }
+
+            if (window.bootstrap?.Modal) {
+                window.bootstrap.Modal.getOrCreateInstance(confirmationModal).show();
+            } else {
+                const shopLines = shopSummary.map(
+                    (shop) => `${shop.shop_name}: ₹${Number(shop.shop_total).toFixed(2)}`
+                );
+                const totalText = dueAmount ? dueAmount.textContent.trim() : "";
+                if (window.confirm(
+                    `Your order includes ${shopSummary.length} shop(s):\n${shopLines.join("\n")}\n\nTotal amount due: ${totalText}\n\nContinue?`
+                )) {
+                    confirmed = true;
+                    checkoutForm.requestSubmit();
+                }
+            }
+        });
+
+        confirmOrderButton.addEventListener("click", () => {
+            confirmed = true;
+            if (window.bootstrap?.Modal) {
+                window.bootstrap.Modal.getOrCreateInstance(confirmationModal).hide();
+            }
+            checkoutForm.requestSubmit();
+        });
+    }
+})();
+</script>
+{% if razorpay_checkout %}
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<script>
+(() => {
+    const options = {
+        key: "{{ razorpay_key_id|escapejs }}",
+        amount: "{{ razorpay_amount }}",
+        currency: "INR",
+        name: "{{ razorpay_name|escapejs }}",
+        description: "Marketplace order payment",
+        order_id: "{{ razorpay_order_id|escapejs }}",
+        prefill: {
+            name: "{{ razorpay_name|escapejs }}",
+            email: "{{ razorpay_email|escapejs }}",
+            contact: "{{ razorpay_phone|escapejs }}",
+        },
+        theme: {color: "#2563eb"},
+        handler: (result) => {
+            const form = document.getElementById("razorpayVerifyForm");
+            form.elements.razorpay_order_id.value = result.razorpay_order_id;
+            form.elements.razorpay_payment_id.value = result.razorpay_payment_id;
+            form.elements.razorpay_signature.value = result.razorpay_signature;
+            form.submit();
+        },
+        modal: {
+            ondismiss: () => {
+                window.location.assign("{% url 'checkout' %}");
+            },
+        },
+    };
+    if (!window.Razorpay) {
+        window.location.assign("{% url 'checkout' %}?payment_error=razorpay_unavailable");
+        return;
+    }
+    new window.Razorpay(options).open();
+})();
+</script>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+
+{% block title %}Wallet &amp; payment history{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-4">
+        <div>
+            <h1 class="h3 mb-1">Wallet &amp; payment history</h1>
+            <p class="text-muted mb-0">Review wallet transactions and payments for your orders.</p>
+        </div>
+        <div class="text-end">
+            <div class="small text-muted">Available wallet balance</div>
+            <div class="fs-3 fw-bold text-success">₹{{ client.wallet_balance|floatformat:2 }}</div>
+        </div>
+    </div>
+
+    <section class="card shadow-sm border-0 mb-4" aria-labelledby="wallet-history-heading">
+        <div class="card-header bg-white d-flex flex-wrap justify-content-between align-items-center gap-2">
+            <div>
+                <h2 class="h5 mb-1" id="wallet-history-heading">Wallet transactions</h2>
+                <p class="small text-muted mb-0">Credits, order payments, refunds and other balance changes.</p>
+            </div>
+            <span class="badge text-bg-light">{{ wallet_transactions.paginator.count }} transactions</span>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th scope="col">Date</th>
+                        <th scope="col">Description</th>
+                        <th scope="col">Reference</th>
+                        <th scope="col" class="text-end">Amount</th>
+                        <th scope="col" class="text-end">Balance after</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for transaction in wallet_transactions %}
+                        <tr>
+                            <td class="text-nowrap">{{ transaction.created_at|date:"d M Y, h:i A" }}</td>
+                            <td>
+                                <span class="badge {% if transaction.transaction_type == 'CREDIT' %}text-bg-success{% else %}text-bg-danger{% endif %}">
+                                    {{ transaction.get_transaction_type_display }}
+                                </span>
+                                <div class="mt-1">{{ transaction.description|default:"Wallet transaction" }}</div>
+                            </td>
+                            <td>{{ transaction.reference|default:"—" }}</td>
+                            <td class="text-end fw-semibold {% if transaction.transaction_type == 'CREDIT' %}text-success{% else %}text-danger{% endif %}">
+                                {% if transaction.transaction_type == "CREDIT" %}+{% else %}−{% endif %}₹{{ transaction.amount|floatformat:2 }}
+                            </td>
+                            <td class="text-end">₹{{ transaction.balance_after|floatformat:2 }}</td>
+                        </tr>
+                    {% empty %}
+                        <tr>
+                            <td colspan="5" class="text-center text-muted py-4">No wallet transactions yet.</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% if wallet_transactions.has_other_pages %}
+            <div class="card-footer bg-white d-flex justify-content-between align-items-center">
+                <span class="small text-muted">Page {{ wallet_transactions.number }} of {{ wallet_transactions.paginator.num_pages }}</span>
+                <div class="btn-group btn-group-sm" role="group" aria-label="Wallet transaction pages">
+                    {% if wallet_transactions.has_previous %}
+                        <a class="btn btn-outline-secondary" href="?wallet_page={{ wallet_transactions.previous_page_number }}{% if order_history.number > 1 %}&amp;payment_page={{ order_history.number }}{% endif %}">Previous</a>
+                    {% endif %}
+                    {% if wallet_transactions.has_next %}
+                        <a class="btn btn-outline-secondary" href="?wallet_page={{ wallet_transactions.next_page_number }}{% if order_history.number > 1 %}&amp;payment_page={{ order_history.number }}{% endif %}">Next</a>
+                    {% endif %}
+                </div>
+            </div>
+        {% endif %}
+    </section>
+
+    <section class="card shadow-sm border-0" aria-labelledby="payment-history-heading">
+        <div class="card-header bg-white d-flex flex-wrap justify-content-between align-items-center gap-2">
+            <div>
+                <h2 class="h5 mb-1" id="payment-history-heading">Order payment history</h2>
+                <p class="small text-muted mb-0">Order totals, wallet contribution, payments received and any remaining balance.</p>
+            </div>
+            <span class="badge text-bg-light">{{ order_history.paginator.count }} orders</span>
+        </div>
+        <div class="card-body">
+            {% for order in order_history %}
+                <article class="border rounded p-3 mb-3">
+                    <div class="d-flex flex-wrap justify-content-between gap-2 mb-3">
+                        <div>
+                            <h3 class="h6 mb-1">Order {{ order.order_id }}</h3>
+                            <span class="small text-muted">{{ order.created_at|date:"d M Y, h:i A" }}</span>
+                        </div>
+                        <div class="text-end">
+                            <span class="badge {% if order.is_payment_done %}text-bg-success{% elif order.payment_status == 'COD' %}text-bg-warning{% else %}text-bg-secondary{% endif %}">
+                                {{ order.get_payment_status_display }}
+                            </span>
+                            <div class="small text-muted mt-1">{{ order.payment_type|default:"Payment method not recorded" }}</div>
+                        </div>
+                    </div>
+                    <div class="row g-3 small">
+                        <div class="col-6 col-md-3">
+                            <div class="text-muted">Order total</div>
+                            <strong>₹{{ order.final_billing_amount|floatformat:2 }}</strong>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <div class="text-muted">Paid from wallet</div>
+                            <strong>₹{{ order.wallet_amount_used|floatformat:2 }}</strong>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <div class="text-muted">Paid by other methods</div>
+                            <strong>₹{{ order.finally_received_amount|floatformat:2 }}</strong>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <div class="text-muted">Remaining balance</div>
+                            <strong class="{% if order.payment_amount > 0 %}text-danger{% else %}text-success{% endif %}">
+                                ₹{{ order.payment_amount|floatformat:2 }}
+                            </strong>
+                        </div>
+                    </div>
+                    {% if order.payment_id %}
+                        <div class="small text-muted mt-2">Payment reference: {{ order.payment_id }}</div>
+                    {% endif %}
+
+                    {% for shop_order in order.shop_orders.all %}
+                        {% if shop_order.cash_ledger_entries.all or shop_order.cod_balance_payments.all %}
+                            <div class="border-top mt-3 pt-3">
+                                <h4 class="small fw-bold mb-2">{{ shop_order.shop.name }} payment activity</h4>
+                                {% for cash_entry in shop_order.cash_ledger_entries.all %}
+                                    <div class="small d-flex flex-wrap justify-content-between gap-2">
+                                        <span>Cash collected by {{ cash_entry.rider.user.get_full_name|default:cash_entry.rider.user.username }} · {{ cash_entry.created_at|date:"d M Y, h:i A" }}</span>
+                                        <strong>₹{{ cash_entry.amount|floatformat:2 }}</strong>
+                                    </div>
+                                {% endfor %}
+                                {% for payment in shop_order.cod_balance_payments.all %}
+                                    <div class="small d-flex flex-wrap justify-content-between gap-2">
+                                        <span>COD balance received by {{ payment.received_by.get_full_name|default:payment.received_by.username }} · {{ payment.created_at|date:"d M Y, h:i A" }}</span>
+                                        <strong>₹{{ payment.amount|floatformat:2 }}</strong>
+                                    </div>
+                                {% endfor %}
+                            </div>
+                        {% endif %}
+                    {% endfor %}
+                </article>
+            {% empty %}
+                <div class="text-center text-muted py-4">Your order payment history will appear here after you place an order.</div>
+            {% endfor %}
+        </div>
+        {% if order_history.has_other_pages %}
+            <div class="card-footer bg-white d-flex justify-content-between align-items-center">
+                <span class="small text-muted">Page {{ order_history.number }} of {{ order_history.paginator.num_pages }}</span>
+                <div class="btn-group btn-group-sm" role="group" aria-label="Order payment history pages">
+                    {% if order_history.has_previous %}
+                        <a class="btn btn-outline-secondary" href="?payment_page={{ order_history.previous_page_number }}{% if wallet_transactions.number > 1 %}&amp;wallet_page={{ wallet_transactions.number }}{% endif %}">Previous</a>
+                    {% endif %}
+                    {% if order_history.has_next %}
+                        <a class="btn btn-outline-secondary" href="?payment_page={{ order_history.next_page_number }}{% if wallet_transactions.number > 1 %}&amp;wallet_page={{ wallet_transactions.number }}{% endif %}">Next</a>
+                    {% endif %}
+                </div>
+            </div>
+        {% endif %}
+    </section>
+</div>
+{% endblock %}

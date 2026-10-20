@@ -1,0 +1,55 @@
+{% extends 'base.html' %}
+{% load widget_tweaks %}
+
+{% block title %}Sign up{% endblock %}
+
+{% block content %}
+  <div class="row justify-content-center">
+    <div class="col-md-6 col-lg-5">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h3 class="card-title mb-3">Create an account</h3>
+          <form method="post" novalidate>
+            {% csrf_token %}
+            {% for field in form %}
+              <div class="mb-3">
+                {% if field.name == "accept_legal_documents" %}
+                  <div class="form-check">
+                    {{ field }}
+                    <label class="form-check-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                  </div>
+                  <div class="form-text mt-1">
+                    {% for slug, title in required_legal_documents %}
+                      {% if not forloop.first %} · {% endif %}
+                      {% if slug == "privacy" %}
+                        <a href="{% url 'privacy_policy' %}" target="_blank" rel="noopener">{{ title }}</a>
+                      {% elif slug == "refunds" %}
+                        <a href="{% url 'refund_policy' %}" target="_blank" rel="noopener">{{ title }}</a>
+                      {% elif slug == "delivery" %}
+                        <a href="{% url 'delivery_policy' %}" target="_blank" rel="noopener">{{ title }}</a>
+                      {% else %}
+                        <a href="{% url slug %}" target="_blank" rel="noopener">{{ title }}</a>
+                      {% endif %}
+                    {% endfor %}
+                  </div>
+                {% else %}
+                  {{ field.label_tag }}
+                  {{ field|add_class:'form-control' }}
+                {% endif %}
+                {% if field.errors %}
+                  <div class="text-danger small">{{ field.errors|striptags }}</div>
+                {% endif %}
+              </div>
+            {% endfor %}
+            <div class="d-grid">
+              <button type="submit" class="btn btn-primary">Sign up</button>
+            </div>
+          </form>
+          <div class="mt-3 text-center small">
+            Already have an account? <a href="{% url 'login' %}">Log in</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}

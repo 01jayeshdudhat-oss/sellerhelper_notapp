@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block title %}My Orders{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <div class="mb-4">
+        <h1 class="h2 fw-bold mb-1">My orders</h1>
+        <p class="text-muted mb-0">Track deliveries, update eligible orders, and revisit past purchases.</p>
+    </div>
+
+    <nav class="nav nav-pills flex-nowrap overflow-auto gap-2 mb-4" aria-label="Order categories">
+        <a class="nav-link {% if active_tab == 'active' %}active{% endif %}" href="?tab=active">Undelivered <span class="badge text-bg-light">{{ order_groups.active|length }}</span></a>
+        <a class="nav-link {% if active_tab == 'delivered' %}active{% endif %}" href="?tab=delivered">Delivered <span class="badge text-bg-light">{{ order_groups.delivered|length }}</span></a>
+        <a class="nav-link {% if active_tab == 'cancelled_customer' %}active{% endif %}" href="?tab=cancelled_customer">Cancelled by me <span class="badge text-bg-light">{{ order_groups.cancelled_customer|length }}</span></a>
+        <a class="nav-link {% if active_tab == 'cancelled_shop' %}active{% endif %}" href="?tab=cancelled_shop">Cancelled by shop <span class="badge text-bg-light">{{ order_groups.cancelled_shop|length }}</span></a>
+    </nav>
+
+    {% if active_tab == "delivered" %}
+        {% with displayed_orders=order_groups.delivered %}
+            {% include "seller/_customer_order_cards.html" %}
+        {% endwith %}
+    {% elif active_tab == "cancelled_customer" %}
+        {% with displayed_orders=order_groups.cancelled_customer %}
+            {% include "seller/_customer_order_cards.html" %}
+        {% endwith %}
+    {% elif active_tab == "cancelled_shop" %}
+        {% with displayed_orders=order_groups.cancelled_shop %}
+            {% include "seller/_customer_order_cards.html" %}
+        {% endwith %}
+    {% else %}
+        {% with displayed_orders=order_groups.active %}
+            {% include "seller/_customer_order_cards.html" %}
+        {% endwith %}
+    {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,376 @@
+{% extends "base.html" %}
+
+{% block title %}Shop Orders{% endblock %}
+
+{% block content %}
+
+<style>
+
+.order-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+}
+
+.order-header h2 {
+    margin: 0;
+    font-weight: 700;
+}
+
+.order-card {
+    background: #fff;
+    border-radius: 14px;
+    border: 1px solid #e5e7eb;
+    margin-bottom: 12px;
+    transition: 0.2s;
+}
+
+.order-card:hover {
+    box-shadow: 0 5px 20px rgba(0,0,0,.07);
+}
+
+.order-main {
+    padding: 18px;
+}
+
+.order-id {
+    font-weight: 700;
+    font-size: 16px;
+}
+
+.order-time {
+    font-size: 13px;
+    color: #6b7280;
+}
+
+.status {
+    display: inline-block;
+    padding: 5px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.status-PLACED {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.status-CONFIRMED {
+    background: #cff4fc;
+    color: #055160;
+}
+
+.status-PACKING {
+    background: #e2d9f3;
+    color: #432874;
+}
+
+.status-READY {
+    background: #d1e7dd;
+    color: #0f5132;
+}
+
+.status-PICKED_UP {
+    background: #cfe2ff;
+    color: #084298;
+}
+
+.status-OUT_FOR_DELIVERY {
+    background: #d1ecf1;
+    color: #0c5460;
+}
+
+.status-DELIVERED {
+    background: #d1e7dd;
+    color: #0f5132;
+}
+
+.status-CANCELLED {
+    background: #f8d7da;
+    color: #842029;
+}
+
+.filter-card {
+    background: #fff;
+    border-radius: 14px;
+    padding: 15px;
+    margin-bottom: 20px;
+    border: 1px solid #e5e7eb;
+}
+
+</style>
+
+
+<div class="order-header">
+
+    <div>
+
+        <h2>📦 Shop Orders</h2>
+
+        <div class="text-muted">
+            Manage orders from your shops
+        </div>
+
+    </div>
+
+    <a
+        href="{% url 'shop_staff_list' %}"
+        class="btn btn-outline-primary"
+    >
+        👥 Staff
+    </a>
+
+</div>
+
+
+<!-- FILTER -->
+
+<div class="filter-card">
+
+    <form method="get">
+
+        <div class="row g-2">
+
+            <div class="col-md-4">
+
+                <label class="form-label">
+                    Shop
+                </label>
+
+                <select
+                    name="shop"
+                    class="form-select"
+                >
+
+                    <option value="">
+                        All Shops
+                    </option>
+
+                    {% for shop in shops %}
+
+                    <option
+                        value="{{ shop.id }}"
+                        {% if selected_shop == shop.id|stringformat:"s" %}
+                            selected
+                        {% endif %}
+                    >
+
+                        {{ shop.name }}
+
+                    </option>
+
+                    {% endfor %}
+
+                </select>
+
+            </div>
+
+
+            <div class="col-md-4">
+
+                <label class="form-label">
+                    Statusss
+                </label>
+
+                <select
+                    name="status"
+                    class="form-select"
+                >
+
+                    <option value="">
+                        All Status
+                    </option>
+
+                    <option value="pending">
+                        Pending
+                    </option>
+
+                    <option value="PLACED">
+                        Placed
+                    </option>
+
+                    <option value="CONFIRMED">
+                        Confirmed
+                    </option>
+
+                    <option value="PACKING">
+                        Packing
+                    </option>
+
+                    <option value="READY">
+                        Ready
+                    </option>
+
+                    <option value="PICKED_UP">
+                        Picked Up
+                    </option>
+
+                    <option value="OUT_FOR_DELIVERY">
+                        Out for Delivery
+                    </option>
+
+                    <option value="DELIVERED">
+                        Delivered
+                    </option>
+
+                    <option value="CANCELLED">
+                        Cancelled
+                    </option>
+
+                </select>
+
+            </div>
+
+
+            <div class="col-md-4 d-flex align-items-end">
+
+                <button
+                    type="submit"
+                    class="btn btn-primary w-100"
+                >
+                    🔍 Filter
+                </button>
+
+            </div>
+
+        </div>
+
+    </form>
+
+</div>
+
+
+<!-- ORDERS -->
+
+{% for shop_order in orders %}
+
+<div class="order-card">
+
+    <div class="order-main">
+
+        <div class="row align-items-center">
+
+            <!-- ORDER -->
+
+            <div class="col-md-3">
+
+                <div class="order-id">
+
+                    #{{ shop_order.shop_order_number|default:shop_order.order.order_id }}
+
+                </div>
+
+                <div class="order-time">
+
+                    {{ shop_order.created_at|date:"d M Y, h:i A" }}
+
+                </div>
+
+            </div>
+
+
+            <!-- SHOP -->
+
+            <div class="col-md-2">
+
+                <strong>
+                    🏪 {{ shop_order.shop.name }}
+                </strong>
+
+            </div>
+
+
+            <!-- ITEMS -->
+
+            <div class="col-md-2">
+
+                <strong>
+                    {{ shop_order.product_count }}
+                </strong>
+
+                items
+
+            </div>
+
+
+            <!-- AMOUNT -->
+
+            <div class="col-md-2">
+
+                <strong>
+                    ₹{{ shop_order.total_amount }}
+                </strong>
+
+                {% if shop_order.delivery_fee %}
+
+                <div class="small text-muted">
+
+                    Delivery ₹{{ shop_order.delivery_fee }}
+
+                </div>
+
+                {% endif %}
+
+            </div>
+
+
+            <!-- STATUS -->
+
+            <div class="col-md-2">
+
+                <span
+                    class="status status-{{ shop_order.status }}"
+                >
+
+                    {{ shop_order.status }}
+
+                </span>
+
+            </div>
+
+
+            <!-- ACTION -->
+
+            <div class="col-md-1 text-end">
+
+                <a
+                    href="{% url 'shop_order_detail' shop_order.id %}"
+                    class="btn btn-sm btn-primary"
+                >
+
+                    View
+
+                </a>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+
+{% empty %}
+
+<div class="text-center py-5">
+
+    <div style="font-size:60px;">
+        📦
+    </div>
+
+    <h4>
+        No orders found
+    </h4>
+
+    <p class="text-muted">
+        Orders for your shops will appear here.
+    </p>
+
+</div>
+
+{% endfor %}
+
+{% endblock %}

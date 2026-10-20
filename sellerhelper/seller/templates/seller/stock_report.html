@@ -1,0 +1,80 @@
+{% extends 'base.html' %}
+{% block title %}Stock report · {{ shop.name }}{% endblock %}
+
+{% block extra_css %}
+<style>
+    @media print {
+        .no-print, .main-navbar, .site-footer, .mobile-bottom-nav { display: none !important; }
+        body, .main-container { background: #fff !important; padding: 0 !important; }
+        .card { box-shadow: none !important; border: 0 !important; }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<main class="container-fluid py-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4 no-print">
+        <div>
+            <a href="{% url 'shop_detail' shop.id %}" class="small text-decoration-none">← {{ shop.name }}</a>
+            <h1 class="h3 fw-bold mt-2 mb-1">Stock report</h1>
+            <p class="text-muted mb-0">Demand trends and suggested inventory cover across weekdays and seasons. CSV opens in Excel; Print can save as PDF.</p>
+        </div>
+        <div class="d-flex flex-wrap gap-2">
+            <a class="btn btn-outline-success" href="{% url 'stock_import' shop.id %}">
+                <i class="bi bi-upload me-1"></i> Update stock
+            </a>
+            <a class="btn btn-outline-primary" href="?format=csv">
+                <i class="bi bi-file-earmark-spreadsheet me-1"></i> Download CSV
+            </a>
+            <button class="btn btn-primary" type="button" onclick="window.print()">
+                <i class="bi bi-printer me-1"></i> Print / Save PDF
+            </button>
+        </div>
+    </div>
+
+    <section class="card border-0 shadow-sm">
+        <div class="card-header bg-white border-0 py-3">
+            <h2 class="h5 fw-bold mb-0">{{ shop.name }} · Inventory overview</h2>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Product</th><th>SKU</th><th>Current</th><th>Daily avg.</th>
+                        <th>Weekday avg. (Mon–Sun)</th><th>Season avg.</th>
+                        <th>Peak / festival avg.</th><th>Suggested 7-day stock</th><th>Shortage</th><th>Expiry</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for entry in report %}
+                    <tr class="{% if entry.shortage > 0 %}table-warning{% endif %}">
+                        <td class="fw-semibold">{{ entry.assignment.product.product_name }}</td>
+                        <td>{{ entry.assignment.product.sku|default:'-' }}</td>
+                        <td>{{ entry.assignment.stock }}</td>
+                        <td>{{ entry.daily_average }}</td>
+                        <td class="small">
+                            {% for day, average in entry.weekday_average.items %}
+                                {{ day }}: {{ average }}{% if not forloop.last %} · {% endif %}
+                            {% endfor %}
+                        </td>
+                        <td>{{ entry.seasonal_average }}</td>
+                        <td>{{ entry.festival_average }} <small class="text-muted">(peak-day proxy)</small></td>
+                        <td>{{ entry.recommended_stock }}</td>
+                        <td>{% if entry.shortage > 0 %}<strong>{{ entry.shortage }}</strong>{% else %}0{% endif %}</td>
+                        <td>
+                            {% if entry.assignment.product.expiry_management_enabled %}
+                                {% if entry.expires_at %}{{ entry.expires_at|date:"d M Y" }}{% else %}Not set{% endif %}
+                            {% else %}
+                                <span class="text-muted">Not managed</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="10" class="text-center py-5 text-muted">No active stock assignments.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+</main>
+{% endblock %}

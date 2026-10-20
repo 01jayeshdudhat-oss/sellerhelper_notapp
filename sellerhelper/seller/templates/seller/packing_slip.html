@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>{% if is_tax_invoice %}{{ shop_order.invoice_number }}{% else %}{{ shop_order.packing_slip_number }}{% endif %}</title>
+    <style>
+        body{font-family:Arial,sans-serif;max-width:900px;margin:24px auto;color:#111}
+        .toolbar{display:flex;justify-content:flex-end;margin-bottom:20px}
+        .parties{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin:24px 0}
+        table{width:100%;border-collapse:collapse}
+        th,td{border:1px solid #bbb;padding:8px;text-align:left}
+        .number{text-align:right}
+        .totals{margin:20px 0 0 auto;width:min(100%,380px)}
+        .totals div{display:flex;justify-content:space-between;padding:5px 0}
+        .order-qr{width:88px;height:88px;object-fit:contain;image-rendering:pixelated}
+        .order-qr-block{display:flex;align-items:center;gap:10px;margin-top:12px}
+        .order-qr-caption{font-size:12px;color:#555}
+        @media print{.toolbar{display:none}body{margin:0 auto}.order-qr{width:108px;height:108px}}
+        @media(max-width:600px){.parties{grid-template-columns:1fr}}
+    </style>
+</head>
+<body>
+<div class="toolbar"><button type="button" onclick="window.print()">Print</button></div>
+<h1>{{ shop_order.shop.name }}</h1>
+{% if is_tax_invoice %}
+    <h2>Tax Invoice</h2>
+    <p><strong>Invoice:</strong> {{ shop_order.invoice_number }}<br>
+       <strong>Seller GSTIN:</strong> {{ shop_order.seller_gstin }}<br>
+       <strong>Seller address:</strong> {{ shop_order.seller_billing_address }}<br>
+       <strong>Place of supply:</strong> {{ shop_order.buyer_state_code }}
+    </p>
+{% else %}
+    <h2>Packing slip</h2>
+    <p><strong>Reference:</strong> {{ shop_order.packing_slip_number }}</p>
+{% endif %}
+<div class="parties">
+    <div><strong>Order:</strong> {{ shop_order.shop_order_number|default:shop_order.order.order_id }}<br>
+         <strong>Date:</strong> {{ shop_order.created_at|date:"d M Y, h:i A" }}</div>
+    <div><strong>Customer:</strong> {{ shop_order.order.user }}<br>
+         <strong>Delivery address:</strong> {{ shop_order.order.delivery_address }}<br>
+         <strong>Contact:</strong> {{ shop_order.order.delivery_contact_no }}
+         {% if is_tax_invoice and shop_order.buyer_gstin %}<br><strong>Buyer GSTIN:</strong> {{ shop_order.buyer_gstin }}{% endif %}
+    </div>
+</div>
+<div class="order-qr-block">
+    <img class="order-qr" src="{{ qr_code_data_uri }}" alt="QR code to open this order in SellerHelper">
+    <div class="order-qr-caption">
+        <strong>Scan to open this order</strong><br>
+        Available to authorized shop staff.
+    </div>
+</div>
+<table>
+    <thead>
+        <tr>
+            <th>Product</th>
+            {% if is_tax_invoice %}<th>HSN</th>{% endif %}
+            <th>Qty / Weight</th>
+            <th class="number">Unit price</th>
+            {% if is_tax_invoice %}<th class="number">Taxable</th><th class="number">GST</th>{% else %}<th class="number">Total</th>{% endif %}
+        </tr>
+    </thead>
+    <tbody>
+        {% for item in order_items %}
+        <tr>
+            <td>{{ item.product_name }}</td>
+            {% if is_tax_invoice %}<td>{{ item.hsn_code }}</td>{% endif %}
+            <td>{% if item.is_approximate_weight %}{% if item.final_weight %}{{ item.final_weight }} {{ item.weight_display_unit }}{% else %}{{ item.estimated_weight_calculation }}{% endif %}{% else %}{{ item.quantity_unit_calculation }}{% endif %}</td>
+            <td class="number">₹{{ item.price|floatformat:2 }}</td>
+            {% if is_tax_invoice %}
+                <td class="number">₹{{ item.taxable_amount|floatformat:2 }}</td>
+                <td class="number">₹{{ item.tax_amount|floatformat:2 }} ({{ item.gst_rate }}%)</td>
+            {% else %}
+                <td class="number">₹{{ item.total|floatformat:2 }}</td>
+            {% endif %}
+        </tr>
+        {% endfor %}
+        {% if is_tax_invoice and shop_order.delivery_fee %}
+        <tr>
+            <td>Delivery service</td><td>{{ shop_order.delivery_hsn_code|default:"—" }}</td><td>1</td>
+            <td class="number">—</td>
+            <td class="number">₹{{ shop_order.delivery_fee|floatformat:2 }}</td>
+            <td class="number">₹{{ shop_order.delivery_gst_amount|floatformat:2 }} ({{ shop_order.delivery_gst_rate }}%)</td>
+        </tr>
+        {% endif %}
+    </tbody>
+</table>
+{% if is_tax_invoice %}
+<div class="totals">
+    <div><span>Taxable amount</span><strong>₹{{ shop_order.taxable_amount|floatformat:2 }}</strong></div>
+    {% if shop_order.cgst_amount %}<div><span>CGST</span><span>₹{{ shop_order.cgst_amount|floatformat:2 }}</span></div>{% endif %}
+    {% if shop_order.sgst_amount %}<div><span>SGST</span><span>₹{{ shop_order.sgst_amount|floatformat:2 }}</span></div>{% endif %}
+    {% if shop_order.igst_amount %}<div><span>IGST</span><span>₹{{ shop_order.igst_amount|floatformat:2 }}</span></div>{% endif %}
+    <div><strong>Invoice total</strong><strong>₹{{ invoice_total|floatformat:2 }}</strong></div>
+</div>
+{% else %}
+<h2 class="number">Total: ₹{{ shop_order.total_amount|floatformat:2 }}</h2>
+{% endif %}
+</body>
+</html>

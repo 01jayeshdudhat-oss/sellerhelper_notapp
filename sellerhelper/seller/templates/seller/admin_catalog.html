@@ -1,0 +1,318 @@
+{% extends "base.html" %}
+
+{% block title %}Product catalog · {{ site_branding.site_name|default:'Seller Helper' }}{% endblock %}
+
+{% block content %}
+<style>
+    .catalog-hero {
+        background: linear-gradient(120deg, #102a43, #176b87);
+        border-radius: 22px;
+        color: #fff;
+        padding: clamp(22px, 4vw, 38px);
+        box-shadow: 0 18px 40px rgba(16, 42, 67, .16);
+    }
+    .catalog-stat, .catalog-panel {
+        border: 1px solid #e5eaf0;
+        border-radius: 18px;
+        background: #fff;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, .04);
+    }
+    .catalog-stat { padding: 18px; height: 100%; }
+    .catalog-stat-value { font-size: 1.7rem; font-weight: 800; color: #12344d; }
+    .catalog-panel { padding: 22px; }
+    .catalog-table th { color: #64748b; font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; }
+    .catalog-product-image { width: 48px; height: 48px; object-fit: cover; border-radius: 12px; background: #f1f5f9; }
+    .catalog-category { border: 1px solid #e8edf2; border-radius: 12px; padding: 12px; }
+    .admin-shortcut { border-radius: 12px; font-weight: 600; }
+</style>
+
+<div class="container-fluid px-0">
+    <section class="catalog-hero mb-4">
+        <div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3">
+            <div>
+                <span class="badge rounded-pill text-bg-light text-primary mb-2">ADMIN WORKSPACE</span>
+                <h1 class="h2 fw-bold mb-2">Shared product catalog</h1>
+                <p class="mb-0 text-white-50">Manage trusted product names, images, HSN codes, GST defaults, and categories for every shop.</p>
+            </div>
+            <a href="{% url 'admin_catalog_product_create' %}" class="btn btn-light btn-lg fw-semibold">
+                <i class="bi bi-plus-lg me-2"></i>Add catalog product
+            </a>
+        </div>
+    </section>
+
+    <section class="catalog-panel mb-4">
+        <div class="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3">
+            <div>
+                <h2 class="h5 fw-bold mb-1">Admin shortcuts</h2>
+                <p class="text-muted small mb-0">Open the other management areas from this workspace.</p>
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+                <a class="btn btn-outline-primary admin-shortcut" href="{% url 'shop_list' %}"><i class="bi bi-shop me-1"></i>Shops</a>
+                <a class="btn btn-outline-primary admin-shortcut" href="{% url 'product_list' %}"><i class="bi bi-box-seam me-1"></i>Products</a>
+                <a class="btn btn-outline-primary admin-shortcut" href="{% url 'shop_order_list' %}"><i class="bi bi-receipt me-1"></i>Orders</a>
+                <a class="btn btn-outline-primary admin-shortcut" href="{% url 'client_list' %}"><i class="bi bi-people me-1"></i>Customers</a>
+                <a class="btn btn-outline-secondary admin-shortcut" href="/admin/"><i class="bi bi-gear me-1"></i>More admin tools</a>
+            </div>
+        </div>
+    </section>
+
+    <section class="catalog-panel mb-4">
+        <div class="mb-3">
+            <h2 class="h5 fw-bold mb-1">Marketplace mobile layout</h2>
+            <p class="text-muted small mb-0">Set products per row and rows per category, then apply this layout to products across the mobile marketplace.</p>
+        </div>
+        <form method="post" class="row g-3 align-items-end marketplace-layout-controls">
+            {% csrf_token %}
+            <div class="col-6 col-md-3">
+                <label class="form-label fw-semibold" for="{{ marketplace_layout_form.products_per_row.id_for_label }}">Products per row</label>
+                {{ marketplace_layout_form.products_per_row }}
+                {% for error in marketplace_layout_form.products_per_row.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
+            </div>
+            <div class="col-6 col-md-3">
+                <label class="form-label fw-semibold" for="{{ marketplace_layout_form.rows_per_category.id_for_label }}">Rows per category</label>
+                {{ marketplace_layout_form.rows_per_category }}
+                {% for error in marketplace_layout_form.rows_per_category.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
+            </div>
+            <div class="col-12 col-md-auto">
+                <button class="btn btn-primary" type="submit" name="save_marketplace_layout" value="1">Apply to marketplace products</button>
+            </div>
+        </form>
+    </section>
+
+    <section class="catalog-panel mb-4">
+        <div class="mb-3">
+            <h2 class="h5 fw-bold mb-1">Site branding and contact details</h2>
+            <p class="text-muted small mb-0">Changes apply to the site header, browser icon, installable app name/icon, and support details.</p>
+        </div>
+        <form method="post" enctype="multipart/form-data" class="row g-3 align-items-end">
+            {% csrf_token %}
+            {% for field in site_branding_form %}
+                <div class="{% if field.name == 'support_address' %}col-12{% else %}col-12 col-md-6 col-lg-4{% endif %}">
+                    <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                    {{ field }}
+                    {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+                    {% if field.field.widget.input_type == "file" and field.value %}
+                        <div class="form-text">Current file: {{ field.value }}</div>
+                    {% endif %}
+                    {% for error in field.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+                </div>
+            {% endfor %}
+            <div class="col-12">
+                <button class="btn btn-primary" type="submit" name="save_site_branding" value="1">Save site branding</button>
+            </div>
+        </form>
+    </section>
+
+    {% if not offline_product_dictionary_ready %}
+        <div class="alert alert-warning" role="status">
+            Original product keywords and local script aliases remain searchable, but dictionary translations are unavailable until the offline dictionary is built.
+            See <code>tools/product-keyword-dictionary.md</code> for setup.
+        </div>
+    {% endif %}
+
+    <div class="row g-3 mb-4">
+        <div class="col-6 col-xl-4"><div class="catalog-stat"><div class="text-muted small">Catalog products</div><div class="catalog-stat-value">{{ product_count }}</div></div></div>
+        <div class="col-6 col-xl-4"><div class="catalog-stat"><div class="text-muted small">Available to shops</div><div class="catalog-stat-value">{{ active_product_count }}</div></div></div>
+        <div class="col-12 col-xl-4"><div class="catalog-stat"><div class="text-muted small">Active categories</div><div class="catalog-stat-value">{{ active_category_count }}</div></div></div>
+    </div>
+
+    <div class="row g-4">
+        <div class="col-12 col-xl-8">
+            <section class="catalog-panel">
+                <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-3">
+                    <div>
+                        <h2 class="h5 fw-bold mb-1">Products</h2>
+                        <p class="text-muted small mb-0">Search or filter the shared catalog.</p>
+                    </div>
+                    <form method="get" class="d-flex flex-column flex-sm-row gap-2">
+                        <input name="q" value="{{ search }}" class="form-control" placeholder="Name or HSN" aria-label="Search catalog">
+                        <select name="category" class="form-select" aria-label="Filter by category">
+                            <option value="">All categories</option>
+                            {% for value, label in category_choices %}
+                                <option value="{{ value }}" {% if selected_category == value %}selected{% endif %}>{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                        <select name="status" class="form-select" aria-label="Filter by status">
+                            <option value="all" {% if selected_status == "all" %}selected{% endif %}>All statuses</option>
+                            <option value="active" {% if selected_status == "active" %}selected{% endif %}>Active</option>
+                            <option value="inactive" {% if selected_status == "inactive" %}selected{% endif %}>Inactive</option>
+                        </select>
+                        <button class="btn btn-outline-primary" type="submit">Filter</button>
+                    </form>
+                </div>
+                <div class="table-responsive">
+                    <table class="table align-middle catalog-table mb-0">
+                        <thead><tr><th>Product</th><th>Category</th><th>HSN / GST</th><th>Status</th><th class="text-end">Actions</th></tr></thead>
+                        <tbody>
+                            {% for product in products %}
+                                <tr>
+                                    <td>
+                                        <div class="d-flex align-items-center gap-3">
+                                            {% if product.image_url %}<img class="catalog-product-image" src="{{ product.image_url }}" alt="" loading="lazy">{% else %}<div class="catalog-product-image d-flex align-items-center justify-content-center"><i class="bi bi-image text-muted"></i></div>{% endif %}
+                                            <div><div class="fw-semibold">{{ product.product_name }}</div><div class="text-muted small">{{ product.image_url|default:"No image URL" }}</div></div>
+                                        </div>
+                                    </td>
+                                    <td>{{ product.product_category }}</td>
+                                    <td><div>{{ product.hsn_code|default:"—" }}</div><div class="text-muted small">{{ product.gst_rate }}% GST</div></td>
+                                    <td>{% if product.is_active %}<span class="badge text-bg-success">Active</span>{% else %}<span class="badge text-bg-secondary">Inactive</span>{% endif %}</td>
+                                    <td>
+                                        <div class="d-flex justify-content-end gap-2">
+                                            <a class="btn btn-sm btn-outline-primary" href="{% url 'admin_catalog_product_edit' product.pk %}" aria-label="Edit {{ product.product_name }}"><i class="bi bi-pencil"></i></a>
+                                            <form method="post" action="{% url 'admin_catalog_product_toggle' product.pk %}">
+                                                {% csrf_token %}
+                                                <button class="btn btn-sm btn-outline-secondary" type="submit">{% if product.is_active %}Disable{% else %}Enable{% endif %}</button>
+                                            </form>
+                                        </div>
+                                    </td>
+                                </tr>
+                            {% empty %}
+                                <tr><td colspan="5" class="text-center py-5"><i class="bi bi-box-seam fs-2 text-muted"></i><p class="fw-semibold mt-2 mb-1">No catalog products found</p><p class="text-muted small mb-3">Add a product or adjust your filters.</p><a class="btn btn-primary btn-sm" href="{% url 'admin_catalog_product_create' %}">Add product</a></td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% if products.has_other_pages %}
+                    <div class="d-flex flex-column flex-sm-row justify-content-between align-items-sm-center gap-2 mt-3">
+                        <small class="text-muted">
+                            Showing {{ products.start_index }}–{{ products.end_index }} of {{ products.paginator.count }} products
+                        </small>
+                        <nav aria-label="Catalog product pages">
+                            <ul class="pagination pagination-sm mb-0">
+                                {% if products.has_previous %}
+                                    <li class="page-item">
+                                        <a class="page-link" href="?q={{ search|urlencode }}&amp;category={{ selected_category|urlencode }}&amp;status={{ selected_status|urlencode }}&amp;page={{ products.previous_page_number }}">Previous</a>
+                                    </li>
+                                {% else %}
+                                    <li class="page-item disabled"><span class="page-link">Previous</span></li>
+                                {% endif %}
+                                <li class="page-item active" aria-current="page">
+                                    <span class="page-link">{{ products.number }} / {{ products.paginator.num_pages }}</span>
+                                </li>
+                                {% if products.has_next %}
+                                    <li class="page-item">
+                                        <a class="page-link" href="?q={{ search|urlencode }}&amp;category={{ selected_category|urlencode }}&amp;status={{ selected_status|urlencode }}&amp;page={{ products.next_page_number }}">Next</a>
+                                    </li>
+                                {% else %}
+                                    <li class="page-item disabled"><span class="page-link">Next</span></li>
+                                {% endif %}
+                            </ul>
+                        </nav>
+                    </div>
+                {% endif %}
+            </section>
+        </div>
+
+        <div class="col-12 col-xl-4">
+            <section class="catalog-panel mb-4">
+                <h2 class="h5 fw-bold mb-1">Add category</h2>
+                <p class="text-muted small mb-3">Categories become available in shop product forms.</p>
+                <form method="post" novalidate>
+                    {% csrf_token %}
+                    {% for field in category_form %}
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                            {{ field }}
+                            {% for error in field.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+                        </div>
+                    {% endfor %}
+                    {% for error in category_form.non_field_errors %}<div class="alert alert-danger py-2">{{ error }}</div>{% endfor %}
+                    <button class="btn btn-primary w-100" type="submit"><i class="bi bi-plus-lg me-1"></i>Create category</button>
+                </form>
+            </section>
+
+            <section class="catalog-panel">
+                <h2 class="h5 fw-bold mb-1">Categories</h2>
+                <p class="text-muted small mb-3">Disable a category to remove it from new product selections. Existing products are kept.</p>
+                <div class="d-grid gap-2">
+                    {% for category in categories %}
+                        <div class="catalog-category d-flex align-items-center justify-content-between gap-2">
+                            <div class="min-w-0">
+                                <div class="fw-semibold text-truncate">{{ category.name }}</div>
+                                <div class="small text-muted">{{ category.product_count }} catalog product{{ category.product_count|pluralize }}</div>
+                            </div>
+                            <div class="d-flex gap-1">
+                                <a class="btn btn-sm btn-outline-primary" href="{% url 'admin_catalog_category_edit' category.pk %}" aria-label="Edit {{ category.name }}">Edit</a>
+                                <form method="post" action="{% url 'admin_catalog_category_toggle' category.pk %}">
+                                    {% csrf_token %}
+                                    <button class="btn btn-sm {% if category.is_active %}btn-outline-danger{% else %}btn-outline-success{% endif %}" type="submit">{% if category.is_active %}Disable{% else %}Enable{% endif %}</button>
+                                </form>
+                            </div>
+                        </div>
+                    {% empty %}
+                        <p class="text-muted small mb-0">No categories have been configured.</p>
+                    {% endfor %}
+                </div>
+            </section>
+        </div>
+    </div>
+    <section class="catalog-panel mt-4">
+        <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-3">
+            <div>
+                <h2 class="h5 fw-bold mb-1">Shop image override permissions</h2>
+                <p class="text-muted small mb-0">Grant shop-specific image overrides and individually authorize shop owners to create explicit shared-rider groups.</p>
+            </div>
+            <form method="get" class="d-flex gap-2">
+                <input type="hidden" name="q" value="{{ search }}">
+                <input type="hidden" name="category" value="{{ selected_category }}">
+                <input type="hidden" name="status" value="{{ selected_status }}">
+                <input name="shop_q" value="{{ shop_search }}" class="form-control" placeholder="Shop or owner" aria-label="Search shops">
+                <button class="btn btn-outline-primary" type="submit">Search shops</button>
+            </form>
+        </div>
+        <div class="table-responsive">
+            <table class="table align-middle mb-0">
+                <thead><tr><th>Shop</th><th>Owner</th><th>Storefront</th><th>Image permission</th><th>Rider-group permission</th><th class="text-end">Actions</th></tr></thead>
+                <tbody>
+                    {% for shop in shops %}
+                        <tr>
+                            <td>{{ shop.name }}</td>
+                            <td>{{ shop.owner.get_full_name|default:shop.owner.username|default:"—" }}</td>
+                            <td>
+                                <a href="{{ shop.storefront_public_url }}" target="_blank" rel="noopener noreferrer">{{ shop.storefront_slug }}</a>
+                                <div>
+                                    {% if shop.storefront_is_currently_active %}
+                                        <span class="badge text-bg-success">Active</span>
+                                    {% else %}
+                                        <span class="badge text-bg-secondary">Inactive</span>
+                                    {% endif %}
+                                    {% if shop.storefront_subscription_expires_at %}
+                                        <span class="small text-muted">until {{ shop.storefront_subscription_expires_at|date:"d M Y" }}</span>
+                                    {% endif %}
+                                </div>
+                            </td>
+                            <td>{% if shop.allow_product_image_overrides %}<span class="badge text-bg-success">Enabled</span>{% else %}<span class="badge text-bg-secondary">Catalog image only</span>{% endif %}</td>
+                            <td>{% if shop.allow_owner_create_shared_rider_groups %}<span class="badge text-bg-success">Enabled</span>{% else %}<span class="badge text-bg-secondary">Not authorized</span>{% endif %}</td>
+                            <td class="text-end">
+                                <div class="d-flex flex-wrap justify-content-end gap-2">
+                                <form method="post" action="{% url 'admin_catalog_shop_storefront_toggle' shop.pk %}">
+                                    {% csrf_token %}
+                                    <button class="btn btn-sm {% if shop.storefront_is_currently_active %}btn-outline-danger{% else %}btn-outline-success{% endif %}" type="submit">
+                                        {% if shop.storefront_is_currently_active %}Deactivate storefront{% else %}Activate storefront{% endif %}
+                                    </button>
+                                </form>
+                                <form method="post" action="{% url 'admin_catalog_shop_image_permission' shop.pk %}">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="enabled" value="{% if shop.allow_product_image_overrides %}0{% else %}1{% endif %}">
+                                    <button class="btn btn-sm {% if shop.allow_product_image_overrides %}btn-outline-danger{% else %}btn-outline-success{% endif %}" type="submit">
+                                        {% if shop.allow_product_image_overrides %}Revoke{% else %}Grant{% endif %}
+                                    </button>
+                                </form>
+                                <form method="post" action="{% url 'admin_catalog_shop_group_permission' shop.pk %}">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="enabled" value="{% if shop.allow_owner_create_shared_rider_groups %}0{% else %}1{% endif %}">
+                                    <button class="btn btn-sm {% if shop.allow_owner_create_shared_rider_groups %}btn-outline-danger{% else %}btn-outline-success{% endif %}" type="submit">
+                                        {% if shop.allow_owner_create_shared_rider_groups %}Revoke group access{% else %}Grant group access{% endif %}
+                                    </button>
+                                </form>
+                                </div>
+                            </td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="6" class="text-center text-muted py-4">No shops match this search.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+</div>
+{% endblock %}

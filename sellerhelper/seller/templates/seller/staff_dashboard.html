@@ -1,0 +1,246 @@
+{% extends 'base.html' %}
+
+{% block title %}Staff Dashboard{% endblock %}
+
+{% block content %}
+<style>
+@media (max-width: 767.98px) {
+    .staff-dashboard { padding: 4px 2px 76px; }
+    .staff-dashboard-heading { gap: 8px; margin-bottom: 10px !important; }
+    .staff-dashboard-heading h2 { font-size: 1.2rem; }
+    .staff-dashboard-heading .btn { padding: 6px 8px; font-size: .72rem; }
+    .staff-operations .card-body { padding: 9px; }
+    .staff-operations .card-body > .d-flex { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px !important; }
+    .staff-operations .btn { display: flex; min-width: 0; min-height: 38px; align-items: center; justify-content: center; padding: 5px 6px; font-size: .7rem; line-height: 1.15; }
+    .staff-operations .btn i { margin-right: 4px !important; }
+    .staff-stat-grid { --bs-gutter-x: .4rem; --bs-gutter-y: .4rem; margin-bottom: 10px !important; }
+    .staff-stat-grid .card-body { padding: 8px !important; }
+    .staff-stat-grid .text-uppercase { font-size: .62rem; }
+    .staff-stat-grid .fs-5 { margin-top: 4px !important; font-size: .85rem !important; overflow-wrap: anywhere; }
+    .staff-stat-grid .fs-3 { margin-top: 4px !important; font-size: 1.25rem !important; }
+    .staff-data-grid { --bs-gutter-x: .4rem; --bs-gutter-y: .5rem; }
+    .staff-data-grid .card-header { padding: 8px 9px; }
+    .staff-data-grid .card-header h5 { font-size: .9rem; }
+    .staff-data-grid .table { font-size: .7rem; }
+    .staff-data-grid .table > :not(caption) > * > * { padding: 6px 5px; }
+    .staff-data-grid .table-responsive { overflow-x: auto; }
+    .staff-orders-mobile { display: block; }
+    .staff-orders-desktop { display: none; }
+    .staff-order-track {
+        display: flex;
+        flex-wrap: nowrap;
+        gap: 8px;
+        margin: 0 -8px;
+        padding: 0 4% 9px;
+        scroll-padding-inline: 4%;
+        overflow-x: auto;
+        overscroll-behavior-x: contain;
+        scroll-snap-type: x mandatory;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: thin;
+        touch-action: pan-x pan-y;
+    }
+    .staff-order-slide {
+        flex: 0 0 92%;
+        width: 92%;
+        max-width: 92%;
+        scroll-snap-align: center;
+        scroll-snap-stop: always;
+    }
+    .staff-order-slide .card-body { padding: 10px; }
+}
+@media (min-width: 768px) {
+    .staff-orders-mobile { display: none; }
+    .staff-orders-desktop { display: block; }
+}
+</style>
+
+<div class="container-fluid px-0 py-2 py-md-4 staff-dashboard">
+    <div class="d-flex justify-content-between align-items-center mb-4 staff-dashboard-heading">
+        <div>
+            <h2 class="mb-1">Staff dashboard</h2>
+            <p class="text-muted mb-0">Your assigned shop activity</p>
+        </div>
+        <a href="{% url 'dashboard' %}" class="btn btn-outline-secondary">Back to dashboard</a>
+    </div>
+
+    <nav class="card border-0 shadow-sm mb-4 staff-operations" aria-label="Shop operations">
+        <div class="card-body">
+            <h3 class="h6 fw-bold mb-3">Shop operations</h3>
+            <div class="d-flex flex-wrap gap-2">
+                <a href="{% url 'shop_detail' shop.id %}" class="btn btn-outline-primary">
+                    <i class="bi bi-shop me-1"></i> Shop overview
+                </a>
+                {% if can_manage_orders %}
+                <a href="{% url 'shop_order_list' %}?shop={{ shop.id }}" class="btn btn-primary">
+                    <i class="bi bi-receipt me-1"></i> Manage orders
+                </a>
+                {% endif %}
+                <a href="{% url 'product_list' %}?shop={{ shop.id }}" class="btn btn-outline-secondary">
+                    <i class="bi bi-box-seam me-1"></i> Products
+                </a>
+                {% if can_manage_stock %}
+                <a href="{% url 'stock_import' shop.id %}" class="btn btn-outline-success">
+                    <i class="bi bi-upload me-1"></i> Update stock
+                </a>
+                <a href="{% url 'stock_report' shop.id %}" class="btn btn-outline-info">
+                    <i class="bi bi-clipboard-data me-1"></i> Stock report
+                </a>
+                {% endif %}
+                {% if can_manage_staff %}
+                <a href="{% url 'shop_staff_list_shop' shop.id %}" class="btn btn-outline-dark">
+                    <i class="bi bi-people me-1"></i> Manage staff
+                </a>
+                {% endif %}
+                {% if staff.role == "PACKER" %}
+                <a href="{% url 'packer_dashboard' %}" class="btn btn-warning">
+                    <i class="bi bi-box-seam me-1"></i> Packing queue
+                </a>
+                {% elif staff.role == "RIDER" %}
+                <a href="{% url 'rider_dashboard' %}" class="btn btn-warning">
+                    <i class="bi bi-bicycle me-1"></i> Rider deliveries
+                </a>
+                {% endif %}
+                <a href="{% url 'notifications' %}" class="btn btn-outline-secondary">
+                    <i class="bi bi-bell me-1"></i> Notifications
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="row g-4 mb-4 staff-stat-grid">
+        <div class="col-6 col-md-3">
+            <div class="card shadow-sm border-0 h-100">
+                <div class="card-body">
+                    <div class="text-muted small text-uppercase">Shop</div>
+                    <div class="fs-5 fw-bold mt-2">{{ shop.name }}</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3">
+            <div class="card shadow-sm border-0 h-100">
+                <div class="card-body">
+                    <div class="text-muted small text-uppercase">Products</div>
+                    <div class="fs-3 fw-bold mt-2">{{ total_products }}</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3">
+            <div class="card shadow-sm border-0 h-100">
+                <div class="card-body">
+                    <div class="text-muted small text-uppercase">Stock</div>
+                    <div class="fs-3 fw-bold mt-2">{{ total_stock }}</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3">
+            <div class="card shadow-sm border-0 h-100">
+                <div class="card-body">
+                    <div class="text-muted small text-uppercase">Orders</div>
+                    <div class="fs-3 fw-bold mt-2">{{ total_orders }}</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-4 staff-data-grid">
+        <div class="col-lg-7">
+            <div class="card shadow-sm border-0">
+                <div class="card-header bg-white border-0">
+                    <h5 class="mb-0">Recent orders</h5>
+                    <div class="small text-muted staff-orders-mobile">Swipe horizontally to view each order</div>
+                </div>
+                <div class="card-body p-0 staff-orders-desktop">
+                    <div class="table-responsive">
+                        <table class="table mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Order</th>
+                                    <th>Status</th>
+                                    <th>Created</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for order in shop_orders %}
+                                <tr>
+                                    <td>
+                                        <a href="{% url 'shop_order_detail' order.id %}" class="text-decoration-none fw-semibold">
+                                            {{ order.shop_order_number|default:order.order.order_id }}
+                                        </a>
+                                    </td>
+                                    <td><span class="badge text-bg-primary">{{ order.status }}</span></td>
+                                    <td>{{ order.created_at|date:'d M Y' }}</td>
+                                </tr>
+                                {% empty %}
+                                <tr>
+                                    <td colspan="3" class="text-center text-muted py-4">No orders yet</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card-body p-0 staff-orders-mobile">
+                    <div class="staff-order-track" aria-label="Recent orders. Swipe horizontally to view each order.">
+                        {% for order in shop_orders %}
+                            <article class="card border shadow-sm staff-order-slide">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                                        <div>
+                                            <div class="small text-muted">Order</div>
+                                            <a href="{% url 'shop_order_detail' order.id %}" class="fw-semibold text-decoration-none">
+                                                #{{ order.shop_order_number|default:order.order.order_id }}
+                                            </a>
+                                        </div>
+                                        <span class="badge text-bg-primary">{{ order.status }}</span>
+                                    </div>
+                                    <div class="d-flex justify-content-between align-items-center gap-2">
+                                        <span class="small text-muted">Placed {{ order.created_at|date:'d M Y' }}</span>
+                                        <a href="{% url 'shop_order_detail' order.id %}" class="btn btn-sm btn-outline-primary">
+                                            View order
+                                        </a>
+                                    </div>
+                                </div>
+                            </article>
+                        {% empty %}
+                            <div class="staff-order-slide">
+                                <div class="text-center text-muted py-4">No orders yet</div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-5">
+            <div class="card shadow-sm border-0">
+                <div class="card-header bg-white border-0">
+                    <h5 class="mb-0">Product inventory</h5>
+                </div>
+                <div class="card-body p-0">
+                    <table class="table mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Product</th>
+                                <th>Stock</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for item in product_assignments %}
+                            <tr>
+                                <td>{{ item.product.product_name }}</td>
+                                <td>{{ item.stock }}</td>
+                            </tr>
+                            {% empty %}
+                            <tr>
+                                <td colspan="2" class="text-center text-muted py-4">No product stock found</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

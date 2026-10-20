@@ -1,0 +1,473 @@
+{% extends "base.html" %}
+
+{% block title %}
+Edit Staff - {{ staff.user.username }}
+{% endblock %}
+
+
+{% block content %}
+
+<div class="container py-4">
+
+    <!-- HEADER -->
+
+    <div class="d-flex justify-content-between align-items-center mb-4">
+
+        <div>
+
+            <a
+                href="{% url 'shop_staff_list_shop' shop.id %}"
+                class="btn btn-sm btn-outline-secondary mb-2"
+            >
+                ← Back to Staff
+            </a>
+
+            <h2 class="fw-bold mb-1">
+                👤 Edit Staff
+            </h2>
+
+            <p class="text-muted mb-0">
+                {{ shop.name }}
+            </p>
+
+        </div>
+
+    </div>
+
+
+    <!-- STAFF INFORMATION -->
+
+    <div class="card shadow-sm mb-4">
+
+        <div class="card-body">
+
+            <h5 class="fw-bold mb-3">
+                Staff Information
+            </h5>
+
+            <div class="row">
+
+                <div class="col-md-6">
+
+                    <label class="form-label fw-bold">
+                        Username
+                    </label>
+
+                    <input
+                        type="text"
+                        class="form-control"
+                        value="{{ staff.user.username }}"
+                        disabled
+                    >
+
+                </div>
+
+
+                <div class="col-md-6">
+
+                    <label class="form-label fw-bold">
+                        Name
+                    </label>
+
+                    <input
+                        type="text"
+                        class="form-control"
+                        value="{{ staff.user.get_full_name|default:staff.user.username }}"
+                        disabled
+                    >
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- EDIT FORM -->
+
+    <form
+        method="POST"
+        id="staffEditForm"
+    >
+
+        {% csrf_token %}
+
+        <div class="card shadow-sm mb-4">
+            <div class="card-body">
+                <label class="form-label fw-bold" for="staffUpiId">Personal UPI ID (optional)</label>
+                <input
+                    type="text"
+                    name="upi_id"
+                    id="staffUpiId"
+                    class="form-control"
+                    value="{{ staff.upi_id }}"
+                    placeholder="yourname@upi"
+                    autocomplete="off"
+                >
+                <div class="form-text">Personal UPI collections are tracked as COD owed to the shop until handover is confirmed.</div>
+            </div>
+        </div>
+
+        <!-- ROLE -->
+
+        <div class="card shadow-sm mb-4">
+
+            <div class="card-body">
+
+                <h5 class="fw-bold mb-3">
+                    👔 Role
+                </h5>
+
+
+                <label class="form-label">
+                    Staff Role
+                </label>
+
+
+                <select
+                    name="role"
+                    class="form-select"
+                >
+
+                    <option
+                        value="MANAGER"
+                        {% if staff.role == "MANAGER" or staff.role == "Staff" %}selected{% endif %}
+                    >
+                        Manager
+                    </option>
+
+                    <option
+                        value="PACKER"
+                        {% if staff.role == "PACKER" or staff.role == "Packer" %}selected{% endif %}
+                    >
+                        Packer
+                    </option>
+
+                    <option
+                        value="ORDER"
+                        {% if staff.role == "ORDER" %}selected{% endif %}
+                    >
+                        Order Manager
+                    </option>
+
+                    <option
+                        value="DELIVERY"
+                        {% if staff.role == "DELIVERY" or staff.role == "Delivery" %}selected{% endif %}
+                    >
+                        Delivery Staff
+                    </option>
+
+                    <option
+                        value="RIDER"
+                        {% if staff.role == "RIDER" %}selected{% endif %}
+                    >
+                        Rider
+                    </option>
+
+                </select>
+
+            </div>
+
+        </div>
+
+
+        <!-- PERMISSIONS -->
+
+        <div class="card shadow-sm mb-4">
+
+            <div class="card-body">
+
+                <h5 class="fw-bold mb-3">
+                    🔐 Permissions
+                </h5>
+
+
+                <!-- CONFIRM ORDERS -->
+
+                <div class="form-check form-switch mb-3">
+
+                    <input
+                        class="form-check-input"
+                        type="checkbox"
+                        name="can_confirm_orders"
+                        id="can_confirm_orders"
+                        {% if staff.can_confirm_orders %}
+                            checked
+                        {% endif %}
+                    >
+
+                    <label
+                        class="form-check-label"
+                        for="can_confirm_orders"
+                    >
+
+                        <strong>
+                            Confirm Orders
+                        </strong>
+
+                        <br>
+
+                        <small class="text-muted">
+                            Allow staff to confirm incoming orders.
+                        </small>
+
+                    </label>
+
+                </div>
+
+
+                <!-- PACK ORDERS -->
+
+                <div class="form-check form-switch mb-3">
+
+                    <input
+                        class="form-check-input"
+                        type="checkbox"
+                        name="can_pack_orders"
+                        id="can_pack_orders"
+                        {% if staff.can_pack_orders %}
+                            checked
+                        {% endif %}
+                    >
+
+                    <label
+                        class="form-check-label"
+                        for="can_pack_orders"
+                    >
+
+                        <strong>
+                            Pack Orders
+                        </strong>
+
+                        <br>
+
+                        <small class="text-muted">
+                            Allow staff to process and pack orders.
+                        </small>
+
+                    </label>
+
+                </div>
+
+
+                <!-- CHANGE ORDER STATUS -->
+
+                <div class="form-check form-switch mb-3">
+
+                    <input
+                        class="form-check-input"
+                        type="checkbox"
+                        name="can_change_order_status"
+                        id="can_change_order_status"
+                        {% if staff.can_change_order_status %}
+                            checked
+                        {% endif %}
+                    >
+
+                    <label
+                        class="form-check-label"
+                        for="can_change_order_status"
+                    >
+
+                        <strong>
+                            Change Order Status
+                        </strong>
+
+                        <br>
+
+                        <small class="text-muted">
+                            Allow staff to move orders through the valid lifecycle steps.
+                        </small>
+
+                    </label>
+
+                </div>
+
+
+                <!-- CANCEL ORDERS -->
+
+                <div class="form-check form-switch mb-3">
+
+                    <input
+                        class="form-check-input"
+                        type="checkbox"
+                        name="can_cancel_orders"
+                        id="can_cancel_orders"
+                        {% if staff.can_cancel_orders %}
+                            checked
+                        {% endif %}
+                    >
+
+                    <label
+                        class="form-check-label"
+                        for="can_cancel_orders"
+                    >
+
+                        <strong>
+                            Cancel Orders
+                        </strong>
+
+                        <br>
+
+                        <small class="text-muted">
+                            Allow staff to cancel orders.
+                        </small>
+
+                    </label>
+
+                </div>
+
+
+                <!-- MANAGE STOCK -->
+
+                <div class="form-check form-switch mb-3">
+
+                    <input
+                        class="form-check-input"
+                        type="checkbox"
+                        name="can_manage_stock"
+                        id="can_manage_stock"
+                        {% if staff.can_manage_stock %}
+                            checked
+                        {% endif %}
+                    >
+
+                    <label
+                        class="form-check-label"
+                        for="can_manage_stock"
+                    >
+
+                        <strong>
+                            Manage Stock
+                        </strong>
+
+                        <br>
+
+                        <small class="text-muted">
+                            Allow staff to update product stock.
+                        </small>
+
+                    </label>
+
+                </div>
+
+
+                <!-- MANAGE STAFF -->
+
+                <div class="form-check form-switch mb-3">
+
+                    <input
+                        class="form-check-input"
+                        type="checkbox"
+                        name="can_assign_staff"
+                        id="can_assign_staff"
+                        {% if staff.can_assign_staff %}
+                            checked
+                        {% endif %}
+                    >
+
+                    <label
+                        class="form-check-label"
+                        for="can_assign_staff"
+                    >
+
+                        <strong>
+                            Manage Staff
+                        </strong>
+
+                        <br>
+
+                        <small class="text-muted">
+                            Allow staff to manage other staff members.
+                        </small>
+
+                    </label>
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <!-- ACCOUNT STATUS -->
+
+        <div class="card shadow-sm mb-4">
+
+            <div class="card-body">
+
+                <h5 class="fw-bold mb-3">
+                    ⚙️ Account Status
+                </h5>
+
+
+                <div class="form-check form-switch">
+
+                    <input
+                        class="form-check-input"
+                        type="checkbox"
+                        name="is_active"
+                        id="is_active"
+                        {% if staff.is_active %}
+                            checked
+                        {% endif %}
+                    >
+
+                    <label
+                        class="form-check-label"
+                        for="is_active"
+                    >
+
+                        <strong>
+                            Staff Active
+                        </strong>
+
+                        <br>
+
+                        <small class="text-muted">
+                            Inactive staff cannot use shop staff functions.
+                        </small>
+
+                    </label>
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <!-- BUTTONS -->
+
+        <div class="d-flex gap-2">
+
+            <button
+                type="submit"
+                class="btn btn-success btn-lg"
+            >
+
+                <i class="bi bi-check-circle"></i>
+
+                Save Changes
+
+            </button>
+
+
+            <a
+                href="{% url 'shop_staff_list_shop' shop.id %}"
+                class="btn btn-outline-secondary btn-lg"
+            >
+
+                Cancel
+
+            </a>
+
+        </div>
+
+    </form>
+
+</div>
+
+{% endblock %}

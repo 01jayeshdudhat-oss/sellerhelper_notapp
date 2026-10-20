@@ -1,0 +1,277 @@
+{% extends "base.html" %}
+
+{% block title %}
+Add Staff - {{ shop.name }}
+{% endblock %}
+
+{% block content %}
+
+<div class="container py-4">
+
+    <!-- Header -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+
+        <div>
+
+            <a
+                href="{% url 'shop_staff_list' shop.id %}"
+                class="btn btn-sm btn-outline-secondary mb-2"
+            >
+                ← Back to Staff
+            </a>
+
+            <h2 class="mb-1">
+                👥 Add Staff
+            </h2>
+
+            <p class="text-muted mb-0">
+                {{ shop.name }}
+            </p>
+
+        </div>
+
+    </div>
+
+
+    <!-- Form Card -->
+    <div class="card shadow-sm">
+
+        <div class="card-header bg-primary text-white">
+
+            <h5 class="mb-0">
+                Create Shop Staff
+            </h5>
+
+        </div>
+
+
+        <div class="card-body">
+
+            <form method="POST">
+
+                {% csrf_token %}
+
+
+                {% if form.non_field_errors %}
+
+                    <div class="alert alert-danger">
+
+                        {{ form.non_field_errors }}
+
+                    </div>
+
+                {% endif %}
+
+
+                <!-- User -->
+                {% if form.user %}
+
+                <div class="mb-3">
+
+                    <label class="form-label fw-bold">
+                        User
+                    </label>
+
+                    {{ form.user }}
+
+                    {% for error in form.user.errors %}
+
+                        <div class="text-danger small">
+                            {{ error }}
+                        </div>
+
+                    {% endfor %}
+
+                </div>
+
+                {% endif %}
+
+
+                <!-- Role -->
+                {% if form.role %}
+
+                <div class="mb-3">
+
+                    <label class="form-label fw-bold">
+                        Role
+                    </label>
+
+                    {{ form.role }}
+
+                    {% for error in form.role.errors %}
+
+                        <div class="text-danger small">
+                            {{ error }}
+                        </div>
+
+                    {% endfor %}
+
+                </div>
+
+                {% endif %}
+
+
+                <hr>
+
+                <h5 class="mb-3">
+                    🔐 Permissions
+                </h5>
+
+
+                {% if form.can_confirm_orders %}
+
+                <div class="form-check mb-2">
+
+                    {{ form.can_confirm_orders }}
+
+                    <label
+                        class="form-check-label"
+                        for="{{ form.can_confirm_orders.id_for_label }}"
+                    >
+                        Confirm Orders
+                    </label>
+
+                </div>
+
+                {% endif %}
+
+
+                {% if form.can_pack_orders %}
+
+                <div class="form-check mb-2">
+
+                    {{ form.can_pack_orders }}
+
+                    <label
+                        class="form-check-label"
+                        for="{{ form.can_pack_orders.id_for_label }}"
+                    >
+                        Pack Orders
+                    </label>
+
+                </div>
+
+                {% endif %}
+
+
+                {% if form.can_cancel_orders %}
+
+                <div class="form-check mb-2">
+
+                    {{ form.can_cancel_orders }}
+
+                    <label
+                        class="form-check-label"
+                        for="{{ form.can_cancel_orders.id_for_label }}"
+                    >
+                        Cancel Orders
+                    </label>
+
+                </div>
+
+                {% endif %}
+
+
+                {% if form.can_manage_stock %}
+
+                <div class="form-check mb-2">
+
+                    {{ form.can_manage_stock }}
+
+                    <label
+                        class="form-check-label"
+                        for="{{ form.can_manage_stock.id_for_label }}"
+                    >
+                        Manage Stock
+                    </label>
+
+                </div>
+
+                {% endif %}
+
+
+                {% if form.can_assign_staff %}
+
+                <div class="form-check mb-2">
+
+                    {{ form.can_assign_staff }}
+
+                    <label
+                        class="form-check-label"
+                        for="{{ form.can_assign_staff.id_for_label }}"
+                    >
+                        Assign / Manage Staff
+                    </label>
+
+                </div>
+
+                {% endif %}
+
+
+                {% if form.can_change_order_status %}
+
+                <div class="form-check mb-2">
+
+                    {{ form.can_change_order_status }}
+
+                    <label
+                        class="form-check-label"
+                        for="{{ form.can_change_order_status.id_for_label }}"
+                    >
+                        Change Order Status
+                    </label>
+
+                </div>
+
+                {% endif %}
+
+
+                {% if form.can_manage_staff %}
+
+                <div class="form-check mb-2">
+
+                    {{ form.can_manage_staff }}
+
+                    <label
+                        class="form-check-label"
+                        for="{{ form.can_manage_staff.id_for_label }}"
+                    >
+                        Manage Staff
+                    </label>
+
+                </div>
+
+                {% endif %}
+
+
+                <hr>
+
+
+                <div class="d-flex gap-2">
+
+                    <button
+                        type="submit"
+                        class="btn btn-primary"
+                    >
+                        💾 Create Staff
+                    </button>
+
+
+                    <a
+                        href="{% url 'shop_staff_list' shop.id %}"
+                        class="btn btn-outline-secondary"
+                    >
+                        Cancel
+                    </a>
+
+                </div>
+
+            </form>
+
+        </div>
+
+    </div>
+
+</div>
+
+{% endblock %}

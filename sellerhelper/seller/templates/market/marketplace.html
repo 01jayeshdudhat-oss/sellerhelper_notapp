@@ -1,0 +1,2329 @@
+{% extends "base.html" %}
+
+{% block title %}
+Marketplace
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(() => {
+    const productsPerRow = Number("{{ marketplace_products_per_row|default:4 }}");
+    const configuredRows = Number("{{ marketplace_rows_per_category|default:2 }}");
+    const arrangeCategoryProducts = () => {
+        const mobileLayout = window.matchMedia("(max-width: 767.98px)").matches;
+        document.querySelectorAll(".category-product-track").forEach((track) => {
+            const rows = Array.from(track.querySelectorAll(":scope > .category-product-row"));
+            rows.forEach((row) => {
+                Array.from(row.querySelectorAll(".category-product-item")).forEach((item) => {
+                    track.append(item);
+                });
+                row.remove();
+            });
+            const items = Array.from(track.querySelectorAll(":scope > .category-product-item"))
+                .sort((first, second) => (
+                    Number(first.dataset.categoryOrder) - Number(second.dataset.categoryOrder)
+                ));
+            if (!items.length) {
+                return;
+            }
+            items.forEach((item, index) => {
+                if (item.dataset.categoryOrder === undefined) {
+                    item.dataset.categoryOrder = String(index);
+                }
+            });
+            if (!mobileLayout) {
+                return;
+            }
+
+            const itemWidth = `calc((100% - ${3 * (productsPerRow - 1)}px) / ${productsPerRow})`;
+            const blockSize = productsPerRow * configuredRows;
+            const productRows = [];
+            items.forEach((item, index) => {
+                const blockIndex = Math.floor(index / blockSize);
+                const indexInBlock = index % blockSize;
+                const rowInBlock = blockIndex === 0
+                    ? Math.floor(indexInBlock / productsPerRow)
+                    : indexInBlock % configuredRows;
+                const rowIndex = rowInBlock;
+                if (!productRows[rowIndex]) {
+                    const row = document.createElement("div");
+                    row.className = "category-product-row";
+                    row.style.setProperty("--market-product-item-width", itemWidth);
+                    productRows[rowIndex] = row;
+                    track.append(row);
+                }
+                productRows[rowIndex].append(item);
+            });
+        });
+    };
+    window.addEventListener("resize", arrangeCategoryProducts, { passive: true });
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", arrangeCategoryProducts, { once: true });
+    } else {
+        arrangeCategoryProducts();
+    }
+
+    const tabsWrap = document.querySelector(".market-category-nav-wrap");
+    const tabs = tabsWrap?.querySelector(".market-category-nav");
+    const navbar = document.querySelector(".main-navbar");
+    if (!tabsWrap || !tabs || !navbar) {
+        return;
+    }
+
+    let pinAtY = 0;
+    const updateMarketTabs = () => {
+        if (!window.matchMedia("(max-width: 767.98px)").matches) {
+            tabsWrap.classList.remove("is-pinned");
+            tabsWrap.style.height = "";
+            return;
+        }
+
+        const headerVisible = !document.body.classList.contains("sellerhelper-bars-hidden");
+        const topOffset = headerVisible ? navbar.offsetHeight : 0;
+        document.documentElement.style.setProperty(
+            "--market-category-tabs-top",
+            `${topOffset}px`,
+        );
+        tabsWrap.style.height = `${tabs.offsetHeight}px`;
+        if (!tabsWrap.classList.contains("is-pinned")) {
+            pinAtY = tabsWrap.getBoundingClientRect().top + window.scrollY;
+        }
+        tabsWrap.classList.toggle(
+            "is-pinned",
+            window.scrollY + topOffset >= pinAtY,
+        );
+    };
+
+    window.addEventListener("scroll", updateMarketTabs, { passive: true });
+    window.addEventListener("resize", updateMarketTabs, { passive: true });
+    new MutationObserver(updateMarketTabs).observe(document.body, {
+        attributes: true,
+        attributeFilter: ["class"],
+    });
+    if (window.ResizeObserver) {
+        new ResizeObserver(updateMarketTabs).observe(navbar);
+        new ResizeObserver(updateMarketTabs).observe(tabs);
+    }
+    updateMarketTabs();
+})();
+</script>
+{% endblock %}
+
+
+{% block content %}
+
+<style>
+.marketplace-shell { max-width: 1600px; margin: 0 auto; padding-inline: clamp(12px, 2vw, 28px); }
+.market-header {
+    position: relative; overflow: hidden; isolation: isolate;
+    color: #fff; border-radius: 26px; padding: clamp(20px, 4vw, 42px);
+    margin-bottom: 22px;
+    background: radial-gradient(circle at 88% 8%, rgba(255,255,255,.2), transparent 28%),
+                linear-gradient(125deg, #123b65 0%, #146c5b 55%, #208b72 100%);
+    box-shadow: 0 18px 48px rgba(18, 59, 101, .18);
+}
+.market-header:after {
+    content: ""; position: absolute; width: 260px; height: 260px; border-radius: 50%;
+    right: 9%; bottom: -190px; border: 1px solid rgba(255,255,255,.17); z-index: -1;
+}
+.market-header h2 { font-size: clamp(1.65rem, 3vw, 2.5rem); letter-spacing: -.04em; }
+.market-header .market-location {
+    color: #173a37; background: rgba(255,255,255,.96); border-radius: 16px;
+    padding: 13px 16px; box-shadow: 0 8px 22px rgba(0,0,0,.08);
+}
+.market-location .btn { color: #145d52; font-weight: 700; border-color: #d3e8e3; }
+.market-search { position: relative; max-width: 820px; margin: 0 auto 24px; }
+.market-search .form-control { min-height: 58px; border: 1px solid #dfe7ed; border-radius: 16px 0 0 16px; box-shadow: 0 8px 24px rgba(18,38,63,.06); }
+.market-search .btn { min-width: 58px; }
+.market-search .btn-primary { border-radius: 0 16px 16px 0; background: #146c5b; border-color: #146c5b; }
+.market-search .btn-clear { border-radius: 0 16px 16px 0; }
+.nearby-shop-panel { border: 1px solid #e7edf0 !important; border-radius: 20px; background: #fff; }
+.nearby-shop-panel > summary { min-height: 64px; padding: 17px 20px; }
+.nearby-shop-panel > summary::-webkit-details-marker { display: none; }
+.nearby-shop-panel[open] > summary { border-bottom: 1px solid #edf1f3; }
+.nearby-shop-panel .summary-hint { transition: transform .2s ease; }
+.nearby-shop-panel[open] .summary-hint { transform: rotate(180deg); }
+.nearby-shop-card { overflow: hidden; border-radius: 16px !important; transition: transform .18s ease, box-shadow .18s ease; }
+.nearby-shop-card:hover { transform: translateY(-3px); box-shadow: 0 12px 28px rgba(17, 40, 58, .13) !important; }
+.nearby-shop-card img { transition: transform .25s ease; }
+.nearby-shop-card:hover img { transform: scale(1.035); }
+.market-category-nav { position: sticky; top: 68px; z-index: 20; background: rgba(245,247,251,.94); backdrop-filter: blur(12px); padding: 10px 0; margin-bottom: 18px; }
+.market-category-nav .nav-pills { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; padding-bottom: 4px; }
+.market-category-nav .nav-link { white-space: nowrap; color: #334155 !important; background: #fff; border: 1px solid #e1e8ed; }
+.market-category-nav .nav-link:hover { color: #146c5b !important; border-color: #b7d9d1; background: #eff8f5; }
+.market-section-title { border-bottom: 1px solid #e5ebef; padding-bottom: 12px; }
+.market-section-title[id] { scroll-margin-top: 145px; }
+.market-category-card { border-radius: 20px !important; overflow: hidden; }
+.market-category-card .card-body { padding: clamp(12px, 2vw, 22px); }
+.market-category-name { letter-spacing: .08em; font-size: .78rem; }
+.category-product-track {
+    display: flex; gap: 14px; overflow-x: auto; overscroll-behavior-x: contain;
+    scroll-snap-type: x proximity; scrollbar-width: thin; padding: 2px 2px 12px;
+}
+.category-product-item { flex: 0 0 190px; width: 190px; scroll-snap-align: start; }
+.product-card {
+    display: flex; flex-direction: column; background: #fff; border-radius: 18px;
+    overflow: hidden; border: 1px solid #e8edf0; transition: .2s ease;
+    height: 100%; cursor: pointer; box-shadow: 0 3px 12px rgba(18,38,63,.035);
+}
+.product-card:hover { transform: translateY(-3px); border-color: #c9ded8; box-shadow: 0 12px 28px rgba(18,38,63,.11); }
+.product-card:focus-visible { outline: 3px solid #36a68b; outline-offset: 3px; }
+.product-media { position: relative; }
+.product-image, .product-placeholder { display: block; width: 100%; height: clamp(130px, 15vw, 190px); }
+.product-image { object-fit: contain; background: linear-gradient(180deg,#fff,#f7faf9); padding: 14px; }
+.product-placeholder { display:flex; align-items:center; justify-content:center; background:#f4f7f6; font-size:48px; }
+.favorite-heart { position:absolute; top:8px; right:8px; z-index:2; width:38px; height:38px; display:grid; place-items:center; padding:0; border:0; border-radius:50%; background:rgba(255,255,255,.95); color:#dc3545; box-shadow:0 2px 8px rgba(0,0,0,.16); font-size:1.2rem; }
+.favorite-heart:hover, .favorite-heart:focus-visible { background:#fff; color:#b02a37; transform:scale(1.05); }
+.product-body { display:flex; flex:1; flex-direction:column; padding: 10px; }
+.product-body > small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.product-name { font-weight: 700; line-height: 1.35; min-height: 2.7em; margin-top: 4px; }
+.product-price { color: #145d52; font-size: 1.2rem; font-weight: 800; }
+.product-body .mt-2[onclick] { margin-top: auto !important; padding-top: 10px; }
+.product-card .btn-success { min-height: 42px; border-radius: 12px; font-weight: 700; background: #16835f; border-color: #16835f; }
+.product-cart-action { display: flex; min-height: 42px; align-items: flex-end; }
+.product-cart-action > .btn-success,
+.product-cart-action > .qty-control { min-height: 42px; }
+.qty-control { display:flex; align-items:center; justify-content:center; border:1px solid #16835f; border-radius:12px; overflow:hidden; background:#fff; }
+.qty-control button { border:0; background:#16835f; color:#fff; width:42px; height:42px; font-size:20px; touch-action: manipulation; }
+.qty-control span { width:48px; text-align:center; font-weight:700; }
+.market-empty { background:#fff; border:1px dashed #ccd8dc; border-radius:20px; padding:42px 18px; }
+.modal-product-image { width:100%; height:320px; object-fit:contain; background:#f8f9fa; }
+.modal-product-image-fallback { display:grid; min-height:180px; place-items:center; color:#64748b; background:#f3f6f5; border-radius:12px; font-size:2.5rem; }
+.modal-product-image[hidden], .modal-product-image-fallback[hidden] { display:none !important; }
+@media (max-width: 767.98px) {
+    .marketplace-shell { padding: 4px 2px 72px !important; }
+    .main-container > .container-fluid > .marketplace-shell {
+        width: calc(100% + 16px);
+        margin-inline: -8px;
+        padding-inline: 2px !important;
+    }
+    .marketplace-shell > .mb-4 { margin-bottom: 12px !important; }
+    .market-header { border-radius: 14px; padding: 12px 11px; margin-bottom: 10px; }
+    .market-header h2 { font-size: 1.3rem; }
+    .market-header > .d-flex { align-items: flex-start !important; gap: 14px; }
+    .market-header > .d-flex > div { min-width: 0; }
+    .market-header > .d-flex > a { flex-shrink: 0; padding: 8px 10px; }
+    .market-location { margin-top: 8px !important; padding: 8px 9px !important; border-radius: 10px !important; }
+    .market-location > .d-flex { align-items: flex-start !important; gap: 10px; }
+    .market-location .btn { flex-shrink: 0; }
+    .market-search { margin-bottom: 8px; }
+    .market-search .form-control { min-width: 0; min-height: 40px; font-size: .9rem; }
+    .market-search .btn { min-width: 42px; }
+    .nearby-shop-panel > summary { padding: 8px 10px; }
+    .nearby-shop-panel > summary .has-clear-filter .summary-hint { display: none; }
+    .nearby-shop-panel > summary .btn { padding: 4px 6px; font-size: .65rem; }
+    .nearby-shop-panel .summary-hint { font-size: 0 !important; }
+    .nearby-shop-panel .summary-hint:after { content: "Show"; font-size: .8rem; }
+    .nearby-shop-panel > .card-body { margin: 0 !important; padding: 0 !important; }
+    .market-category-nav-wrap { margin-bottom: 8px; }
+    .market-category-nav {
+        position: relative;
+        margin: 0;
+        padding: 5px 4px;
+        background: rgba(245,247,251,.96);
+        border-bottom: 1px solid #e5eaf0;
+        box-shadow: 0 6px 14px rgba(31,41,55,.12);
+    }
+    .market-category-nav-wrap.is-pinned .market-category-nav {
+        position: fixed !important;
+        top: var(--market-category-tabs-top, 56px) !important;
+        right: 0;
+        left: 0;
+        z-index: 2000 !important;
+    }
+    .market-category-nav .nav-pills {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-auto-rows: minmax(42px, auto);
+        grid-auto-flow: row;
+        gap: 4px !important;
+        overflow: visible;
+        padding: 0;
+    }
+    .market-category-nav .nav-link {
+        display: flex;
+        min-width: 0;
+        min-height: 40px;
+        align-items: center;
+        justify-content: center;
+        padding: 5px 3px !important;
+        margin: 0;
+        border-radius: 10px;
+        font-size: .68rem;
+        line-height: 1.15;
+        text-align: center;
+        white-space: normal;
+    }
+    .market-section-title { margin-bottom: 7px !important; padding-bottom: 5px; }
+    .market-section-title h4 { font-size: 1.05rem; }
+    .market-category-card { margin: 0 !important; padding: 0 !important; border-radius: 0 !important; }
+    .market-category-card > .card-body { margin: 0 !important; padding: 0 !important; }
+    .marketplace-shell .d-grid.gap-3.mb-3 { gap: 0 !important; margin-bottom: 0 !important; }
+    .market-category-name { margin: 0 !important; padding: 0 !important; font-size: .72rem; }
+    .category-product-track {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        overflow: visible;
+        padding: 0;
+        margin: 0 !important;
+    }
+    .category-product-row {
+        display: flex;
+        gap: 3px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        overscroll-behavior-x: contain;
+        scroll-snap-type: x proximity;
+        scrollbar-width: thin;
+        -webkit-overflow-scrolling: touch;
+    }
+    .category-product-row .category-product-item { flex: 0 0 var(--market-product-item-width, calc((100% - 9px) / 4)); }
+    .marketplace-shell > .row.g-3 {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 5px;
+        margin: 0;
+    }
+    .marketplace-shell > .row.g-3 > [class*="col-"] { width: auto; padding: 0; }
+    .category-product-item { width: auto; min-width: 0; margin: 0; padding: 0; }
+    .nearby-shop-panel .row {
+        display: grid;
+        grid-auto-flow: column;
+        grid-auto-columns: calc((100% - 6px) / 3);
+        grid-template-rows: auto;
+        gap: 0;
+        margin: 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+        overscroll-behavior-x: contain;
+        scroll-snap-type: x proximity;
+        scrollbar-width: thin;
+        -webkit-overflow-scrolling: touch;
+    }
+    .nearby-shop-panel .row > [class*="col-"] {
+        width: auto;
+        padding: 0;
+        scroll-snap-align: start;
+    }
+    .nearby-shop-card { margin: 1px; padding: 1px; border-radius: 8px !important; }
+    .nearby-shop-card .card-body { min-width: 0; margin: 0 !important; padding: 0 !important; font-size: .65rem; }
+    .nearby-shop-card .card-body small,
+    .nearby-shop-card .card-body .small { font-size: .56rem; }
+    .nearby-shop-panel .row .card-img-top { padding: 0 !important; }
+    .nearby-shop-panel .row .card-img-top,
+    .nearby-shop-panel .row > [class*="col-"] > .card > .d-flex {
+        height: auto !important;
+        aspect-ratio: 1.28;
+    }
+    .nearby-shop-panel .row .favorite-heart { width: 20px; height: 20px; font-size: .65rem; }
+    .product-card { min-width: 0; margin: 1px; padding: 1px; border-radius: 8px; }
+    .product-card:hover { transform: none; }
+    .product-image, .product-placeholder { height: auto; aspect-ratio: 1.28; }
+    .product-image { padding: 0; }
+    .product-placeholder { font-size: 27px; }
+    .favorite-heart { top: 3px; right: 3px; width: 25px; height: 25px; font-size: .8rem; }
+    .product-body { min-width: 0; padding: 0; }
+    .product-body > small { font-size: .57rem; }
+    .product-body > .small { font-size: .56rem; line-height: 1.15; }
+    .product-name { min-height: 2.25em; margin-top: 2px; font-size: .7rem; line-height: 1.15; }
+    .product-body > .small.text-muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .product-price { font-size: .72rem; }
+    .product-unit { font-size: .58rem; }
+    .product-price-row { margin-top: 2px !important; padding: 0; line-height: 1.05; }
+    .product-body .badge { font-size: .55rem; }
+    .product-body .border-top { margin-top: 5px !important; padding-top: 5px !important; }
+    .product-bulk-offer { margin-top: 3px !important; padding-top: 3px !important; }
+    .product-bulk-title { line-height: 1.05; }
+    .product-bulk-meta { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
+    .product-bulk-price { font-size: .66rem !important; line-height: 1.1; }
+    .product-bulk-minimum { font-size: .58rem !important; line-height: 1.1; }
+    .product-bulk-minimum { white-space: nowrap; }
+    .product-bulk-controls { margin-top: 3px; }
+    .product-bulk-controls > .form-control,
+    .product-bulk-controls > .btn { min-height: 27px; padding: 3px 5px !important; font-size: .62rem !important; line-height: 1.1; }
+    .product-body .input-group-sm > .form-control,
+    .product-body .input-group-sm > .btn { padding: 4px; font-size: .62rem; }
+    .product-card .btn-success { min-height: 32px; border-radius: 8px; font-size: .72rem; }
+    .product-cart-action { min-height: 32px; }
+    .product-cart-action > .btn-success,
+    .product-cart-action > .qty-control { min-height: 32px; }
+    .qty-control { border-radius: 8px; }
+    .qty-control button { width: 30px; height: 32px; font-size: 17px; }
+    .qty-control span { width: 28px; }
+    .market-empty { padding: 28px 14px; }
+    .modal-product-image { height: min(52vh, 260px); }
+}
+@media (max-width: 767.98px) and (max-height: 760px) {
+    .main-container > .container-fluid > .marketplace-shell { padding: 2px 2px 72px !important; }
+    .market-header { padding: 6px 8px; margin-bottom: 5px; }
+    .market-header h2 { margin-bottom: 0 !important; font-size: 1rem; }
+    .market-header h2 + div { display: none; }
+    .market-header > .d-flex > a { display: none; }
+    .market-location { margin-top: 4px !important; padding: 4px 6px !important; }
+    .market-location .btn { padding: 3px 6px; font-size: .7rem; }
+    .market-search.marketplace-search-duplicate { display: none; }
+    .nearby-shop-panel > summary { min-height: 0; padding: 5px 8px; font-size: .8rem; }
+    .market-category-nav { padding: 3px 0; margin-bottom: 4px; }
+    .market-category-nav .nav-link { padding: 4px 7px !important; font-size: .72rem; }
+    .market-section-title { margin-bottom: 4px !important; padding-bottom: 3px; }
+    .market-section-title h4 { font-size: .9rem; }
+    .marketplace-shell > .row.g-3 {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 2px;
+        margin: 0;
+    }
+    .marketplace-shell > .row.g-3 > [class*="col-"] { width: auto; padding: 0; }
+    .market-category-card,
+    .market-category-card > .card-body { margin: 0 !important; padding: 0 !important; }
+    .market-category-name { font-size: .62rem; }
+    .marketplace-shell .d-grid.gap-3.mb-3 { gap: 0 !important; margin-bottom: 0 !important; }
+    .category-product-track,
+    .category-product-row { gap: 0; }
+    .category-product-item { min-height: 0; }
+    .product-card { margin: 1px; padding: 1px; border-radius: 8px; }
+    .product-image, .product-placeholder { height: 44px; aspect-ratio: auto; }
+    .product-image { padding: 1px; }
+    .product-placeholder { font-size: 18px; }
+    .favorite-heart { top: 2px; right: 2px; width: 20px; height: 20px; font-size: .65rem; }
+    .product-body { gap: 0; padding: 0; }
+    .product-body > small,
+    .product-body > .small.text-success,
+    .product-body > .small.text-muted { display: none; }
+    .product-name {
+        display: -webkit-box;
+        min-height: 0;
+        overflow: hidden;
+        margin-top: 0;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        font-size: .62rem;
+        line-height: 1.1;
+    }
+    .product-price { font-size: .66rem; }
+    .product-unit { font-size: .54rem; }
+    .product-price-row { margin-top: 1px !important; padding: 0; line-height: 1; }
+    .product-body > .mt-2 { margin-top: 2px !important; }
+    .product-body > .mt-2[onclick] { margin-top: 2px !important; padding-top: 0; }
+    .product-cart-action { min-height: 22px; }
+    .product-cart-action > .btn-success,
+    .product-cart-action > .qty-control { min-height: 22px; }
+    .product-body > .border-top.mt-2[onclick] { padding-top: 2px !important; }
+    .product-body > .border-top .small { font-size: .58rem; line-height: 1.1; }
+    .product-body > .border-top .input-group { flex-wrap: nowrap; }
+    .product-body > .border-top .input-group .form-control { min-width: 0; padding: 1px 3px; font-size: .58rem; }
+    .product-body > .border-top .input-group .btn { flex: 0 0 auto; padding: 1px 3px; font-size: .58rem; }
+    .product-bulk-offer { margin-top: 2px !important; padding-top: 2px !important; }
+    .product-bulk-title { line-height: 1; }
+    .product-bulk-meta { display: flex; align-items: baseline; gap: 3px; min-width: 0; }
+    .product-bulk-price { font-size: .61rem !important; line-height: 1.05; }
+    .product-bulk-minimum { font-size: .54rem !important; line-height: 1.05; }
+    .product-bulk-minimum { white-space: nowrap; }
+    .product-bulk-controls { margin-top: 2px; }
+    .product-bulk-controls > .form-control,
+    .product-bulk-controls > .btn { min-height: 22px; padding: 1px 3px !important; font-size: .56rem !important; line-height: 1; }
+    .product-card .btn-success { min-height: 22px; padding: 1px 3px; font-size: .62rem; }
+    .qty-control button { width: 21px; height: 22px; font-size: 14px; }
+    .qty-control span { width: 22px; font-size: .65rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+    *, *:before, *:after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+}
+
+</style>
+
+
+<div class="container-fluid py-3 marketplace-shell">
+
+
+    <!-- =================================================
+         HEADER
+    ================================================== -->
+
+    <div class="market-header">
+
+        <div class="d-flex justify-content-between align-items-center">
+
+            <div>
+
+                <h2 class="fw-bold mb-1">
+                    🛍️ Marketplace
+                </h2>
+
+                <div>
+                    Find products from nearby shops
+                </div>
+
+            </div>
+
+
+            <a
+                href="{% url 'cart' %}"
+                class="btn btn-light position-relative"
+            >
+
+                🛒 Cart
+
+                <span
+                    class="badge bg-danger cart-count{% if not cart_count %} d-none{% endif %}"
+                    data-cart-count
+                >
+                    {{ cart_count|default:0 }}
+                </span>
+
+            </a>
+
+        </div>
+
+
+        <!-- Delivery location -->
+        <!-- =================================================
+            DELIVERY LOCATION
+        ================================================= -->
+
+        {% if not address and not market_delivery_address %}
+        <div class="market-location mt-3">
+
+            <div class="d-flex justify-content-between align-items-center">
+
+                <div>
+
+                    {% if address %}
+
+                        <small class="product-unit">
+                            Delivering to
+                        </small>
+
+                        <div class="fw-bold">
+                            📍 {{ address.label }}
+                        </div>
+
+                        <small class="product-unit">
+                            {{ address.address }}
+                        </small>
+
+                    {% elif using_current_location %}
+
+                        <small>
+                            Delivering to
+                        </small>
+
+                        <div class="fw-bold">
+                            📍 Your Current Location
+                        </div>
+
+                        <small>
+                            Using your current GPS location
+                        </small>
+
+                    {% else %}
+
+                        <small>
+                            Delivery Location
+                        </small>
+
+                        <div class="fw-bold">
+                            📍 Location not selected
+                        </div>
+
+                        <small>
+                            Select a delivery address
+                        </small>
+
+                    {% endif %}
+
+                </div>
+
+
+                <!-- ALWAYS DISPLAY CHANGE BUTTON -->
+
+                <a
+                    href="{% url 'delivery_address_list' %}"
+                    class="btn btn-sm btn-light"
+                >
+                    📍 Change
+                </a>
+
+            </div>
+
+        </div>
+        {% endif %}
+
+        <!-- {% if address %}
+
+        <div class="market-location mt-3">
+
+            <div class="d-flex justify-content-between align-items-center">
+
+                <div>
+
+                    <small>
+                        Delivering to
+                    </small>
+
+                    <div class="fw-bold">
+                        📍 {{ address.label }}
+                    </div>
+
+                    <small>
+                        {{ address.address }}
+                    </small>
+
+                </div>
+
+                <a
+                    href="{% url 'delivery_address_list' %}"
+                    class="btn btn-sm btn-light"
+                >
+                    Change
+                </a>
+
+            </div>
+
+        </div>
+
+        {% elif using_current_location %}
+
+        <div class="market-location mt-3">
+
+            <div class="d-flex align-items-center">
+
+                <div class="me-3" style="font-size:28px;">
+                    📍
+                </div>
+
+                <div>
+
+                    <small>
+                        Delivering to
+                    </small>
+
+                    <div class="fw-bold">
+                        Your Current Location
+                    </div>
+
+                    <small>
+                        Shops available near your current location
+                    </small>
+
+                </div>
+
+            </div>
+
+        </div>
+
+        {% else %}
+
+        <div class="market-location mt-3">
+
+            <div class="text-center">
+
+                <div class="fw-bold">
+                    📍 Location required
+                </div>
+
+                <small>
+                    Allow location access to find nearby shops.
+                </small>
+
+            </div>
+
+        </div>
+
+        {% endif %} -->
+        
+        <!-- {% if address %}
+
+        <div class="market-location mt-3">
+
+            <div class="d-flex justify-content-between align-items-center">
+
+                <div>
+
+                    <small>
+                        Delivering to
+                    </small>
+
+                    <div class="fw-bold">
+
+                        📍 {{ address.label }}
+
+                    </div>
+
+                    <small>
+
+                        {{ address.address }}
+
+                    </small>
+
+                </div>
+
+
+                <a
+                    href="{% url 'delivery_address_list' %}"
+                    class="btn btn-sm btn-light"
+                >
+                    Change
+                </a>
+
+            </div>
+
+        </div>
+
+        {% endif %} -->
+
+    </div>
+
+    {% if request.session.active_portal == "B2B_CUSTOMER" and not is_b2b_customer %}
+    <div class="alert alert-info d-flex flex-column flex-sm-row justify-content-between align-items-sm-center gap-2">
+        <span>Add a valid GSTIN to your profile to unlock B2B product prices and bulk offers.</span>
+        <a href="{% url 'client_profile' %}" class="btn btn-sm btn-outline-primary text-nowrap">Add GSTIN</a>
+    </div>
+    {% endif %}
+
+
+    <!-- =================================================
+         SEARCH
+    ================================================== -->
+
+    <form method="get" class="market-search{% if is_customer_portal %} marketplace-search-duplicate{% endif %}">
+        {% if address %}<input type="hidden" name="address" value="{{ address.id }}">{% endif %}
+        {% if not address and request.GET.current_lat and request.GET.current_lng %}
+            <input type="hidden" name="current_lat" value="{{ request.GET.current_lat }}">
+            <input type="hidden" name="current_lng" value="{{ request.GET.current_lng }}">
+        {% endif %}
+
+        <div class="input-group">
+
+            <input
+                type="search"
+                name="q"
+                value="{{ request.GET.q }}"
+                class="form-control form-control-lg"
+                placeholder="Search products or shop names..."
+                aria-label="Search products or shops"
+            >
+
+            <button
+                class="btn btn-outline-secondary"
+                type="button"
+                data-voice-search
+                aria-label="Search by voice"
+                title="Search by voice"
+            >
+                <i class="bi bi-mic-fill" aria-hidden="true"></i>
+            </button>
+
+            <button
+                class="btn btn-primary{% if request.GET.q %} rounded-0{% endif %}"
+                type="submit"
+            >
+                🔍
+            </button>
+            {% if request.GET.q %}
+            <a class="btn btn-outline-secondary btn-clear d-flex align-items-center" href="{% url 'marketplace' %}{% if address %}?address={{ address.id }}{% elif request.GET.current_lat and request.GET.current_lng %}?current_lat={{ request.GET.current_lat }}&amp;current_lng={{ request.GET.current_lng }}{% endif %}">
+                Clear
+            </a>
+            {% endif %}
+
+        </div>
+        <div class="small text-muted mt-1" data-voice-search-status role="status" aria-live="polite"></div>
+
+    </form>
+
+    {% if nearby_shops %}
+    <section class="mb-4">
+        <details class="card nearby-shop-panel shadow-sm">
+            <summary class="card-body d-flex justify-content-between align-items-center gap-3 fw-bold"
+                     style="cursor:pointer;list-style:none">
+                <span><i class="bi bi-geo-alt text-primary me-1"></i>
+                    Nearby shops
+                    <span class="badge text-bg-primary ms-1">{{ nearby_shops|length }}</span>
+                </span>
+                <span class="d-flex align-items-center gap-2{% if selected_shop_id or request.GET.q %} has-clear-filter{% endif %}">
+                    {% if selected_shop_id or request.GET.q %}
+                        <a class="btn btn-sm btn-outline-secondary text-nowrap"
+                           onclick="event.stopPropagation();"
+                           href="{% url 'marketplace' %}{% if address %}?address={{ address.id }}{% elif request.GET.current_lat and request.GET.current_lng %}?current_lat={{ request.GET.current_lat }}&amp;current_lng={{ request.GET.current_lng }}{% endif %}">Clear shop/search filter</a>
+                    {% endif %}
+                    <span class="small text-muted fw-normal summary-hint">Tap to show shops <i class="bi bi-chevron-down ms-1"></i></span>
+                </span>
+            </summary>
+            <div class="card-body pt-0">
+                <div class="row g-3">
+                    {% for entry in nearby_shops %}
+                        <div class="col-6 col-md-4 col-lg-3 col-xl-2 position-relative">
+                            <a class="card nearby-shop-card h-100 text-decoration-none text-dark border-0 shadow-sm"
+                               href="{% url 'marketplace' %}?shop={{ entry.shop.id }}{% if request.GET.q %}&amp;q={{ request.GET.q|urlencode }}{% endif %}{% if address %}&amp;address={{ address.id }}{% elif request.GET.current_lat and request.GET.current_lng %}&amp;current_lat={{ request.GET.current_lat }}&amp;current_lng={{ request.GET.current_lng }}{% endif %}">
+                                {% if entry.shop.cover_image_url %}
+                                    <img src="{{ entry.shop.cover_image_url }}" class="card-img-top" style="height:100px;object-fit:cover" alt="{{ entry.shop.name }}">
+                                {% elif entry.shop.logo_url %}
+                                    <img src="{{ entry.shop.logo_url }}" class="card-img-top" style="height:100px;object-fit:contain;padding:12px" alt="{{ entry.shop.name }}">
+                                {% else %}
+                                    <div class="d-flex align-items-center justify-content-center bg-light" style="height:100px;font-size:2rem">🏪</div>
+                                {% endif %}
+                                <div class="card-body py-2">
+                                    <div class="fw-bold text-truncate">{{ entry.shop.name }}</div>
+                                    <small class="text-muted">{% if entry.distance_km is not None %}{{ entry.distance_km|floatformat:1 }} km away{% else %}Delivery available{% endif %}</small>
+                                    {% if entry.is_scheduled_delivery %}
+                                        <div class="small text-warning-emphasis fw-semibold mt-1">Scheduled delivery</div>
+                                    {% endif %}
+                                    <div class="small text-success mt-1"><i class="bi bi-award"></i> Shop score {{ entry.reputation.rank_score }}/100</div>
+                                </div>
+                            </a>
+                            <form method="post" action="{% url 'toggle_favorite_shop' entry.shop.id %}" class="position-absolute top-0 end-0 m-2" onclick="event.stopPropagation();">
+                                {% csrf_token %}
+                                <input type="hidden" name="return_to" value="{{ request.get_full_path }}">
+                                <button class="favorite-heart position-static" type="submit" aria-label="{% if entry.shop.is_favorited %}Remove {{ entry.shop.name }} from favourites{% else %}Add {{ entry.shop.name }} to favourites{% endif %}" title="{% if entry.shop.is_favorited %}Remove shop from favourites{% else %}Add shop to favourites{% endif %}">
+                                    <i class="bi bi-heart{% if entry.shop.is_favorited %}-fill{% endif %}"></i>
+                                </button>
+                            </form>
+                        </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </details>
+    </section>
+    {% endif %}
+
+
+    <!-- =================================================
+         MARKET NAVIGATION
+    ================================================== -->
+
+    {% if product_groups %}
+    <div class="market-category-nav-wrap">
+        <div class="market-category-nav">
+            <div class="nav nav-pills gap-2" aria-label="Marketplace markets">
+                {% for market_group in product_groups %}
+                    <a href="{% url 'marketplace' %}?market={{ market_group.market_name|urlencode }}{% if request.GET.q %}&amp;q={{ request.GET.q|urlencode }}{% endif %}{% if selected_shop_id %}&amp;shop={{ selected_shop_id }}{% endif %}{% if address %}&amp;address={{ address.id }}{% elif request.GET.current_lat and request.GET.current_lng %}&amp;current_lat={{ request.GET.current_lat }}&amp;current_lng={{ request.GET.current_lng }}{% endif %}"
+                       class="nav-link btn-sm {% if selected_market == market_group.market_name %}active{% endif %}">
+                        {{ market_group.market_name }}
+                    </a>
+                {% endfor %}
+                {% if selected_market %}
+                    <a href="{% url 'marketplace' %}{% if address %}?address={{ address.id }}{% elif request.GET.current_lat and request.GET.current_lng %}?current_lat={{ request.GET.current_lat }}&amp;current_lng={{ request.GET.current_lng }}{% endif %}{% if request.GET.q %}{% if address or request.GET.current_lat and request.GET.current_lng %}&amp;{% else %}?{% endif %}q={{ request.GET.q|urlencode }}{% endif %}{% if selected_shop_id %}{% if address or request.GET.current_lat and request.GET.current_lng or request.GET.q %}&amp;{% else %}?{% endif %}shop={{ selected_shop_id }}{% endif %}"
+                       class="nav-link btn-sm">All markets</a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- =================================================
+         PRODUCT GROUPS BY MARKET AND CATEGORY
+    ================================================== -->
+
+    {% if product_groups %}
+        {% for market_group in product_groups %}
+            <div class="mb-4">
+                <div class="d-flex align-items-center justify-content-between mb-3 market-section-title">
+                    <h4 class="fw-bold mb-0 text-primary">{{ market_group.market_name }}</h4>
+                </div>
+
+                <div class="d-grid gap-3 mb-3">
+                    {% for subcategory in market_group.subcategories %}
+                        <section class="card market-category-card border-0 shadow-sm">
+                            <div class="card-body">
+                                <h6 class="fw-bold text-uppercase text-secondary market-category-name">{{ subcategory.name }}</h6>
+                                <div class="category-product-track mt-2">
+                                    {% for item in subcategory.items %}
+                                            <div class="category-product-item">
+                                                <div class="product-card" data-product-id="{{ item.id }}" role="button" tabindex="0" aria-label="View {{ item.product.product_name }} details" onclick="openProduct({{ item.id }})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openProduct({{ item.id }});}">
+                                                    <div class="product-media">
+                                                        {% if item.display_image_url %}
+                                                            <img src="{{ item.display_image_url }}" class="product-image" loading="lazy" decoding="async" alt="{{ item.product.product_name }}">
+                                                        {% else %}
+                                                            <div class="product-placeholder">📦</div>
+                                                        {% endif %}
+                                                        <form method="post" action="{% url 'toggle_favorite_product' item.id %}" onclick="event.stopPropagation();">
+                                                            {% csrf_token %}
+                                                            <input type="hidden" name="return_to" value="{{ request.get_full_path }}">
+                                                            <button type="submit" class="favorite-heart" aria-label="{% if item.is_favorited %}Remove {{ item.product.product_name }} from favourites{% else %}Add {{ item.product.product_name }} to favourites{% endif %}" title="{% if item.is_favorited %}Remove from favourites{% else %}Add to favourites{% endif %}">
+                                                                <i class="bi bi-heart{% if item.is_favorited %}-fill{% endif %}"></i>
+                                                            </button>
+                                                        </form>
+                                                    </div>
+
+                                                    <div class="product-body">
+                                                        <small class="text-muted">{{ item.shop.name }}</small>
+                                                        {% if item.shop.is_scheduled_delivery %}
+                                                            <div class="small text-warning-emphasis fw-semibold">Scheduled delivery — shop is currently closed.</div>
+                                                        {% endif %}
+                                                        <div class="small text-success"><i class="bi bi-award"></i> {{ item.reputation.rank_score }}/100</div>
+                                                        <div class="product-name">
+                                                            {% if item.product.product_alias_name %}
+                                                                {{ item.product.product_name }} ({{ item.product.product_alias_name }})
+                                                            {% else %}
+                                                                {{ item.product.product_name }}
+                                                            {% endif %}
+                                                        </div>
+                                                        {% if item.product.product_title %}
+                                                            <div class="small text-muted">{{ item.product.product_title }}</div>
+                                                        {% endif %}
+                                                        <div class="product-price-row mt-2">
+                                                            <span class="product-price">₹{{ item.marketplace_price }}</span>
+                                                            {% if item.has_b2b_price %}<span class="badge text-bg-primary ms-1">B2B price</span>{% endif %}
+                                                            {% if item.marketplace_unit %}
+                                                                <small class="product-unit">/ {{ item.marketplace_unit }}</small>
+                                                            {% endif %}
+                                                        </div>
+                                                        <div class="small text-success">{{ item.marketplace_stock }} available</div>
+                                                        {% if item.has_bulk_offer %}
+                                                            <div class="product-bulk-offer border-top mt-2 pt-2" onclick="event.stopPropagation();">
+                                                                <div class="product-bulk-title small fw-semibold">
+                                                                    {% if item.has_b2b_bulk_offer %}B2B bulk offer{% else %}Bulk offer{% endif %}
+                                                                </div>
+                                                                <div class="product-bulk-meta">
+                                                                    <div class="product-bulk-price small text-success">
+                                                                        ₹{{ item.bulk_marketplace_price }} / {{ item.bulk_marketplace_unit }}
+                                                                    </div>
+                                                                    {% if item.bulk_min_quantity > 1 %}<div class="product-bulk-minimum small text-muted" title="Minimum {{ item.bulk_min_quantity }} bulk unit(s)">Min {{ item.bulk_min_quantity }} units</div>{% endif %}
+                                                                </div>
+                                                                <div class="product-bulk-controls input-group input-group-sm">
+                                                                    <input type="number" class="form-control" id="bulk-qty-{{ item.id }}" min="{{ item.bulk_min_quantity }}" max="{{ item.marketplace_stock }}" value="{{ item.bulk_min_quantity }}" aria-label="Bulk quantity for {{ item.product.product_name }}" {% if item.marketplace_stock < item.bulk_min_quantity %}disabled{% endif %}>
+                                                                    <button type="button" class="btn btn-outline-success" onclick="addBulkToCart({{ item.id }})" {% if item.marketplace_stock < item.bulk_min_quantity %}disabled{% endif %}>Add bulk</button>
+                                                                </div>
+                                                            </div>
+                                                        {% endif %}
+
+                                                        <div class="product-cart-action mt-2" onclick="event.stopPropagation();">
+                                                            {% if item.cart_quantity > 0 %}
+                                                                <div class="qty-control" id="qty-box-{{ item.id }}">
+                                                                    <button type="button" onclick="changeQuantity({{ item.id }}, -1)">−</button>
+                                                                    <span id="qty-{{ item.id }}">{{ item.cart_quantity }}</span>
+                                                                    <button type="button" onclick="changeQuantity({{ item.id }}, 1)">+</button>
+                                                                </div>
+                                                            {% else %}
+                                                                <button type="button" id="add-btn-{{ item.id }}" class="btn btn-success w-100" onclick="addToCart({{ item.id }})">ADD</button>
+                                                            {% endif %}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                    {% empty %}
+                                        <div class="text-muted py-3">No products in this category for your delivery area.</div>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                        </section>
+                    {% endfor %}
+                </div>
+            </div>
+        {% endfor %}
+    {% else %}
+
+    <!-- =================================================
+         PRODUCTS
+    ================================================== -->
+
+    <div class="row g-3">
+
+        {% for item in products %}
+
+        <div
+            class="col-6 col-md-4 col-lg-3 col-xl-2"
+        >
+
+            <div
+                class="product-card"
+                data-product-id="{{ item.id }}"
+                role="button"
+                tabindex="0"
+                aria-label="View {{ item.product.product_name }} details"
+                onclick="openProduct({{ item.id }})"
+                onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openProduct({{ item.id }});}"
+            >
+
+
+                <div class="product-media">
+                    {% if item.display_image_url %}
+                        <img
+                            src="{{ item.display_image_url }}"
+                            class="product-image"
+                            loading="lazy"
+                            alt="{{ item.product.product_name }}"
+                        >
+                    {% else %}
+                        <div class="product-placeholder">📦</div>
+                    {% endif %}
+                    <form method="post" action="{% url 'toggle_favorite_product' item.id %}" onclick="event.stopPropagation();">
+                        {% csrf_token %}
+                        <input type="hidden" name="return_to" value="{{ request.get_full_path }}">
+                        <button type="submit" class="favorite-heart" aria-label="{% if item.is_favorited %}Remove {{ item.product.product_name }} from favourites{% else %}Add {{ item.product.product_name }} to favourites{% endif %}" title="{% if item.is_favorited %}Remove from favourites{% else %}Add to favourites{% endif %}">
+                            <i class="bi bi-heart{% if item.is_favorited %}-fill{% endif %}"></i>
+                        </button>
+                    </form>
+                </div>
+
+
+                <div class="product-body">
+
+
+                    <small class="text-muted">
+
+                        {{ item.shop.name }}
+
+                    </small>
+                    {% if item.shop.is_scheduled_delivery %}
+                        <div class="small text-warning-emphasis fw-semibold">Scheduled delivery — shop is currently closed.</div>
+                    {% endif %}
+                    <div class="small text-success"><i class="bi bi-award"></i> Product score {{ item.reputation.rank_score }}/100</div>
+
+
+                    <div class="product-name">
+
+                        {% if item.product.product_alias_name %}
+                            {{ item.product.product_name }} ({{ item.product.product_alias_name }})
+                        {% else %}
+                            {{ item.product.product_name }}
+                        {% endif %}
+
+                    </div>
+
+
+                    {% if item.product.product_title %}
+
+                        <div class="small text-muted">
+
+                            {{ item.product.product_title }}
+
+                        </div>
+
+                    {% endif %}
+
+
+                    <div class="product-price-row mt-2">
+
+                        <span class="product-price">
+
+                            ₹{{ item.marketplace_price }}
+
+                        </span>
+                        {% if item.has_b2b_price %}
+                            <span class="badge text-bg-primary ms-1">B2B price</span>
+                        {% endif %}
+
+                        {% if item.marketplace_unit %}
+
+                            <small>
+
+                                / {{ item.marketplace_unit }}
+
+                            </small>
+
+                        {% endif %}
+
+                    </div>
+
+                    {% if item.has_bulk_offer %}
+                        <div class="product-bulk-offer border-top mt-2 pt-2" onclick="event.stopPropagation();">
+                            <div class="product-bulk-title small fw-semibold">{% if item.has_b2b_bulk_offer %}B2B bulk offer{% else %}Bulk offer{% endif %}</div>
+                            <div class="product-bulk-meta">
+                                <div class="product-bulk-price small text-success">₹{{ item.bulk_marketplace_price }} / {{ item.bulk_marketplace_unit }}</div>
+                                {% if item.bulk_min_quantity > 1 %}<div class="product-bulk-minimum small text-muted" title="Minimum {{ item.bulk_min_quantity }} bulk unit(s)">Min {{ item.bulk_min_quantity }} units</div>{% endif %}
+                            </div>
+                            <div class="product-bulk-controls input-group input-group-sm">
+                                <input type="number" class="form-control" id="bulk-qty-{{ item.id }}" min="{{ item.bulk_min_quantity }}" max="{{ item.marketplace_stock }}" value="{{ item.bulk_min_quantity }}" aria-label="Bulk quantity for {{ item.product.product_name }}" {% if item.marketplace_stock < item.bulk_min_quantity %}disabled{% endif %}>
+                                <button type="button" class="btn btn-outline-success" onclick="addBulkToCart({{ item.id }})" {% if item.marketplace_stock < item.bulk_min_quantity %}disabled{% endif %}>Add bulk</button>
+                            </div>
+                        </div>
+                    {% endif %}
+
+
+                    <div class="small text-success">
+
+                        {{ item.marketplace_stock }} available
+
+                    </div>
+                    <!-- Quantity -->
+
+                    <div
+                        class="product-cart-action mt-2"
+                        onclick="event.stopPropagation();"
+                    >
+
+                        {% if item.cart_quantity > 0 %}
+
+                            <div
+                                class="qty-control"
+                                id="qty-box-{{ item.id }}"
+                            >
+
+                                <button
+                                    type="button"
+                                    onclick="changeQuantity(
+                                        {{ item.id }},
+                                        -1
+                                    )"
+                                >
+                                    −
+                                </button>
+
+
+                                <span
+                                    id="qty-{{ item.id }}"
+                                >
+                                    {{ item.cart_quantity }}
+                                </span>
+
+
+                                <button
+                                    type="button"
+                                    onclick="changeQuantity(
+                                        {{ item.id }},
+                                        1
+                                    )"
+                                >
+                                    +
+                                </button>
+
+                            </div>
+
+                        {% else %}
+
+                            <button
+                                type="button"
+                                id="add-btn-{{ item.id }}"
+                                class="btn btn-success w-100"
+                                onclick="addToCart(
+                                    {{ item.id }}
+                                )"
+                            >
+                                ADD
+                            </button>
+
+                        {% endif %}
+
+                    </div>
+
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+        {% empty %}
+
+        <div class="col-12 text-center py-5">
+
+            <div style="font-size:70px;">
+                🛒
+            </div>
+
+            <h4>
+                No products available
+            </h4>
+
+            <p class="text-muted">
+
+                No products are currently available
+                for your delivery location.
+
+            </p>
+
+        </div>
+
+        {% endfor %}
+
+    </div>
+    {% endif %}
+
+</div>
+
+{% for item in products %}
+    {{ item.marketplace_detail|json_script:item.marketplace_detail_script_id }}
+{% endfor %}
+
+<!-- =====================================================
+     PRODUCT DETAIL MODAL
+====================================================== -->
+
+<div
+    class="modal fade"
+    id="productModal"
+    tabindex="-1"
+>
+
+    <div
+        class="modal-dialog modal-lg modal-dialog-centered"
+    >
+
+        <div class="modal-content">
+
+            <div class="modal-header">
+
+                <h5
+                    class="modal-title"
+                    id="modalProductName"
+                >
+                    Product
+                </h5>
+
+                <button
+                    type="button"
+                    class="btn-close"
+                    data-bs-dismiss="modal"
+                ></button>
+
+            </div>
+
+
+            <div class="modal-body">
+
+                <div
+                    id="productLoading"
+                    class="text-center py-5"
+                >
+
+                    <div
+                        class="spinner-border text-primary"
+                    ></div>
+
+                    <div class="mt-2">
+                        Loading product...
+                    </div>
+
+                </div>
+
+
+                <div
+                    id="productDetails"
+                    style="display:none;"
+                >
+
+                    <div class="row g-4">
+
+
+                        <!-- Image -->
+
+                        <div class="col-md-5">
+
+                            <img
+                                id="modalProductImage"
+                                class="img-fluid rounded modal-product-image"
+                                alt=""
+                                hidden
+                            >
+                            <div id="modalProductImageFallback" class="modal-product-image-fallback" hidden aria-label="Product image unavailable">📦</div>
+
+                        </div>
+
+
+                        <!-- Details -->
+
+                        <div class="col-md-7">
+
+                            <small
+                                id="modalProductShop"
+                                class="text-muted"
+                            ></small>
+
+                            <div id="modalScheduledDeliveryAlert" class="alert alert-warning py-2 small mt-2 mb-2" role="status" hidden>
+                                This shop is currently closed. Delivery from this shop will need to be scheduled; the shop will confirm the delivery timing.
+                            </div>
+
+                            <h3
+                                id="modalProductTitle"
+                                class="fw-bold mt-2"
+                            ></h3>
+
+
+                            <div
+                                id="modalProductDescription"
+                                class="text-muted mb-3"
+                            ></div>
+
+
+                            <h3
+                                class="text-success"
+                            >
+                                ₹<span
+                                    id="modalProductPrice"
+                                ></span>
+                            </h3>
+
+
+                            <div class="mt-3">
+
+                                <div>
+                                    <strong>SKU:</strong>
+
+                                    <span
+                                        id="modalProductSku"
+                                    ></span>
+
+                                </div>
+
+
+                                <div>
+                                    <strong>Color:</strong>
+
+                                    <span
+                                        id="modalProductColor"
+                                    ></span>
+
+                                </div>
+
+
+                                <div>
+                                    <strong>Size:</strong>
+
+                                    <span
+                                        id="modalProductSize"
+                                    ></span>
+
+                                </div>
+
+
+                                <div>
+                                    <strong>Unit:</strong>
+
+                                    <span
+                                        id="modalProductUnit"
+                                    ></span>
+
+                                </div>
+
+
+                                <div class="mt-2">
+
+                                    <strong>
+                                        Stock:
+                                    </strong>
+
+                                    <span
+                                        id="modalProductStock"
+                                        class="text-success"
+                                    ></span>
+
+                                </div>
+
+                            </div>
+
+                            <div id="modalBulkOffer" class="border rounded p-2 mt-3" style="display:none;">
+                                <div id="modalBulkOfferLabel" class="fw-semibold">Bulk offer</div>
+                                <div class="small text-success">₹<span id="modalProductBulkPrice"></span> / <span id="modalProductBulkUnit"></span></div>
+                                <div class="small text-muted">Minimum <span id="modalProductBulkMinimum"></span> bulk unit(s)</div>
+                                <div class="input-group input-group-sm mt-2">
+                                    <input id="modalBulkQuantity" type="number" class="form-control" min="1" value="1" aria-label="Bulk order quantity">
+                                    <button id="modalBulkAddButton" type="button" class="btn btn-outline-success">Add bulk</button>
+                                </div>
+                            </div>
+
+                            <div
+                                id="modalCartArea"
+                                class="mt-4"
+                            ></div>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+
+
+<script>
+
+const csrfToken = "{{ csrf_token }}";
+
+
+/* =====================================================
+   OPEN PRODUCT
+===================================================== */
+
+function openProduct(productId) {
+
+    const modalElement =
+        document.getElementById("productModal");
+
+    const modal =
+        bootstrap.Modal.getOrCreateInstance(
+            modalElement
+        );
+
+    document.getElementById(
+        "productLoading"
+    ).style.display = "block";
+
+    document.getElementById(
+        "productDetails"
+    ).style.display = "none";
+
+    modal.show();
+
+    const storageKey = `market-product-${productId}`;
+    const pageProduct = document.getElementById(`market-product-data-${productId}`);
+    if (pageProduct) {
+        try {
+            const productData = JSON.parse(pageProduct.textContent);
+            renderProductDetails(productId, productData);
+            try {
+                localStorage.setItem(storageKey, JSON.stringify(productData));
+            } catch (error) {
+                // Browser storage can be disabled or full; the page data remains usable.
+            }
+            return;
+        } catch (error) {
+            console.error("Could not read current marketplace product details.", error);
+        }
+    }
+
+    try {
+        const cachedProduct = localStorage.getItem(storageKey);
+        if (cachedProduct) {
+            renderProductDetails(productId, JSON.parse(cachedProduct));
+            return;
+        }
+    } catch (error) {
+        console.error("Could not read cached marketplace product details.", error);
+    }
+
+    document.getElementById("productLoading").textContent = "Product details are not available on this page.";
+}
+
+function renderProductDetails(productId, data) {
+
+        document.getElementById(
+            "productLoading"
+        ).style.display = "none";
+
+        document.getElementById(
+            "productDetails"
+        ).style.display = "block";
+
+
+        document.getElementById(
+            "modalProductName"
+        ).textContent = data.name;
+
+
+        document.getElementById(
+            "modalProductTitle"
+        ).textContent = data.title;
+
+
+        document.getElementById(
+            "modalProductDescription"
+        ).textContent = data.description;
+
+
+        document.getElementById(
+            "modalProductShop"
+        ).textContent = data.shop;
+
+        document.getElementById(
+            "modalScheduledDeliveryAlert"
+        ).hidden = !data.scheduled_delivery;
+
+
+        document.getElementById(
+            "modalProductPrice"
+        ).textContent = data.price;
+
+
+        document.getElementById(
+            "modalProductSku"
+        ).textContent =
+            data.sku || "-";
+
+
+        document.getElementById(
+            "modalProductColor"
+        ).textContent =
+            data.color || "-";
+
+
+        document.getElementById(
+            "modalProductSize"
+        ).textContent =
+            data.size || "-";
+
+
+        document.getElementById(
+            "modalProductUnit"
+        ).textContent =
+            data.unit || "-";
+
+
+        document.getElementById(
+            "modalProductStock"
+        ).textContent =
+            data.stock;
+
+        const bulkOffer = document.getElementById("modalBulkOffer");
+        const bulkQuantity = document.getElementById("modalBulkQuantity");
+        const bulkAddButton = document.getElementById("modalBulkAddButton");
+        if (data.bulk_available) {
+            document.getElementById("modalBulkOfferLabel").textContent =
+                data.has_b2b_bulk_offer ? "B2B bulk offer" : "Bulk offer";
+            document.getElementById("modalProductBulkPrice").textContent = data.bulk_price;
+            document.getElementById("modalProductBulkUnit").textContent = data.bulk_unit;
+            document.getElementById("modalProductBulkMinimum").textContent = data.bulk_min_quantity;
+            bulkQuantity.min = String(data.bulk_min_quantity);
+            bulkQuantity.max = String(data.stock);
+            bulkQuantity.value = String(data.bulk_min_quantity);
+            bulkQuantity.disabled = data.stock < data.bulk_min_quantity;
+            bulkAddButton.disabled = data.stock < data.bulk_min_quantity;
+            bulkAddButton.onclick = () => addBulkToCart(productId, "modalBulkQuantity");
+            bulkOffer.style.display = "block";
+        } else {
+            bulkOffer.style.display = "none";
+        }
+
+
+        const image =
+            document.getElementById(
+                "modalProductImage"
+            );
+        const imageFallback = document.getElementById("modalProductImageFallback");
+        const productCardImage = document.querySelector(
+            `[data-product-id="${productId}"] .product-image`
+        );
+        const imageCandidates = [
+            productCardImage?.currentSrc || productCardImage?.src,
+            data.image_url ? new URL(data.image_url, window.location.href).href : "",
+        ].filter((url, index, urls) => url && urls.indexOf(url) === index);
+        let imageCandidateIndex = 0;
+        image.hidden = true;
+        imageFallback.hidden = true;
+        image.onload = () => {
+            image.hidden = false;
+            image.style.display = "block";
+            imageFallback.hidden = true;
+        };
+        image.onerror = () => {
+            imageCandidateIndex += 1;
+            if (imageCandidateIndex < imageCandidates.length) {
+                image.src = imageCandidates[imageCandidateIndex];
+                return;
+            }
+            image.hidden = true;
+            image.style.display = "none";
+            imageFallback.hidden = false;
+        };
+
+        if (imageCandidates.length) {
+            image.style.display = "none";
+            image.src = imageCandidates[0];
+            if (image.complete && image.naturalWidth > 0) {
+                image.onload();
+            }
+        } else {
+            image.removeAttribute("src");
+            image.style.display = "none";
+            imageFallback.hidden = false;
+        }
+
+
+        // updateModalCart(
+        //     productId,
+        //     data.quantity
+        // );
+        updateModalCart(productId, data.quantity, data.stock);
+}
+
+
+
+/* =====================================================
+   ADD TO CART
+===================================================== */
+
+function addToCart(productId) {
+
+    fetch(
+        `/cart/add/${productId}/`,
+        {
+            method: "POST",
+
+            headers: {
+                "X-CSRFToken": csrfToken,
+                "X-Requested-With": "XMLHttpRequest"
+            }
+        }
+    )
+
+    .then(response => response.json())
+
+    .then(data => {
+
+        if (!data.success) {
+
+            alert(
+                data.message ||
+                "Unable to add product."
+            );
+
+            return;
+        }
+
+
+        updateProductQuantity(
+            productId,
+            data.quantity
+        );
+
+
+        updateCartCount(
+            data.cart_count
+        );
+
+    });
+
+}
+
+function addBulkToCart(productId, quantityInputId = `bulk-qty-${productId}`) {
+    const quantityInput = document.getElementById(quantityInputId);
+    const quantity = Number.parseInt(quantityInput?.value || "0", 10);
+    if (!Number.isInteger(quantity) || quantity < Number(quantityInput?.min || "1")) {
+        alert("Enter a bulk quantity at or above the minimum.");
+        return;
+    }
+
+    fetch(`/cart/add/${productId}/`, {
+        method: "POST",
+        headers: {
+            "X-CSRFToken": csrfToken,
+            "X-Requested-With": "XMLHttpRequest",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+            offer: "bulk",
+            quantity: String(quantity),
+        }),
+    })
+        .then(response => response.json())
+        .then(data => {
+            if (!data.success) {
+                alert(data.message || "Unable to add the bulk offer.");
+                return;
+            }
+            updateCartCount(data.cart_count);
+        })
+        .catch(() => alert("Unable to add the bulk offer. Please try again."));
+}
+
+
+
+/* =====================================================
+   CHANGE QUANTITY
+===================================================== */
+
+function changeQuantity(
+    productId,
+    change
+) {
+
+    const quantityElement =
+        document.getElementById(
+            `qty-${productId}`
+        );
+
+    let quantity =
+        parseInt(
+            quantityElement.innerText
+        ) || 0;
+
+
+    quantity += change;
+
+
+    if (quantity < 0) {
+
+        quantity = 0;
+
+    }
+
+
+    updateQuantity(
+        productId,
+        quantity
+    );
+
+}
+
+
+
+/* =====================================================
+   UPDATE QUANTITY SERVER
+===================================================== */
+
+function updateQuantity(
+    productId,
+    quantity
+) {
+
+    const formData =
+        new FormData();
+
+    formData.append(
+        "quantity",
+        quantity
+    );
+
+
+    fetch(
+        `/cart/update/${productId}/`,
+        {
+            method: "POST",
+
+            headers: {
+                "X-CSRFToken": csrfToken,
+                "X-Requested-With": "XMLHttpRequest"
+            },
+
+            body: formData
+        }
+    )
+
+    .then(response => response.json())
+
+    .then(data => {
+
+        if (!data.success) {
+
+            alert(
+                data.message ||
+                "Unable to update cart."
+            );
+
+            return;
+        }
+
+
+        updateProductQuantity(
+            productId,
+            data.quantity
+        );
+
+
+        updateCartCount(
+            data.cart_count
+        );
+
+    });
+
+}
+
+
+
+/* =====================================================
+   PRODUCT QUANTITY UI
+===================================================== */
+
+function updateProductQuantity(
+    productId,
+    quantity
+) {
+
+    const area =
+        document.querySelector(
+            `[data-product-id="${productId}"] .product-body`
+        );
+
+
+    const addButton =
+        document.getElementById(
+            `add-btn-${productId}`
+        );
+
+
+    if (quantity <= 0) {
+
+        if (addButton) {
+
+            return;
+
+        }
+
+
+        const oldBox =
+            document.getElementById(
+                `qty-box-${productId}`
+            );
+
+
+        if (oldBox) {
+
+            oldBox.outerHTML = `
+
+                <button
+                    type="button"
+                    id="add-btn-${productId}"
+                    class="btn btn-success w-100"
+                    onclick="addToCart(${productId})"
+                >
+                    ADD
+                </button>
+
+            `;
+
+        }
+
+        return;
+
+    }
+
+
+    if (addButton) {
+
+        addButton.outerHTML = `
+
+            <div
+                class="qty-control"
+                id="qty-box-${productId}"
+            >
+
+                <button
+                    type="button"
+                    onclick="changeQuantity(
+                        ${productId},
+                        -1
+                    )"
+                >
+                    −
+                </button>
+
+                <span
+                    id="qty-${productId}"
+                >
+                    ${quantity}
+                </span>
+
+                <button
+                    type="button"
+                    onclick="changeQuantity(
+                        ${productId},
+                        1
+                    )"
+                >
+                    +
+                </button>
+
+            </div>
+
+        `;
+
+        return;
+
+    }
+
+
+    const quantityElement =
+        document.getElementById(
+            `qty-${productId}`
+        );
+
+    if (quantityElement) {
+
+        quantityElement.innerText =
+            quantity;
+
+    }
+
+}
+
+
+
+/* =====================================================
+   MODAL CART
+===================================================== */
+
+
+// function updateModalCart(
+//     productId,
+//     quantity
+// ) {
+
+//     const area =
+//         document.getElementById(
+//             "modalCartArea"
+//         );
+
+
+//     if (quantity > 0) {
+
+//         area.innerHTML = `
+
+//             <div class="qty-control">
+
+//                 <button
+//                     onclick="changeModalQuantity(
+//                         ${productId},
+//                         -1
+//                     )"
+//                 >
+//                     −
+//                 </button>
+
+//                 <span
+//                     id="modalQty"
+//                 >
+//                     ${quantity}
+//                 </span>
+
+//                 <button
+//                     onclick="changeModalQuantity(
+//                         ${productId},
+//                         1
+//                     )"
+//                 >
+//                     +
+//                 </button>
+
+//             </div>
+
+//         `;
+
+//     } else {
+
+//         area.innerHTML = `
+
+//             <button
+//                 class="btn btn-success btn-lg w-100"
+//                 onclick="addModalProduct(
+//                     ${productId}
+//                 )"
+//             >
+//                 🛒 Add to Cart
+//             </button>
+
+//         `;
+
+//     }
+
+// }
+
+
+
+// function addModalProduct(
+//     productId
+// ) {
+
+//     addToCart(
+//         productId
+//     );
+
+
+//     setTimeout(
+//         () => {
+
+//             const qtyElement =
+//                 document.getElementById(
+//                     `qty-${productId}`
+//                 );
+
+//             const quantity =
+//                 qtyElement
+//                     ? parseInt(
+//                         qtyElement.innerText
+//                     )
+//                     : 1;
+
+//             updateModalCart(
+//                 productId,
+//                 quantity
+//             );
+
+//         },
+//         300
+//     );
+
+// }
+
+
+/* =====================================================
+   MODAL CART
+===================================================== */
+
+function updateModalCart(productId, quantity, stock) {
+
+    const area = document.getElementById("modalCartArea");
+
+    stock = parseInt(stock) || 0;
+    quantity = parseInt(quantity) || 0;
+
+    /* No stock */
+    if (stock <= 0) {
+
+        area.innerHTML = `
+            <div class="alert alert-danger mb-0">
+                Out of stock
+            </div>
+        `;
+
+        return;
+    }
+
+
+    /* Quantity already in cart */
+    if (quantity > 0) {
+
+        area.innerHTML = `
+
+            <div class="qty-control">
+
+                <button
+                    type="button"
+                    onclick="changeModalQuantity(
+                        ${productId},
+                        -1,
+                        ${stock}
+                    )"
+                >
+                    −
+                </button>
+
+                <span id="modalQty">
+                    ${quantity}
+                </span>
+
+                <button
+                    type="button"
+                    onclick="changeModalQuantity(
+                        ${productId},
+                        1,
+                        ${stock}
+                    )"
+                    ${quantity >= stock ? "disabled" : ""}
+                >
+                    +
+                </button>
+
+            </div>
+
+            ${
+                quantity >= stock
+                ? `
+                    <div class="small text-danger text-center mt-2">
+                        Maximum available stock: ${stock}
+                    </div>
+                  `
+                : ""
+            }
+
+        `;
+
+    } else {
+
+        area.innerHTML = `
+
+            <button
+                type="button"
+                class="btn btn-success btn-lg w-100"
+                onclick="addModalProduct(
+                    ${productId},
+                    ${stock}
+                )"
+            >
+                🛒 Add to Cart
+            </button>
+
+        `;
+
+    }
+
+}
+
+
+/* =====================================================
+   ADD FROM MODAL
+===================================================== */
+
+function addModalProduct(productId, stock) {
+
+    stock = parseInt(stock) || 0;
+
+    if (stock <= 0) {
+
+        alert("Product is out of stock.");
+
+        return;
+    }
+
+
+    addToCart(productId);
+
+
+    /*
+     * Wait for addToCart() to update the product-card
+     */
+    setTimeout(() => {
+
+        const qtyElement =
+            document.getElementById(
+                `qty-${productId}`
+            );
+
+        const quantity = qtyElement
+            ? parseInt(qtyElement.innerText) || 1
+            : 1;
+
+
+        updateModalCart(
+            productId,
+            quantity,
+            stock
+        );
+
+    }, 300);
+
+}
+
+
+/* =====================================================
+   CHANGE MODAL QUANTITY
+===================================================== */
+
+function changeModalQuantity(
+    productId,
+    change,
+    stock
+) {
+
+    const qtyElement =
+        document.getElementById("modalQty");
+
+    if (!qtyElement) {
+        return;
+    }
+
+
+    let quantity =
+        parseInt(qtyElement.innerText) || 0;
+
+    stock = parseInt(stock) || 0;
+
+
+    /* Increase */
+    if (change > 0) {
+
+        if (quantity >= stock) {
+
+            alert(
+                `Only ${stock} item(s) available in stock.`
+            );
+
+            return;
+        }
+
+        quantity++;
+
+    }
+
+
+    /* Decrease */
+    else if (change < 0) {
+
+        quantity--;
+
+        if (quantity < 0) {
+            quantity = 0;
+        }
+
+    }
+
+
+    updateQuantity(
+        productId,
+        quantity
+    );
+
+
+    /*
+     * Update modal after server response
+     */
+    setTimeout(() => {
+
+        updateModalCart(
+            productId,
+            quantity,
+            stock
+        );
+
+    }, 300);
+
+}
+
+
+function changeModalQuantity(
+    productId,
+    change
+) {
+
+    const qtyElement =
+        document.getElementById(
+            "modalQty"
+        );
+
+    let quantity =
+        parseInt(
+            qtyElement.innerText
+        ) || 0;
+
+
+    quantity += change;
+
+
+    if (quantity < 0) {
+
+        quantity = 0;
+
+    }
+
+
+    updateQuantity(
+        productId,
+        quantity
+    );
+
+
+    updateModalCart(
+        productId,
+        quantity
+    );
+
+}
+
+
+
+/* =====================================================
+   CART COUNT
+===================================================== */
+
+function updateCartCount(
+    count
+) {
+    if (window.syncCartCount) {
+        window.syncCartCount(count);
+    }
+
+}
+
+
+document.addEventListener(
+    "DOMContentLoaded",
+    function () {
+
+        const hasSavedAddress =
+            {% if address %}
+                true
+            {% else %}
+                false
+            {% endif %};
+
+
+        /*
+         * If saved delivery address exists,
+         * don't ask for GPS.
+         */
+        if (hasSavedAddress) {
+            return;
+        }
+
+
+        /*
+         * No saved address.
+         * Ask browser for current location.
+         */
+        if (!navigator.geolocation) {
+
+            alert(
+                "Your browser does not support location."
+            );
+
+            return;
+        }
+
+
+        navigator.geolocation.getCurrentPosition(
+
+            function (position) {
+
+                const lat =
+                    position.coords.latitude;
+
+                const lng =
+                    position.coords.longitude;
+
+
+                /*
+                 * Keep existing search parameter
+                 */
+                const url =
+                    new URL(
+                        window.location.href
+                    );
+
+
+                url.searchParams.set(
+                    "current_lat",
+                    lat
+                );
+
+                url.searchParams.set(
+                    "current_lng",
+                    lng
+                );
+
+
+                /*
+                 * Prevent repeated reload
+                 */
+                if (
+                    !url.searchParams.has(
+                        "location_loaded"
+                    )
+                ) {
+
+                    url.searchParams.set(
+                        "location_loaded",
+                        "1"
+                    );
+
+                    window.location.href =
+                        url.toString();
+                }
+
+            },
+
+            function (error) {
+
+                console.log(
+                    "Location error:",
+                    error
+                );
+
+                alert(
+                    "Please allow location access to find shops near you."
+                );
+
+            },
+
+            {
+                enableHighAccuracy: true,
+                timeout: 10000,
+                maximumAge: 300000
+            }
+
+        );
+
+    }
+
+);
+
+</script>
+
+{% endblock %}

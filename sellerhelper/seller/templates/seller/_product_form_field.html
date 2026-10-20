@@ -1,0 +1,35 @@
+<div class="col-12 {% if field.name == 'product_description' %}col-md-12{% elif field.name == 'product_name' or field.name == 'product_title' or field.name == 'product_category' %}col-md-6{% else %}col-md-4{% endif %}">
+    {% if field.name == "is_active" or field.name == "expiry_management_enabled" or field.name == "is_approximate_weight" %}
+        <div class="form-check form-switch mt-4">
+            {{ field }}
+            <label class="form-check-label fw-semibold" for="{{ field.id_for_label }}">
+                {% if field.name == "expiry_management_enabled" %}
+                    Enable expiry markdown and remove stock after expiry
+                {% elif field.name == "is_approximate_weight" %}
+                    Approximate weight billing (packers enter final weight)
+                {% else %}
+                    Product Active
+                {% endif %}
+            </label>
+        </div>
+    {% else %}
+        <label class="form-label fw-semibold" for="{{ field.id_for_label }}">
+            {{ field.label }}
+            {% if field.field.required %}<span class="text-danger">*</span>{% endif %}
+        </label>
+        {{ field }}
+    {% endif %}
+
+    {% for error in field.errors %}
+        <div class="text-danger small mt-1">{{ error }}</div>
+    {% endfor %}
+    {% if field.name == "product_name" %}
+        <div id="product-name-catalog-status" class="form-text" aria-live="polite">Choose a category first. Only products from that category will be available.</div>
+    {% elif field.name == "hsn_code" or field.name == "gst_rate" %}
+        <div class="form-text">Editable. Leave blank to use the admin catalog default when available.</div>
+    {% elif field.name == "image_url" %}
+        <div class="form-text">Catalog image URL is filled automatically when available; you can replace it.</div>
+    {% elif field.name == "unit_value" %}
+        <div class="form-text">{{ field.help_text }} Enter unit text such as pcs, kg, gm, gram, or ml.</div>
+    {% endif %}
+</div>

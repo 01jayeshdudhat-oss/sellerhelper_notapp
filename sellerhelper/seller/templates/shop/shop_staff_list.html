@@ -1,0 +1,533 @@
+{% extends "base.html" %}
+
+{% block title %}
+{% if single_shop %}
+    {{ shop.name }} - Staff Management
+{% else %}
+    Staff Management
+{% endif %}
+{% endblock %}
+
+
+{% block content %}
+
+<div class="container-fluid py-4">
+
+    <!-- =====================================================
+         HEADER
+    ====================================================== -->
+
+    <div class="d-flex justify-content-between align-items-center mb-4">
+
+        <div>
+
+            {% if single_shop %}
+
+                <a
+                    href="{% url 'shop_detail' shop.id %}"
+                    class="btn btn-sm btn-outline-secondary mb-2"
+                >
+                    ← Back to Shop
+                </a>
+
+                <h2 class="fw-bold mb-1">
+                    👥 {{ shop.name }} Staff
+                </h2>
+
+                <p class="text-muted mb-0">
+                    Manage staff, packers and permissions.
+                </p>
+
+            {% else %}
+
+                <h2 class="fw-bold mb-1">
+                    👥 Staff Management
+                </h2>
+
+                <p class="text-muted mb-0">
+                    Select a shop to manage its staff and permissions.
+                </p>
+
+            {% endif %}
+
+        </div>
+
+    </div>
+
+
+    <!-- =====================================================
+         SINGLE SHOP STAFF
+    ====================================================== -->
+
+    {% if single_shop %}
+
+        <div class="d-flex justify-content-between align-items-center mb-3">
+
+            <div>
+
+                <span class="badge bg-primary">
+                    {{ staff_members|length }} Staff
+                </span>
+
+            </div>
+
+            <a
+                href="{% url 'shop_staff_create_shop' shop.id %}"
+                class="btn btn-primary"
+            >
+                <i class="bi bi-person-plus"></i>
+                Add Staff
+            </a>
+
+        </div>
+
+
+        <div class="row g-3">
+
+            {% for staff in staff_members %}
+
+                <div class="col-md-6 col-xl-4">
+
+                    <div class="card shadow-sm h-100">
+
+                        <div class="card-body">
+
+                            <!-- Staff header -->
+
+                            <div class="d-flex justify-content-between">
+
+                                <div>
+
+                                    <h5 class="mb-1">
+
+                                        {% if staff.user.get_full_name %}
+
+                                            {{ staff.user.get_full_name }}
+
+                                        {% else %}
+
+                                            {{ staff.user.username }}
+
+                                        {% endif %}
+
+                                    </h5>
+
+                                    <small class="text-muted">
+
+                                        @{{ staff.user.username }}
+
+                                    </small>
+
+                                </div>
+
+
+                                {% if staff.is_active %}
+
+                                    <span class="badge bg-success align-self-start">
+                                        ACTIVE
+                                    </span>
+
+                                {% else %}
+
+                                    <span class="badge bg-danger align-self-start">
+                                        INACTIVE
+                                    </span>
+
+                                {% endif %}
+
+                            </div>
+
+
+                            <hr>
+
+
+                            <!-- Role -->
+
+                            <div class="mb-3">
+
+                                <strong>
+                                    Role:
+                                </strong>
+
+                                <span class="badge bg-secondary">
+
+                                    {{ staff.role|default:"Staff" }}
+
+                                </span>
+
+                            </div>
+
+
+                            <!-- Permissions -->
+
+                            <div>
+
+                                <strong>
+                                    Permissions
+                                </strong>
+
+                                <div class="mt-2 d-flex flex-wrap gap-1">
+
+
+                                    {% if staff.can_confirm_orders %}
+
+                                        <span class="badge bg-success">
+                                            Confirm Orders
+                                        </span>
+
+                                    {% endif %}
+
+
+                                    {% if staff.can_pack_orders %}
+
+                                        <span class="badge bg-success">
+                                            Pack Orders
+                                        </span>
+
+                                    {% endif %}
+
+
+                                    {% if staff.can_cancel_orders %}
+
+                                        <span class="badge bg-warning text-dark">
+                                            Cancel Orders
+                                        </span>
+
+                                    {% endif %}
+
+
+                                    {% if staff.can_manage_stock %}
+
+                                        <span class="badge bg-info text-dark">
+                                            Manage Stock
+                                        </span>
+
+                                    {% endif %}
+
+
+                                    {% if staff.can_assign_staff %}
+
+                                        <span class="badge bg-primary">
+                                            Manage Staff
+                                        </span>
+
+                                    {% endif %}
+
+
+                                </div>
+
+                            </div>
+
+
+                            <!-- Actions -->
+                            <!-- Actions -->
+
+                            <div class="mt-4 d-grid gap-2">
+
+                                <!-- EDIT STAFF -->
+
+                                <a
+                                    href="{% url 'shop_staff_edit' shop.id staff.id %}"
+                                    class="btn btn-primary"
+                                >
+                                    <i class="bi bi-pencil-square"></i>
+                                    Edit Staff & Permissions
+                                </a>
+
+
+                                <!-- ACTIVE / INACTIVE -->
+
+                                <form
+                                    method="POST"
+                                    action="{% url 'shop_staff_toggle' shop.id staff.id %}"
+                                >
+
+                                    {% csrf_token %}
+
+                                    {% if staff.is_active %}
+
+                                        <button
+                                            type="submit"
+                                            class="btn btn-outline-danger w-100"
+                                            onclick="return confirm('Disable this staff member?');"
+                                        >
+
+                                            <i class="bi bi-person-x"></i>
+
+                                            Disable Staff
+
+                                        </button>
+
+                                    {% else %}
+
+                                        <button
+                                            type="submit"
+                                            class="btn btn-outline-success w-100"
+                                        >
+
+                                            <i class="bi bi-person-check"></i>
+
+                                            Activate Staff
+
+                                        </button>
+
+                                    {% endif %}
+
+                                </form>
+
+                            </div>
+                            <!-- <div class="mt-4">
+
+                                <form
+                                    method="POST"
+                                    action="{% url 'shop_staff_toggle' shop.id staff.id %}"
+                                >
+
+                                    {% csrf_token %}
+
+
+                                    {% if staff.is_active %}
+
+                                        <button
+                                            type="submit"
+                                            class="btn btn-outline-danger w-100"
+                                            onclick="return confirm('Disable this staff member?');"
+                                        >
+
+                                            <i class="bi bi-person-x"></i>
+
+                                            Disable Staff
+
+                                        </button>
+
+                                    {% else %}
+
+                                        <button
+                                            type="submit"
+                                            class="btn btn-outline-success w-100"
+                                        >
+
+                                            <i class="bi bi-person-check"></i>
+
+                                            Activate Staff
+
+                                        </button>
+
+                                    {% endif %}
+
+                                </form>
+
+                            </div> -->
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+
+            {% empty %}
+
+                <div class="col-12">
+
+                    <div class="card shadow-sm">
+
+                        <div class="card-body text-center py-5">
+
+                            <div style="font-size:60px;">
+                                👥
+                            </div>
+
+                            <h4 class="mt-3">
+                                No staff members
+                            </h4>
+
+                            <p class="text-muted">
+
+                                Add your first staff member or packer.
+
+                            </p>
+
+                            <a
+                                href="{% url 'shop_staff_create_shop' shop.id %}"
+                                class="btn btn-primary"
+                            >
+
+                                <i class="bi bi-person-plus"></i>
+
+                                Add Staff
+
+                            </a>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            {% endfor %}
+
+        </div>
+
+
+    <!-- =====================================================
+         ALL SHOPS
+    ====================================================== -->
+
+    {% else %}
+
+
+        <div class="row g-3">
+
+            {% for shop_item in shops %}
+
+                <div class="col-md-6 col-xl-4">
+
+                    <div class="card shadow-sm h-100">
+
+                        <div class="card-body">
+
+                            <div class="d-flex justify-content-between">
+
+                                <div>
+
+                                    <h5 class="fw-bold mb-1">
+
+                                        {{ shop_item.name }}
+
+                                    </h5>
+
+                                    {% if shop_item.alias_name %}
+
+                                        <small class="text-muted">
+
+                                            {{ shop_item.alias_name }}
+
+                                        </small>
+
+                                    {% endif %}
+
+                                </div>
+
+
+                                {% if shop_item.is_shop_open %}
+
+                                    <span class="badge bg-success">
+                                        OPEN
+                                    </span>
+
+                                {% else %}
+
+                                    <span class="badge bg-danger">
+                                        CLOSED
+                                    </span>
+
+                                {% endif %}
+
+                            </div>
+
+
+                            <hr>
+
+
+                            <div class="mb-2">
+
+                                <i class="bi bi-telephone"></i>
+
+                                {{ shop_item.contact_no|default:"No contact" }}
+
+                            </div>
+
+
+                            <div class="mb-3">
+
+                                <i class="bi bi-people"></i>
+
+                                {{ shop_item.staff_members.count }}
+
+                                Staff Members
+
+                            </div>
+
+
+                            <div class="d-grid gap-2">
+
+                                <a
+                                    href="{% url 'shop_staff_list_shop' shop_item.id %}"
+                                    class="btn btn-primary"
+                                >
+
+                                    <i class="bi bi-people"></i>
+
+                                    Manage Staff
+
+                                </a>
+
+
+                                <a
+                                    href="{% url 'shop_detail' shop_item.id %}"
+                                    class="btn btn-outline-secondary"
+                                >
+
+                                    <i class="bi bi-shop"></i>
+
+                                    View Shop
+
+                                </a>
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+
+            {% empty %}
+
+                <div class="col-12">
+
+                    <div class="card shadow-sm">
+
+                        <div class="card-body text-center py-5">
+
+                            <div style="font-size:60px;">
+                                🏪
+                            </div>
+
+                            <h4 class="mt-3">
+                                No Shops Found
+                            </h4>
+
+                            <p class="text-muted">
+                                Create a shop before adding staff.
+                            </p>
+
+                            <a
+                                href="{% url 'shop_add' %}"
+                                class="btn btn-primary"
+                            >
+
+                                <i class="bi bi-plus-circle"></i>
+
+                                Add Shop
+
+                            </a>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            {% endfor %}
+
+        </div>
+
+
+    {% endif %}
+
+</div>
+
+{% endblock %}

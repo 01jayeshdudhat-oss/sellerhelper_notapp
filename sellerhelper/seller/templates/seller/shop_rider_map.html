@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+
+{% block title %}Rider locations · {{ shop.name }}{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+        <div>
+            <h1 class="h2 fw-bold mb-1">Rider locations</h1>
+            <p class="text-muted mb-0">{{ shop.name }} · Active deliveries only</p>
+        </div>
+        <a href="{% url 'shop_detail' shop.pk %}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left me-1"></i>Back to shop
+        </a>
+    </div>
+
+    <div class="card border-0 shadow-sm">
+        <div class="card-body">
+            <div id="shopRiderMap" style="height: min(68vh, 680px); min-height: 360px; border-radius: 12px;"
+                 role="region" aria-label="Map of active shop riders"></div>
+            <div class="d-flex flex-wrap justify-content-between gap-2 small text-muted mt-3">
+                <span id="riderMapSummary" aria-live="polite"></span>
+                <span id="riderMapUpdated"></span>
+            </div>
+            <div id="riderMapStatus" class="small text-muted" role="status" aria-live="polite"></div>
+        </div>
+    </div>
+</div>
+
+{{ riders|json_script:"shop-rider-data" }}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+    (() => {
+        const mapElement = document.getElementById("shopRiderMap");
+        if (!mapElement) return;
+        if (!window.L) {
+            document.getElementById("riderMapStatus").textContent =
+                "The map library could not load. Check network access and reload this page.";
+            return;
+        }
+
+        const map = L.map(mapElement).setView([20.5937, 78.9629], 5);
+        const normalLayer = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+            maxZoom: 20,
+            attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+            subdomains: "abcd"
+        });
+        const satelliteLayer = L.tileLayer(
+            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+            {maxZoom: 19, attribution: "Tiles &copy; Esri"}
+        );
+        satelliteLayer.addTo(map);
+        L.control.layers({"Normal": normalLayer, "Satellite": satelliteLayer}).addTo(map);
+        const markerLayer = L.layerGroup().addTo(map);
+        const summary = document.getElementById("riderMapSummary");
+        const updated = document.getElementById("riderMapUpdated");
+        const mapStatus = document.getElementById("riderMapStatus");
+        let currentLocationMarker = null;
+        let hasInitialBounds = false;
+        let userCenteredMap = false;
+        [normalLayer, satelliteLayer].forEach((layer) => {
+            layer.on("tileerror", () => {
+                mapStatus.textContent = "Map tiles could not be loaded. Try the other layer or check network access.";
+            });
+            layer.on("tileload", () => {
+                mapStatus.textContent = "";
+            });
+        });
+        const fitRiderLocations = () => {
+            if (!markerLayer.getLayers().length) {
+                mapStatus.textContent = "No rider locations are available to fit on the map.";
+                return false;
+            }
+            map.fitBounds(markerLayer.getBounds().pad(0.2), {maxZoom: 15});
+            hasInitialBounds = true;
+            userCenteredMap = false;
+            mapStatus.textContent = "Map fitted to all active rider locations.";
+            return true;
+        };
+
+        const renderRiders = (riders, fitAfterLoad = false) => {
+            markerLayer.clearLayers();
+            riders.forEach((rider) => {
+                const location = rider.location;
+                const marker = L.marker([location.lat, location.lng]).addTo(markerLayer);
+                const popup = document.createElement("div");
+                const name = document.createElement("strong");
+                name.textContent = rider.rider_name;
+                const order = document.createElement("div");
+                order.textContent = `Order ${rider.order_id}`;
+                popup.append(name, order);
+                marker.bindPopup(popup);
+            });
+            if (riders.length && !userCenteredMap && (fitAfterLoad || !hasInitialBounds)) {
+                fitRiderLocations();
+                hasInitialBounds = true;
+            }
+            summary.textContent = riders.length
+                ? `${riders.length} rider${riders.length === 1 ? "" : "s"} currently sharing a location`
+                : "No live locations are currently available for active deliveries.";
+            updated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+        };
+        const fitControl = L.control({position: "topright"});
+        fitControl.onAdd = () => {
+            const button = L.DomUtil.create("button", "btn btn-sm btn-light border");
+            button.type = "button";
+            button.textContent = "Fit all rider locations";
+            button.setAttribute("aria-label", "Reset map to show all active rider locations");
+            L.DomEvent.disableClickPropagation(button);
+            L.DomEvent.on(button, "click", fitRiderLocations);
+            return button;
+        };
+        fitControl.addTo(map);
+
+        const locateControl = L.control({position: "topright"});
+        locateControl.onAdd = () => {
+            const button = L.DomUtil.create("button", "btn btn-sm btn-light border");
+            button.type = "button";
+            button.textContent = "Current location";
+            button.setAttribute("aria-label", "Center map on my current location");
+            L.DomEvent.disableClickPropagation(button);
+            L.DomEvent.on(button, "click", () => {
+                if (!navigator.geolocation) {
+                    mapStatus.textContent = "Location is not supported by this browser.";
+                    return;
+                }
+                mapStatus.textContent = "Getting your current location…";
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        const point = [position.coords.latitude, position.coords.longitude];
+                        if (currentLocationMarker) currentLocationMarker.setLatLng(point);
+                        else currentLocationMarker = L.marker(point).addTo(map);
+                        currentLocationMarker.bindPopup("Your current location").openPopup();
+                        userCenteredMap = true;
+                        hasInitialBounds = true;
+                        map.setView(point, 15);
+                        mapStatus.textContent = "Map centered on your current location.";
+                    },
+                    (error) => {
+                        mapStatus.textContent = error.code === error.PERMISSION_DENIED
+                            ? "Location access is blocked. Allow browser location permission and try again."
+                            : "Could not get your location. Check the device location service and try again.";
+                    },
+                    {enableHighAccuracy: true, timeout: 15000, maximumAge: 0}
+                );
+            });
+            return button;
+        };
+        locateControl.addTo(map);
+
+        const refresh = async (fitAfterLoad = false) => {
+            try {
+                const response = await fetch("{% url 'shop_rider_map' shop.pk %}?format=json", {
+                    headers: {"Accept": "application/json"}
+                });
+                if (!response.ok) {
+                    if (response.status === 403) {
+                        throw new Error("Access to rider locations is limited to this shop's owner and managers.");
+                    }
+                    throw new Error(`Rider map request failed (${response.status}).`);
+                }
+                const data = await response.json();
+                renderRiders(data.riders, fitAfterLoad);
+                mapStatus.textContent = "";
+            } catch (error) {
+                console.error("Could not refresh shop rider locations.", error);
+                mapStatus.textContent = error.message || "Rider locations could not be refreshed.";
+                if (fitAfterLoad && !userCenteredMap) fitRiderLocations();
+            }
+        };
+        document.addEventListener("sellerhelper:live-event", (event) => {
+            const data = event.detail || {};
+            if (
+                data.type !== "rider.location.updated"
+                || Number(data.shop_id) !== Number("{{ shop.pk }}")
+                || !data.rider
+            ) {
+                return;
+            }
+            const currentRiders = JSON.parse(
+                document.getElementById("shop-rider-data").textContent
+            );
+            const nextRiders = currentRiders.filter(
+                (rider) => rider.rider_id !== data.rider.rider_id
+            );
+            nextRiders.push(data.rider);
+            document.getElementById("shop-rider-data").textContent =
+                JSON.stringify(nextRiders);
+            renderRiders(nextRiders);
+        });
+        document.addEventListener("sellerhelper:live-fallback", refresh);
+
+        renderRiders(JSON.parse(document.getElementById("shop-rider-data").textContent));
+        void refresh(true);
+        setTimeout(() => map.invalidateSize(), 0);
+    })();
+</script>
+{% endblock %}

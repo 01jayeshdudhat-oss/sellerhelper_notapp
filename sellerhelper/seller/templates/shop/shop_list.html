@@ -1,0 +1,294 @@
+{% extends "base.html" %}
+
+{% block title %}
+Shops
+{% endblock %}
+
+
+{% block content %}
+
+<div class="container py-4">
+
+    <div class="d-flex justify-content-between mb-3">
+
+        <h2>
+            Shops
+        </h2>
+
+        <a
+            href="{% url 'shop_add' %}"
+            class="btn btn-primary"
+        >
+            + Add Shop
+        </a>
+
+    </div>
+
+
+    <div class="table-responsive">
+
+        <table class="table table-bordered table-hover">
+
+            <thead>
+
+                <tr>
+
+                    <th>ID</th>
+
+                    <th>Name</th>
+
+                    <th>Alias</th>
+
+                    <th>Location</th>
+
+                    <th>Delivery Pincodes</th>
+
+                    <th>Contact</th>
+
+                    <th>Status</th>
+
+                    <th>Open</th>
+
+                    <th>Close</th>
+
+                    <th>Catalog &amp; advertising</th>
+
+                    <th>Action</th>
+
+                </tr>
+
+            </thead>
+
+
+            <tbody>
+
+                {% for shop in shops %}
+
+                <tr>
+
+                    <td>
+                        {{ shop.id }}
+                    </td>
+
+                    <td>
+
+                        <a
+                            href="{% url 'shop_detail' shop.id %}"
+                            class="text-decoration-none"
+                        >
+
+                            <div class="fw-bold text-primary">
+                                🏪 {{ shop.name }}
+                            </div>
+
+                            {% if shop.alias_name %}
+                                <small class="text-muted">
+                                    {{ shop.alias_name }}
+                                </small>
+                            {% endif %}
+
+                        </a>
+
+                    </td>
+                    
+
+                    <td>
+                        {{ shop.alias_name }}
+                    </td>
+
+
+                    <td>
+
+                        {% if shop.location %}
+
+                            {{ shop.location.lat|floatformat:6 }},
+                            {{ shop.location.lng|floatformat:6 }}
+
+                        {% else %}
+
+                            -
+
+                        {% endif %}
+
+                    </td>
+
+
+                    <td>
+
+                        {% for pin in shop.delivery_pincode %}
+
+                            <span class="badge bg-primary">
+                                {{ pin }}
+                            </span>
+
+                        {% empty %}
+
+                            -
+
+                        {% endfor %}
+
+                    </td>
+
+
+                    <td>
+                        {{ shop.contact_no }}
+                    </td>
+
+
+                    <td>
+
+                        {% if shop.is_shop_open %}
+
+                            <span class="badge bg-success">
+                                OPEN
+                            </span>
+
+                        {% else %}
+
+                            <span class="badge bg-danger">
+                                CLOSED
+                            </span>
+
+                        {% endif %}
+
+                    </td>
+
+
+                    <td>
+                        {{ shop.shop_open_time|default:"-" }}
+                    </td>
+
+
+                    <td>
+                        {{ shop.shop_close_time|default:"-" }}
+                    </td>
+
+                    <td style="min-width: 230px;">
+                        <a href="{{ shop.storefront_public_url }}" target="_blank" rel="noopener"
+                           class="fw-semibold text-break">{{ shop.storefront_public_url }}</a>
+                        <div class="my-1">
+                            {% if shop.storefront_is_active %}
+                                <span class="badge text-bg-success">Active</span>
+                            {% else %}
+                                <span class="badge text-bg-danger">Subscription inactive</span>
+                                <div class="small text-muted">Contact the administrator after payment to activate.</div>
+                            {% endif %}
+                            <span class="small text-muted">₹{{ storefront_monthly_price|floatformat:2 }}/month</span>
+                        </div>
+                        <details>
+                            <summary class="small text-primary" role="button">Advertisement QR code</summary>
+                            <div class="bg-white border rounded p-2 mt-2 text-center">
+                                <img src="{{ shop.storefront_qr_data_uri }}" alt="QR code for {{ shop.name }} online catalog"
+                                     width="150" height="150" class="img-fluid">
+                                <div class="small text-muted">Scan to open the shop catalog</div>
+                                <button type="button" class="btn btn-sm btn-outline-primary mt-2"
+                                        data-share-storefront="{{ shop.storefront_public_url }}">
+                                    Share shop link
+                                </button>
+                            </div>
+                        </details>
+                    </td>
+
+                    <td>
+
+                        <div class="d-flex gap-1">
+
+                            <a
+                                href="{% url 'shop_edit' shop.id %}"
+                                class="btn btn-sm btn-warning"
+                            >
+                                ✏️ Edit
+                            </a>
+
+
+                            {% if request.user.is_superuser %}
+
+                            <form
+                                method="POST"
+                                action="{% url 'shop_delete' shop.id %}"
+                                style="display:inline;"
+                                onsubmit="return confirmDelete('{{ shop.name|escapejs }}');"
+                            >
+
+                                {% csrf_token %}
+
+                                <button
+                                    type="submit"
+                                    class="btn btn-sm btn-danger"
+                                >
+                                    🗑️ Delete
+                                </button>
+
+                            </form>
+
+                            {% endif %}
+
+                        </div>
+
+                    </td>
+
+                </tr>
+
+                {% empty %}
+
+                <tr>
+
+                    <td
+                        colspan="11"
+                        class="text-center"
+                    >
+                        No shops found.
+                    </td>
+
+                </tr>
+
+                {% endfor %}
+
+            </tbody>
+
+        </table>
+
+    </div>
+
+</div>
+<script>
+
+function confirmDelete(shopName) {
+
+    return confirm(
+        "⚠️ DELETE SHOP\n\n" +
+        "Are you sure you want to delete:\n\n" +
+        shopName +
+        "\n\nThis action cannot be undone."
+    );
+
+}
+
+</script>
+
+{% endblock %}
+
+{% block extra_js %}
+{{ block.super }}
+<script>
+document.querySelectorAll("[data-share-storefront]").forEach((button) => {
+    button.addEventListener("click", async () => {
+        const url = button.dataset.shareStorefront;
+        try {
+            if (navigator.share) {
+                await navigator.share({ title: "Shop catalog", url });
+            } else if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(url);
+                button.textContent = "Link copied";
+            } else {
+                window.prompt("Copy this shop link:", url);
+            }
+        } catch (error) {
+            if (error && error.name !== "AbortError") {
+                console.error("Could not share the shop storefront link.", error);
+            }
+        }
+    });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,171 @@
+@media (max-width: 991.98px) {
+    html {
+        -webkit-text-size-adjust: 100%;
+        text-size-adjust: 100%;
+    }
+
+    body {
+        min-width: 320px;
+        padding-bottom: env(safe-area-inset-bottom);
+    }
+
+    .main-container {
+        min-height: calc(100vh - 72px);
+        padding-top: .5rem;
+        padding-bottom: 72px;
+    }
+
+    .main-container > .container-fluid {
+        padding-right: 8px !important;
+        padding-left: 8px !important;
+    }
+
+    .main-navbar > .container-fluid {
+        padding-right: 10px !important;
+        padding-left: 10px !important;
+    }
+
+    .navbar-collapse {
+        max-height: calc(100dvh - 58px);
+        overflow-x: hidden;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .navbar-collapse .navbar-nav {
+        padding-bottom: 8px;
+    }
+
+    .navbar-collapse .dropdown-menu {
+        position: static;
+        float: none;
+        width: 100%;
+        margin-top: 2px;
+        box-shadow: none;
+        border-color: #edf0f2;
+    }
+
+    .navbar-collapse .user-menu {
+        min-height: 44px;
+        justify-content: flex-start;
+    }
+
+    .navbar-toggler {
+        min-width: 42px;
+        min-height: 40px;
+        padding: 6px 9px;
+    }
+
+    .mobile-bottom-nav a .mobile-nav-label {
+        display: block;
+        margin-top: 1px;
+        font-size: 11px;
+        line-height: 1.1;
+    }
+
+    .content-box {
+        padding: .625rem;
+    }
+
+    .marketplace-layout-controls input {
+        min-height: 44px;
+    }
+
+    .navbar-brand {
+        font-size: 1rem;
+    }
+
+    .rider-dashboard-tabs-wrap {
+        min-height: 58px;
+    }
+
+    .rider-dashboard-tabs-wrap .rider-dashboard-tabs {
+        position: fixed !important;
+        top: var(--rider-dashboard-tabs-top, 56px) !important;
+        right: 0;
+        left: 0;
+        z-index: 1029;
+        display: grid !important;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-rows: minmax(42px, auto);
+        grid-auto-rows: minmax(42px, auto);
+        grid-auto-flow: row;
+        flex-wrap: nowrap !important;
+        gap: 4px !important;
+        margin: 0 !important;
+        padding: 5px 8px;
+        background: #f5f7fb;
+        border-bottom: 1px solid #e5eaf0;
+        box-shadow: 0 6px 14px rgba(31, 41, 55, .12);
+    }
+
+    .rider-dashboard-tabs .nav-link {
+        display: flex;
+        min-width: 0;
+        min-height: 40px;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        padding: 5px 3px !important;
+        margin: 0;
+        border-radius: 10px;
+        font-size: .68rem;
+        line-height: 1.15;
+        text-align: center;
+        white-space: nowrap;
+    }
+
+    .rider-dashboard-tabs .badge {
+        padding: .25em .45em;
+        font-size: .6rem;
+    }
+
+    .card-body h3 {
+        font-size: 1.2rem;
+    }
+
+    .card {
+        padding: 0;
+    }
+
+    .mobile-cta {
+        width: 100%;
+    }
+
+    .table-responsive {
+        -webkit-overflow-scrolling: touch;
+    }
+
+    input,
+    select,
+    textarea,
+    button {
+        scroll-margin-block: 1rem;
+    }
+}
+
+@media (max-width: 575.98px) {
+    .marketplace-layout-controls > [class*="col-"] {
+        width: 100%;
+    }
+
+    .marketplace-layout-controls button {
+        width: 100%;
+        min-height: 44px;
+    }
+
+    .pwa-install-prompt {
+        right: max(.5rem, env(safe-area-inset-right));
+        bottom: max(.5rem, env(safe-area-inset-bottom));
+        width: calc(100vw - 1rem);
+    }
+
+    .pwa-install-actions {
+        flex-wrap: wrap;
+    }
+
+    .pwa-install-actions .btn {
+        flex: 1 1 auto;
+    }
+}

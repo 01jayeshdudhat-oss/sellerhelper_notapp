@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+
+{% block title %}
+Clients
+{% endblock %}
+
+{% block content %}
+
+<div class="container py-4">
+
+    <div class="d-flex justify-content-between align-items-center mb-3">
+
+        <h2>
+            Clients
+        </h2>
+
+        {% if request.user.is_superuser %}
+
+        <a
+            href="{% url 'client_add' %}"
+            class="btn btn-primary"
+        >
+            + Add Client
+        </a>
+
+        {% endif %}
+
+    </div>
+
+
+    <div class="table-responsive">
+
+        <table class="table table-bordered table-hover">
+
+            <thead>
+
+                <tr>
+
+                    <th>ID</th>
+
+                    <th>Name</th>
+
+                    <th>Username</th>
+
+                    <th>Contact</th>
+
+                    <th>Email</th>
+
+                    <th>Membership</th>
+
+                    <th>Membership Till</th>
+
+                    <th>Wallet</th>
+
+                    <th>Multi Shop Delivery</th>
+
+                    <th>Status</th>
+
+                    <th>Action</th>
+
+                </tr>
+
+            </thead>
+
+
+            <tbody>
+
+                {% for client in clients %}
+
+                <tr>
+
+                    <td>
+                        {{ client.id }}
+                    </td>
+
+
+                    <td>
+                        <strong>
+                            {{ client.name }}
+                        </strong>
+                    </td>
+
+
+                    <td>
+                        {{ client.user.username }}
+                    </td>
+
+
+                    <td>
+                        {{ client.contact_no }}
+                    </td>
+
+
+                    <td>
+                        {{ client.email }}
+                    </td>
+
+
+                    <td>
+
+                        {% if client.membership_active %}
+
+                            <span class="badge bg-success">
+                                ACTIVE
+                            </span>
+
+                        {% else %}
+
+                            <span class="badge bg-secondary">
+                                NO
+                            </span>
+
+                        {% endif %}
+
+                    </td>
+
+
+                    <td>
+                        {{ client.membership_till_date|default:"-" }}
+                    </td>
+
+
+                    <td>
+
+                        <strong>
+                            ₹{{ client.wallet_balance|floatformat:2 }}
+                        </strong>
+
+                    </td>
+
+
+                    <td>
+
+                        {% if client.is_single_delivery_for_multiple_shop %}
+
+                            <span class="badge bg-success">
+                                YES
+                            </span>
+
+                        {% else %}
+
+                            <span class="badge bg-secondary">
+                                NO
+                            </span>
+
+                        {% endif %}
+
+                    </td>
+
+
+                    <td>
+
+                        {% if client.is_active %}
+
+                            <span class="badge bg-success">
+                                ACTIVE
+                            </span>
+
+                        {% else %}
+
+                            <span class="badge bg-danger">
+                                INACTIVE
+                            </span>
+
+                        {% endif %}
+
+                    </td>
+
+
+                    <td>
+
+                        <div class="d-flex gap-1">
+
+                            <a
+                                href="{% url 'client_edit' client.id %}"
+                                class="btn btn-sm btn-warning"
+                            >
+                                ✏️ Edit
+                            </a>
+
+
+                            {% if request.user.is_superuser %}
+
+                            <form
+                                method="POST"
+                                action="{% url 'client_delete' client.id %}"
+                                onsubmit="return confirm(
+                                    'Delete client {{ client.name|escapejs }}?'
+                                );"
+                            >
+
+                                {% csrf_token %}
+
+                                <button
+                                    type="submit"
+                                    class="btn btn-sm btn-danger"
+                                >
+                                    🗑️ Delete
+                                </button>
+
+                            </form>
+
+                            {% endif %}
+
+                        </div>
+
+                    </td>
+
+                </tr>
+
+                {% empty %}
+
+                <tr>
+
+                    <td
+                        colspan="11"
+                        class="text-center"
+                    >
+                        No clients found.
+                    </td>
+
+                </tr>
+
+                {% endfor %}
+
+            </tbody>
+
+        </table>
+
+    </div>
+
+</div>
+
+{% endblock %}

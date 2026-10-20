@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block title %}{{ shop.name }} storefront preview{% endblock %}
+
+{% block content %}
+<div class="container-fluid marketplace-shell py-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+        <div>
+            <span class="badge text-bg-info mb-2">Storefront preview</span>
+            <h1 class="h2 fw-bold mb-1">{{ shop.name }}</h1>
+            <p class="text-muted mb-0">Review how products and availability are presented to customers.</p>
+        </div>
+        <a class="btn btn-outline-secondary" href="{% url 'shop_detail' shop.pk %}">
+            <i class="bi bi-arrow-left me-1"></i>Back to shop dashboard
+        </a>
+    </div>
+
+    <div class="row row-cols-1 row-cols-sm-2 row-cols-lg-3 row-cols-xl-4 g-3">
+        {% for item in product_assignments %}
+            <div class="col">
+                <article class="card border-0 shadow-sm h-100 overflow-hidden">
+                    {% if item.display_image_url %}
+                        <img src="{{ item.display_image_url }}" alt="{{ item.product.product_name }}"
+                             class="card-img-top bg-light"
+                             style="height: 190px; object-fit: contain; padding: 14px;"
+                             loading="lazy">
+                    {% else %}
+                        <div class="bg-light d-flex align-items-center justify-content-center text-muted"
+                             role="img" aria-label="No product image available"
+                             style="height: 190px; font-size: 3rem;">
+                            <i class="bi bi-box-seam" aria-hidden="true"></i>
+                        </div>
+                    {% endif %}
+                    <div class="card-body">
+                        <h2 class="h5 fw-bold">{{ item.product.product_title|default:item.product.product_name }}</h2>
+                        {% if item.product.product_description %}
+                            <p class="small text-muted">{{ item.product.product_description|truncatewords:24 }}</p>
+                        {% endif %}
+                        <div class="fs-5 fw-bold text-success">
+                            ₹{{ item.effective_price|floatformat:2 }}
+                            {% if item.product.unit %}<small class="fs-6 text-muted">/ {{ item.product.unit }}</small>{% endif %}
+                        </div>
+                        <div class="small mt-2 {% if item.storefront_stock > 0 %}text-success{% else %}text-danger{% endif %}">
+                            {% if item.storefront_stock > 0 %}{{ item.storefront_stock }} available{% else %}Out of stock{% endif %}
+                        </div>
+                        {% if not item.is_active or not item.product.is_active %}
+                            <span class="badge text-bg-secondary mt-2">Not published</span>
+                        {% endif %}
+                    </div>
+                    {% if can_edit_products %}
+                        <div class="card-footer bg-white border-0 pt-0">
+                            <a class="btn btn-outline-primary w-100"
+                               href="{% url 'storefront_product_edit' item.pk %}">
+                                <i class="bi bi-pencil me-1"></i>Edit product
+                            </a>
+                        </div>
+                    {% endif %}
+                </article>
+            </div>
+        {% empty %}
+            <div class="col-12">
+                <div class="card border-0 shadow-sm text-center py-5">
+                    <div class="card-body">
+                        <i class="bi bi-box-seam fs-1 text-muted"></i>
+                        <h2 class="h5 mt-3">No products assigned to this shop yet</h2>
+                    </div>
+                </div>
+            </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

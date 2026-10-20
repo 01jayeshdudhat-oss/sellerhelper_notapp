@@ -1,0 +1,407 @@
+{% extends 'base.html' %}
+
+{% block title %}Shop Form{% endblock %}
+
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+      <h2>{{ form_title }}</h2>
+      <p class="text-muted">Use this form to {{ form_action }} a shop.</p>
+    </div>
+    <a href="{% url 'shop_list' %}" class="btn btn-secondary">Back to Shops</a>
+  </div>
+
+  <div class="card p-4">
+    <form method="post">
+      {% csrf_token %}
+
+      <div class="mb-3">
+        {{ form.name.label_tag }}
+        {{ form.name }}
+        {% if form.name.help_text %}
+          <div class="form-text">{{ form.name.help_text }}</div>
+        {% endif %}
+        {% for error in form.name.errors %}
+          <div class="text-danger small">{{ error }}</div>
+        {% endfor %}
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label">Delivery zones</label>
+        <div class="border rounded p-3 mb-2 bg-light">
+          <div><strong>Latitude:</strong> <span id="lat">-</span></div>
+          <div><strong>Longitude:</strong> <span id="lng">-</span></div>
+          <div><strong>Pincode:</strong> <span id="pincode">-</span></div>
+          <div><strong>Status:</strong> <span id="status">Draw a polygon first</span></div>
+        </div>
+        <div id="delivery-map" style="height: 420px; width: 100%; min-height: 420px; border: 1px solid #dcdcdc; border-radius: 0.5rem;"></div>
+        <div class="d-flex flex-wrap gap-2 mt-2">
+          <button type="button" id="locate-shop" class="btn btn-sm btn-outline-primary">
+            <i class="bi bi-crosshair me-1"></i>Use current location
+          </button>
+          <span id="map-message" class="small text-muted align-self-center" aria-live="polite"></span>
+        </div>
+        <div class="form-text">Draw one or more polygons, then click the map to place the shop pin.</div>
+        {{ form.location }}
+        {{ form.delivery_area }}
+        {% for error in form.location.errors %}
+          <div class="text-danger small">{{ error }}</div>
+        {% endfor %}
+        {% for error in form.delivery_area.errors %}
+          <div class="text-danger small">{{ error }}</div>
+        {% endfor %}
+      </div>
+
+      <div class="mb-3">
+        {{ form.delivery_pincode.label_tag }}
+        {{ form.delivery_pincode }}
+        {% if form.delivery_pincode.help_text %}
+          <div class="form-text">{{ form.delivery_pincode.help_text }}</div>
+        {% endif %}
+        {% for error in form.delivery_pincode.errors %}
+          <div class="text-danger small">{{ error }}</div>
+        {% endfor %}
+      </div>
+
+      <div class="mb-3">
+        {{ form.contact_no.label_tag }}
+        {{ form.contact_no }}
+        {% for error in form.contact_no.errors %}
+          <div class="text-danger small">{{ error }}</div>
+        {% endfor %}
+      </div>
+
+      <div class="mb-3">
+        {{ form.shop_data.label_tag }}
+        {{ form.shop_data }}
+        {% for error in form.shop_data.errors %}
+          <div class="text-danger small">{{ error }}</div>
+        {% endfor %}
+      </div>
+
+      <div class="form-check mb-3 p-3 border rounded">
+        {{ form.share_riders_with_nearby_shops }}
+        <label class="form-check-label fw-semibold" for="{{ form.share_riders_with_nearby_shops.id_for_label }}">
+          {{ form.share_riders_with_nearby_shops.label }}
+        </label>
+        {% if form.share_riders_with_nearby_shops.help_text %}
+          <div class="form-text">{{ form.share_riders_with_nearby_shops.help_text }}</div>
+        {% endif %}
+        {% for error in form.share_riders_with_nearby_shops.errors %}
+          <div class="text-danger small">{{ error }}</div>
+        {% endfor %}
+      </div>
+
+      {% if requires_legal_acceptance %}
+        <div class="form-check mb-3 p-3 border rounded">
+          {{ form.accept_legal_documents }}
+          <label class="form-check-label fw-semibold" for="{{ form.accept_legal_documents.id_for_label }}">
+            I have read and accept all platform legal documents:
+          </label>
+          <div class="form-text">
+            <a href="{% url 'terms' %}" target="_blank" rel="noopener">Terms and Conditions</a> ·
+            <a href="{% url 'privacy_policy' %}" target="_blank" rel="noopener">Privacy Policy</a> ·
+            <a href="{% url 'disclaimer' %}" target="_blank" rel="noopener">Disclaimer</a> ·
+            <a href="{% url 'refund_policy' %}" target="_blank" rel="noopener">Cancellation and Refund Policy</a> ·
+            <a href="{% url 'delivery_policy' %}" target="_blank" rel="noopener">Delivery Policy</a>
+          </div>
+          {% for error in form.accept_legal_documents.errors %}
+            <div class="text-danger small">{{ error }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+
+      <button type="submit" class="btn btn-primary">Save Shop</button>
+    </form>
+  </div>
+
+{% endblock %}
+
+{% block extra_head %}
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+{% endblock %}
+
+{% block extra_scripts %}
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+  <script>
+    function initShopMaps() {
+      const container = document.getElementById('delivery-map');
+      if (!container) {
+        return;
+      }
+      if (!window.L) {
+        const status = document.getElementById('map-message');
+        if (status) status.textContent = 'The map library could not load. Check network access and reload this page.';
+        return;
+      }
+
+      if (window.shopMapInstance && window.shopMapInstance.invalidateSize) {
+        window.shopMapInstance.invalidateSize();
+        return;
+      }
+
+      if (container._leaflet_id) {
+        return;
+      }
+
+      const defaultCenter = [20.5937, 78.9629];
+      const map = L.map(container, { zoomControl: true }).setView(defaultCenter, 5);
+      window.shopMapInstance = map;
+
+      const normalLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+        maxZoom: 20,
+        attribution: '© OpenStreetMap contributors © CARTO',
+        subdomains: 'abcd',
+      });
+      const satelliteLayer = L.tileLayer(
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        {
+          maxZoom: 19,
+          attribution: 'Tiles © Esri',
+        }
+      );
+      satelliteLayer.addTo(map);
+      L.control.layers({
+        'Street map': normalLayer,
+        'Satellite': satelliteLayer,
+      }).addTo(map);
+
+      setTimeout(function () {
+        map.invalidateSize();
+        map.setView(map.getCenter(), map.getZoom());
+      }, 300);
+
+      const drawnItems = new L.FeatureGroup();
+      map.addLayer(drawnItems);
+
+      const drawControl = new L.Control.Draw({
+        draw: {
+          polygon: true,
+          polyline: false,
+          rectangle: false,
+          circle: false,
+          circlemarker: false,
+          marker: false,
+        },
+        edit: {
+          featureGroup: drawnItems,
+          edit: true,
+          remove: true,
+        },
+      });
+      map.addControl(drawControl);
+
+      const locationField = document.getElementById('id_location');
+      const deliveryAreaField = document.getElementById('id_delivery_area');
+      const latLabel = document.getElementById('lat');
+      const lngLabel = document.getElementById('lng');
+      const pincodeLabel = document.getElementById('pincode');
+      const statusLabel = document.getElementById('status');
+      const mapMessage = document.getElementById('map-message');
+      const locateButton = document.getElementById('locate-shop');
+      [normalLayer, satelliteLayer].forEach(function (layer) {
+        layer.on('tileerror', function () {
+          mapMessage.textContent = 'Map tiles could not be loaded. Try the other layer or check network access.';
+        });
+      });
+
+      let pinMarker = null;
+      let initialLocation = null;
+      let initialDeliveryArea = null;
+
+      try {
+        initialLocation = locationField.value ? JSON.parse(locationField.value) : null;
+      } catch (error) {
+        initialLocation = null;
+      }
+
+      try {
+        initialDeliveryArea = deliveryAreaField.value ? JSON.parse(deliveryAreaField.value) : null;
+      } catch (error) {
+        initialDeliveryArea = null;
+      }
+
+      function geojsonToLeafletCoordinates(value) {
+        if (!Array.isArray(value)) {
+          return value;
+        }
+
+        if (value.length >= 2 && typeof value[0] === 'number' && typeof value[1] === 'number') {
+          return [value[1], value[0]];
+        }
+
+        return value.map((item) => geojsonToLeafletCoordinates(item));
+      }
+
+      function buildDeliveryAreaValue() {
+        const polygons = drawnItems.getLayers()
+          .filter((layer) => layer instanceof L.Polygon)
+          .map((layer) => layer.toGeoJSON().geometry.coordinates);
+
+        if (!polygons.length) {
+          deliveryAreaField.value = '';
+          return;
+        }
+
+        const geometry = polygons.length === 1
+          ? { type: 'Polygon', coordinates: polygons[0] }
+          : { type: 'MultiPolygon', coordinates: polygons };
+
+        deliveryAreaField.value = JSON.stringify(geometry);
+      }
+
+      function addPolygonFromGeoJSON(geojson) {
+        if (!geojson || !geojson.type || !geojson.coordinates) return;
+
+        const normalizedCoordinates = geojsonToLeafletCoordinates(geojson.coordinates);
+
+        if (geojson.type === 'Polygon') {
+          return L.polygon(normalizedCoordinates[0]).addTo(drawnItems);
+        }
+
+        if (geojson.type === 'MultiPolygon') {
+          return normalizedCoordinates.map((polygonCoords) => {
+            return L.polygon(polygonCoords[0]).addTo(drawnItems);
+          });
+        }
+      }
+
+      function updatePinStatus(lat, lng) {
+        latLabel.textContent = lat.toFixed(6);
+        lngLabel.textContent = lng.toFixed(6);
+        fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`)
+          .then((response) => response.json())
+          .then((data) => {
+            pincodeLabel.textContent = data.address?.postcode || 'Not found';
+          })
+          .catch(() => {
+            pincodeLabel.textContent = 'Not found';
+          });
+      }
+
+      function checkPointInsidePolygon(lat, lng) {
+        const layers = drawnItems.getLayers().filter((layer) => layer instanceof L.Polygon);
+        if (!layers.length) {
+          statusLabel.textContent = 'Draw a delivery zone to check whether the shop is inside it.';
+          return;
+        }
+        const point = turf.point([lng, lat]);
+        const found = layers.some((layer) => turf.booleanPointInPolygon(point, layer.toGeoJSON()));
+
+        statusLabel.innerHTML = found
+          ? "<span class='text-success fw-bold'>✅ INSIDE DELIVERY AREA</span>"
+          : "<span class='text-danger fw-bold'>❌ OUTSIDE ALL DELIVERY AREAS</span>";
+      }
+
+      if (initialLocation && initialLocation.coordinates) {
+        const [lat, lng] = initialLocation.coordinates;
+        pinMarker = L.marker([lat, lng], { draggable: true }).addTo(map);
+        map.setView([lat, lng], 13);
+        updatePinStatus(lat, lng);
+        checkPointInsidePolygon(lat, lng);
+      }
+
+      if (initialDeliveryArea && initialDeliveryArea.type) {
+        addPolygonFromGeoJSON(initialDeliveryArea);
+        if (drawnItems.getLayers().length) {
+          map.fitBounds(drawnItems.getBounds());
+        }
+        buildDeliveryAreaValue();
+      }
+
+      map.on('click', function (event) {
+        if (!drawnItems.getLayers().length) {
+          alert('Please draw a polygon first.');
+          return;
+        }
+
+        if (pinMarker) {
+          map.removeLayer(pinMarker);
+        }
+
+        pinMarker = L.marker(event.latlng, { draggable: true }).addTo(map);
+        locationField.value = JSON.stringify({
+          type: 'Point',
+          coordinates: [event.latlng.lat, event.latlng.lng],
+        });
+
+        updatePinStatus(event.latlng.lat, event.latlng.lng);
+        checkPointInsidePolygon(event.latlng.lat, event.latlng.lng);
+      });
+
+      pinMarker?.on('dragend', function () {
+        const position = pinMarker.getLatLng();
+        locationField.value = JSON.stringify({
+          type: 'Point',
+          coordinates: [position.lat, position.lng],
+        });
+        updatePinStatus(position.lat, position.lng);
+        checkPointInsidePolygon(position.lat, position.lng);
+      });
+
+      map.on(L.Draw.Event.CREATED, function (event) {
+        drawnItems.addLayer(event.layer);
+        buildDeliveryAreaValue();
+      });
+
+      map.on(L.Draw.Event.EDITED, function () {
+        buildDeliveryAreaValue();
+      });
+
+      map.on(L.Draw.Event.DELETED, function () {
+        buildDeliveryAreaValue();
+      });
+
+      locateButton?.addEventListener('click', function () {
+        if (!navigator.geolocation) {
+          mapMessage.textContent = 'Location is not supported by this browser.';
+          return;
+        }
+        mapMessage.textContent = 'Getting your current location…';
+        navigator.geolocation.getCurrentPosition(function (position) {
+          const lat = position.coords.latitude;
+          const lng = position.coords.longitude;
+          if (pinMarker) map.removeLayer(pinMarker);
+          pinMarker = L.marker([lat, lng], { draggable: true }).addTo(map);
+          pinMarker.on('dragend', function () {
+            const point = pinMarker.getLatLng();
+            locationField.value = JSON.stringify({
+              type: 'Point',
+              coordinates: [point.lat, point.lng],
+            });
+            updatePinStatus(point.lat, point.lng);
+            checkPointInsidePolygon(point.lat, point.lng);
+          });
+          locationField.value = JSON.stringify({
+            type: 'Point',
+            coordinates: [lat, lng],
+          });
+          map.setView([lat, lng], 15);
+          updatePinStatus(lat, lng);
+          checkPointInsidePolygon(lat, lng);
+          mapMessage.textContent = 'Shop pin set to your current location.';
+        }, function (error) {
+          mapMessage.textContent = error.code === error.PERMISSION_DENIED
+            ? 'Location permission was denied. Allow location access and try again.'
+            : 'Could not get your location. You can place the pin on the map instead.';
+        }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
+      });
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+      setTimeout(initShopMaps, 200);
+    });
+
+    window.addEventListener('load', function () {
+      if (window.shopMapInstance && window.L && window.L.Map) {
+        setTimeout(function () {
+          window.shopMapInstance.invalidateSize();
+          window.shopMapInstance.setView(window.shopMapInstance.getCenter(), window.shopMapInstance.getZoom());
+        }, 250);
+      }
+    });
+  </script>
+{% endblock %}

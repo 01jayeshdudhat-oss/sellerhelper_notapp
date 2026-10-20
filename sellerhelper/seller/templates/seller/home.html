@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+
+{% block title %}{{ site_branding.site_name|default:'Seller Helper' }} | Local shopping, made simple{% endblock %}
+
+{% block extra_css %}
+<style>
+    .welcome-hero {
+        position: relative;
+        overflow: hidden;
+        border-radius: 28px;
+        padding: clamp(28px, 6vw, 64px);
+        color: #fff;
+        background:
+            radial-gradient(circle at 90% 15%, rgba(255,255,255,.2), transparent 24%),
+            linear-gradient(125deg, #103a52, #087e68 58%, #21a17c);
+        box-shadow: 0 22px 54px rgba(16,58,82,.18);
+    }
+    .welcome-hero h1 { max-width: 760px; font-weight: 850; letter-spacing: -.04em; }
+    .welcome-hero p { max-width: 620px; color: rgba(255,255,255,.84); }
+    .portal-card { height: 100%; border: 1px solid #e5ecef; border-radius: 22px; transition: .2s ease; }
+    .portal-card:hover { transform: translateY(-4px); box-shadow: 0 18px 38px rgba(16,42,56,.1); }
+    .portal-icon { width: 54px; height: 54px; display:grid; place-items:center; border-radius:17px; color:#087e68; background:#e8f6f1; font-size:25px; }
+    .portal-role { font-size: .78rem; letter-spacing: .04em; }
+</style>
+{% endblock %}
+
+{% block content %}
+<main class="container py-3">
+    {% if not user.is_authenticated %}
+        <section class="welcome-hero mb-4">
+            <span class="badge rounded-pill text-bg-light text-success mb-3">Local shops, all in one place</span>
+            <h1 class="display-5">Your neighbourhood, delivered.</h1>
+            <p class="lead mt-3">Discover trusted local shops, shop everyday essentials, and follow every order from checkout to your door.</p>
+            <div class="d-flex flex-wrap gap-2 mt-4">
+                <a class="btn btn-light btn-lg" href="{% url 'login' %}">Sign in</a>
+                <a class="btn btn-outline-light btn-lg" href="{% url 'signup' %}">Create customer account</a>
+            </div>
+        </section>
+        <section class="row g-3">
+            <div class="col-md-4"><article class="card portal-card p-4"><div class="portal-icon mb-3"><i class="bi bi-bag-heart"></i></div><h2 class="h5">Shop local</h2><p class="text-muted mb-0">Browse nearby stores and products in one marketplace.</p></article></div>
+            <div class="col-md-4"><article class="card portal-card p-4"><div class="portal-icon mb-3"><i class="bi bi-truck"></i></div><h2 class="h5">Track deliveries</h2><p class="text-muted mb-0">See order progress and delivery updates in real time.</p></article></div>
+            <div class="col-md-4"><article class="card portal-card p-4"><div class="portal-icon mb-3"><i class="bi bi-shop"></i></div><h2 class="h5">Grow your shop</h2><p class="text-muted mb-0">Bring your local business online and manage orders simply.</p></article></div>
+        </section>
+    {% elif is_staff_portal %}
+        <section class="welcome-hero mb-4">
+            <span class="badge rounded-pill text-bg-light text-success mb-3 portal-role">{{ active_staff.get_role_display }} · {{ active_staff.shop.name }}</span>
+            <h1 class="display-5">Welcome, {{ user.get_short_name|default:user.username }}.</h1>
+            <p class="lead mt-3">Your workspace is tailored to your assigned role. Choose a task below to continue.</p>
+            {% if active_staff.role == "RIDER" %}
+                <a class="btn btn-light btn-lg mt-2" href="{% url 'rider_dashboard' %}">Open rider deliveries <i class="bi bi-arrow-right ms-1"></i></a>
+            {% else %}
+                <a class="btn btn-light btn-lg mt-2" href="{% url 'staff_dashboard' %}">Open staff dashboard <i class="bi bi-arrow-right ms-1"></i></a>
+            {% endif %}
+        </section>
+        <div class="row g-3">
+            {% if active_staff.can_view_orders %}
+                <div class="col-md-6"><a class="card portal-card p-4 text-decoration-none text-dark" href="{% url 'shop_order_list' %}?shop={{ active_staff.shop_id }}"><div class="portal-icon mb-3"><i class="bi bi-receipt"></i></div><h2 class="h5">Shop orders</h2><p class="text-muted mb-0">Review orders for {{ active_staff.shop.name }}.</p></a></div>
+            {% endif %}
+            {% if active_staff.role == "RIDER" %}
+                <div class="col-md-6"><a class="card portal-card p-4 text-decoration-none text-dark" href="{% url 'rider_dashboard' %}"><div class="portal-icon mb-3"><i class="bi bi-bicycle"></i></div><h2 class="h5">Rider deliveries</h2><p class="text-muted mb-0">See available, active, and completed deliveries.</p></a></div>
+            {% endif %}
+            {% if active_staff.can_pack_orders %}
+                <div class="col-md-6"><a class="card portal-card p-4 text-decoration-none text-dark" href="{% url 'packer_dashboard' %}"><div class="portal-icon mb-3"><i class="bi bi-box-seam"></i></div><h2 class="h5">Packing queue</h2><p class="text-muted mb-0">Continue packing assigned orders.</p></a></div>
+            {% endif %}
+            {% if active_staff.can_manage_stock or active_staff.can_manage_products %}
+                <div class="col-md-6"><a class="card portal-card p-4 text-decoration-none text-dark" href="{% url 'product_list' %}?shop={{ active_staff.shop_id }}"><div class="portal-icon mb-3"><i class="bi bi-boxes"></i></div><h2 class="h5">Products and stock</h2><p class="text-muted mb-0">Manage this shop’s catalog and inventory.</p></a></div>
+            {% endif %}
+            {% if active_staff.can_manage_staff %}
+                <div class="col-md-6"><a class="card portal-card p-4 text-decoration-none text-dark" href="{% url 'shop_staff_list_shop' active_staff.shop_id %}"><div class="portal-icon mb-3"><i class="bi bi-people"></i></div><h2 class="h5">Manage team</h2><p class="text-muted mb-0">View and manage this shop’s staff.</p></a></div>
+            {% endif %}
+        </div>
+    {% elif is_shop_owner_portal %}
+        <section class="welcome-hero mb-4">
+            <span class="badge rounded-pill text-bg-light text-success mb-3">Shop owner workspace</span>
+            <h1 class="display-5">Run your shop. Delight your customers.</h1>
+            <p class="lead mt-3">Manage your shops, stock, incoming orders, team, payouts, and reports from one place.</p>
+            <div class="d-flex flex-wrap gap-2 mt-3">
+                <a class="btn btn-light btn-lg" href="{% url 'dashboard' %}">Owner dashboard <i class="bi bi-arrow-right ms-1"></i></a>
+                <a class="btn btn-outline-light btn-lg" href="{% url 'shop_list' %}">Manage all shops</a>
+                <a class="btn btn-outline-light btn-lg" href="{% url 'shop_add' %}"><i class="bi bi-plus-lg me-1"></i>Add shop</a>
+            </div>
+        </section>
+        <div class="row g-3">
+            <div class="col-sm-6 col-lg-3"><a class="card portal-card p-4 text-decoration-none text-dark" href="{% url 'shop_list' %}"><div class="portal-icon mb-3"><i class="bi bi-shop"></i></div><h2 class="h5">All shops</h2><p class="text-muted mb-0">Manage each shop’s details, delivery, and availability.</p></a></div>
+            <div class="col-sm-6 col-lg-3"><a class="card portal-card p-4 text-decoration-none text-dark" href="{% url 'shop_order_list' %}"><div class="portal-icon mb-3"><i class="bi bi-receipt"></i></div><h2 class="h5">Orders</h2><p class="text-muted mb-0">Prepare and track customer orders.</p></a></div>
+            <div class="col-sm-6 col-lg-3"><a class="card portal-card p-4 text-decoration-none text-dark" href="{% url 'product_list' %}"><div class="portal-icon mb-3"><i class="bi bi-box-seam"></i></div><h2 class="h5">Products</h2><p class="text-muted mb-0">Update products, pricing, and stock.</p></a></div>
+            <div class="col-sm-6 col-lg-3"><a class="card portal-card p-4 text-decoration-none text-dark" href="{% url 'shop_staff_list' %}"><div class="portal-icon mb-3"><i class="bi bi-people"></i></div><h2 class="h5">Team</h2><p class="text-muted mb-0">Manage staff and shop access.</p></a></div>
+        </div>
+    {% elif active_portal == "ADMIN" and user.is_superuser %}
+        <section class="welcome-hero mb-4">
+            <span class="badge rounded-pill text-bg-light text-success mb-3">Administrator</span>
+            <h1 class="display-5">Platform overview</h1>
+            <p class="lead mt-3">Administrative tools are separated from customer and shop workspaces.</p>
+            <a class="btn btn-light btn-lg mt-2" href="/admin/">Open administration <i class="bi bi-arrow-right ms-1"></i></a>
+        </section>
+    {% else %}
+        <section class="welcome-hero mb-4">
+            <span class="badge rounded-pill text-bg-light text-success mb-3">Customer account</span>
+            <h1 class="display-5">Welcome back, {{ user.get_short_name|default:user.username }}.</h1>
+            <p class="lead mt-3">Find something good nearby, revisit your favourites, and keep up with your deliveries.</p>
+            <div class="d-flex flex-wrap gap-2 mt-4">
+                <a class="btn btn-light btn-lg" href="{% url 'marketplace' %}">Browse marketplace</a>
+                <a class="btn btn-outline-light btn-lg" href="{% url 'order_list' %}">My orders</a>
+            </div>
+        </section>
+        <div class="row g-3">
+            <div class="col-sm-6 col-lg-4"><a class="card portal-card p-4 text-decoration-none text-dark" href="{% url 'marketplace' %}"><div class="portal-icon mb-3"><i class="bi bi-search"></i></div><h2 class="h5">Discover nearby</h2><p class="text-muted mb-0">Shop fresh products from local stores.</p></a></div>
+            <div class="col-sm-6 col-lg-4"><a class="card portal-card p-4 text-decoration-none text-dark" href="{% url 'customer_favorites' %}"><div class="portal-icon mb-3"><i class="bi bi-heart"></i></div><h2 class="h5">Your favourites</h2><p class="text-muted mb-0">Quickly find shops and products you saved.</p></a></div>
+            <div class="col-sm-6 col-lg-4"><a class="card portal-card p-4 text-decoration-none text-dark" href="{% url 'shop_add' %}"><div class="portal-icon mb-3"><i class="bi bi-shop-window"></i></div><h2 class="h5">Become a seller</h2><p class="text-muted mb-0">Set up a shop and start reaching local customers.</p></a></div>
+        </div>
+    {% endif %}
+
+    {% if user.is_superuser and active_portal != "ADMIN" %}
+        <details class="mt-4">
+            <summary class="small text-muted">Platform administration</summary>
+            <a href="/admin/" class="btn btn-sm btn-outline-secondary mt-2">Open Django admin</a>
+        </details>
+    {% endif %}
+</main>
+{% endblock %}

@@ -1,0 +1,1152 @@
+{% extends "base.html" %}
+
+{% block title %}
+    {% if object %}Edit Delivery Address{% else %}Add Delivery Address{% endif %}
+{% endblock %}
+
+{% block content %}
+
+<link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+/>
+
+<style>
+
+    .address-page {
+        max-width: 1000px;
+        margin: 25px auto;
+    }
+
+    .address-card {
+        background: #fff;
+        border-radius: 18px;
+        padding: 22px;
+        box-shadow: 0 4px 20px rgba(0,0,0,.08);
+    }
+
+    .page-title {
+        font-weight: 700;
+        margin-bottom: 4px;
+    }
+
+    .page-subtitle {
+        color: #6c757d;
+        margin-bottom: 20px;
+    }
+
+    #map {
+        width: 100%;
+        height: 430px;
+        border-radius: 15px;
+        overflow: hidden;
+        border: 1px solid #ddd;
+    }
+
+    .map-wrapper {
+        position: relative;
+    }
+
+    .location-btn {
+        position: absolute;
+        z-index: 1000;
+        right: 12px;
+        top: 12px;
+        background: white;
+        border: 1px solid #ddd;
+        border-radius: 10px;
+        padding: 9px 13px;
+        font-weight: 600;
+        box-shadow: 0 2px 8px rgba(0,0,0,.15);
+    }
+
+    .location-btn:hover {
+        background: #f8f9fa;
+    }
+
+    .selected-location {
+        margin-top: 15px;
+        background: #f8f9fa;
+        border-radius: 12px;
+        padding: 14px;
+    }
+
+    .location-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 6px;
+    }
+
+    .location-label {
+        color: #6c757d;
+        font-size: 13px;
+    }
+
+    .location-value {
+        font-weight: 600;
+        text-align: right;
+    }
+
+    .loading-location {
+        display: none;
+        margin-top: 10px;
+        color: #0d6efd;
+        font-size: 14px;
+    }
+
+    .map-help {
+        margin-top: 10px;
+        color: #6c757d;
+        font-size: 13px;
+    }
+
+    .map-status {
+        min-height: 1.5rem;
+    }
+
+    @media (max-width: 768px) {
+
+        .address-page {
+            margin: 10px;
+        }
+
+        .address-card {
+            padding: 15px;
+            border-radius: 14px;
+        }
+
+        #map {
+            height: 350px;
+        }
+
+    }
+
+</style>
+
+
+<div class="address-page">
+
+    <div class="address-card">
+
+        <div class="d-flex justify-content-between align-items-start mb-3">
+
+            <div>
+                <h3 class="page-title">
+
+                    {% if object %}
+                        Edit Delivery Address
+                    {% else %}
+                        Add Delivery Address
+                    {% endif %}
+
+                </h3>
+
+                <div class="page-subtitle">
+                    Drop the pin at your exact delivery location.
+                </div>
+            </div>
+
+            <a
+                href="{% url 'delivery_address_list' %}"
+                class="btn btn-outline-secondary btn-sm"
+            >
+                ← Back
+            </a>
+
+        </div>
+
+
+        <!-- MAP -->
+
+        <div class="map-wrapper">
+
+            <div id="map"></div>
+
+            <button
+                type="button"
+                id="currentLocationBtn"
+                class="location-btn"
+            >
+                📍 Current Location
+            </button>
+
+        </div>
+
+
+        <div class="map-help">
+            💡 Click on the map or drag the marker to select your exact
+            delivery location.
+        </div>
+        <div id="mapAccessStatus" class="small text-muted map-status" role="status" aria-live="polite"></div>
+
+
+        <!-- LOCATION INFORMATION -->
+
+        <div class="selected-location">
+
+            <div class="location-row">
+
+                <span class="location-label">
+                    City
+                </span>
+
+                <span
+                    class="location-value"
+                    id="displayCity"
+                >
+                    —
+                </span>
+
+            </div>
+
+
+            <div class="location-row">
+
+                <span class="location-label">
+                    Pincode
+                </span>
+
+                <span
+                    class="location-value"
+                    id="displayPincode"
+                >
+                    —
+                </span>
+
+            </div>
+
+
+            <div class="location-row">
+
+                <span class="location-label">
+                    Coordinates
+                </span>
+
+                <span
+                    class="location-value"
+                    id="displayCoordinates"
+                >
+                    —
+                </span>
+
+            </div>
+
+        </div>
+
+
+        <div
+            id="locationLoading"
+            class="loading-location"
+        >
+            ⏳ Finding address...
+        </div>
+
+
+        <!-- FORM -->
+
+        <form
+            method="post"
+            class="mt-4"
+            id="addressForm"
+        >
+
+            {% csrf_token %}
+
+
+            {% if form.non_field_errors %}
+
+                <div class="alert alert-danger">
+
+                    {{ form.non_field_errors }}
+
+                </div>
+
+            {% endif %}
+
+
+            <!-- LABEL -->
+
+            <div class="mb-3">
+
+                <label
+                    for="{{ form.label.id_for_label }}"
+                    class="form-label fw-semibold"
+                >
+                    Address Name
+                </label>
+
+                {{ form.label }}
+
+                <div class="form-text">
+                    Automatically generated from city and pincode.
+                </div>
+
+                {% for error in form.label.errors %}
+                    <div class="text-danger small">
+                        {{ error }}
+                    </div>
+                {% endfor %}
+
+            </div>
+
+
+            <!-- ADDRESS -->
+
+            <div class="mb-3">
+
+                <label
+                    for="{{ form.address.id_for_label }}"
+                    class="form-label fw-semibold"
+                >
+                    Delivery Address
+                </label>
+
+                {{ form.address }}
+
+                {% for error in form.address.errors %}
+                    <div class="text-danger small">
+                        {{ error }}
+                    </div>
+                {% endfor %}
+
+            </div>
+
+
+            <!-- CITY -->
+
+            <div class="row">
+
+                <div class="col-md-6 mb-3">
+
+                    <label
+                        for="{{ form.city.id_for_label }}"
+                        class="form-label fw-semibold"
+                    >
+                        City
+                    </label>
+
+                    {{ form.city }}
+
+                    {% for error in form.city.errors %}
+                        <div class="text-danger small">
+                            {{ error }}
+                        </div>
+                    {% endfor %}
+
+                </div>
+
+
+                <!-- PINCODE -->
+
+                <div class="col-md-6 mb-3">
+
+                    <label
+                        for="{{ form.pincode.id_for_label }}"
+                        class="form-label fw-semibold"
+                    >
+                        Pincode
+                    </label>
+
+                    {{ form.pincode }}
+
+                    {% for error in form.pincode.errors %}
+                        <div class="text-danger small">
+                            {{ error }}
+                        </div>
+                    {% endfor %}
+
+                </div>
+
+            </div>
+
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label class="form-label fw-semibold" for="{{ form.state_code.id_for_label }}">State</label>
+                    {{ form.state_code }}
+                    <div class="form-text" id="stateDetectionMessage" aria-live="polite">
+                        Detected from the pin location unless you choose a state here.
+                    </div>
+                    {% for error in form.state_code.errors %}
+                        <div class="text-danger small">{{ error }}</div>
+                    {% endfor %}
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label class="form-label fw-semibold" for="{{ form.gstin.id_for_label }}">GSTIN (optional)</label>
+                    {{ form.gstin }}
+                    {% for error in form.gstin.errors %}
+                        <div class="text-danger small">{{ error }}</div>
+                    {% endfor %}
+                </div>
+            </div>
+
+
+            <!-- LATITUDE / LONGITUDE -->
+
+            {% if form.latitude %}
+            <div class="row">
+
+                <div class="col-md-6 mb-3">
+
+                    <label
+                        class="form-label"
+                        for="{{ form.latitude.id_for_label }}"
+                    >
+                        Latitude
+                    </label>
+
+                    {{ form.latitude }}
+
+                </div>
+
+
+                <div class="col-md-6 mb-3">
+
+                    <label
+                        class="form-label"
+                        for="{{ form.longitude.id_for_label }}"
+                    >
+                        Longitude
+                    </label>
+
+                    {{ form.longitude }}
+
+                </div>
+
+            </div>
+            {% endif %}
+
+
+            <!-- ACTIVE -->
+
+            {% if form.is_active %}
+
+            <div class="form-check mb-3">
+
+                {{ form.is_active }}
+
+                <label
+                    class="form-check-label"
+                    for="{{ form.is_active.id_for_label }}"
+                >
+                    Active address
+                </label>
+
+            </div>
+
+            {% endif %}
+
+
+            <!-- DEFAULT -->
+
+            {% if form.is_default %}
+
+            <div class="form-check mb-4">
+
+                {{ form.is_default }}
+
+                <label
+                    class="form-check-label"
+                    for="{{ form.is_default.id_for_label }}"
+                >
+                    Make this my default delivery address
+                </label>
+
+            </div>
+
+            {% endif %}
+
+
+            <div class="d-flex gap-2">
+
+                <button
+                    type="submit"
+                    class="btn btn-primary px-4"
+                    id="saveAddressBtn"
+                >
+                    💾 Save Address
+                </button>
+
+                <a
+                    href="{% url 'delivery_address_list' %}"
+                    class="btn btn-outline-secondary"
+                >
+                    Cancel
+                </a>
+
+            </div>
+
+        </form>
+
+    </div>
+
+</div>
+
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+
+<script>
+
+document.addEventListener("DOMContentLoaded", function () {
+
+    /*
+    |--------------------------------------------------------------------------
+    | EXISTING LOCATION
+    |--------------------------------------------------------------------------
+    */
+
+    const existingLat =
+        "{{ form.latitude.value|default:'' }}";
+
+    const existingLng =
+        "{{ form.longitude.value|default:'' }}";
+    const stateField = document.getElementById("id_state_code");
+    const stateDetectionMessage = document.getElementById("stateDetectionMessage");
+    let stateWasExplicitlySelected = Boolean(stateField && stateField.value);
+    let geocodeRequestId = 0;
+
+    if (stateField) {
+        stateField.addEventListener("change", function () {
+            stateWasExplicitlySelected = Boolean(stateField.value);
+            if (stateDetectionMessage) {
+                stateDetectionMessage.textContent = stateWasExplicitlySelected
+                    ? "Using the state you selected."
+                    : "State will be detected from the pin location.";
+            }
+        });
+    }
+
+
+    let defaultLat = 20.5937;
+    let defaultLng = 78.9629;
+
+
+    if (
+        existingLat &&
+        existingLng &&
+        !isNaN(parseFloat(existingLat)) &&
+        !isNaN(parseFloat(existingLng))
+    ) {
+
+        defaultLat = parseFloat(existingLat);
+        defaultLng = parseFloat(existingLng);
+
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | MAP
+    |--------------------------------------------------------------------------
+    */
+
+    const mapAccessStatus = document.getElementById("mapAccessStatus");
+    if (typeof window.L === "undefined") {
+        mapAccessStatus.textContent = "The map library could not load. Check network access and reload this page.";
+        return;
+    }
+
+    const map = L.map("map").setView(
+        [defaultLat, defaultLng],
+        existingLat ? 16 : 5
+    );
+
+    const normalLayer = L.tileLayer(
+        "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+        {
+            maxZoom: 20,
+            attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+            subdomains: "abcd",
+        }
+    );
+    const satelliteLayer = L.tileLayer(
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        {
+            maxZoom: 19,
+            attribution: "Tiles &copy; Esri",
+        }
+    );
+    satelliteLayer.addTo(map);
+    L.control.layers({
+        "Normal": normalLayer,
+        "Satellite": satelliteLayer,
+    }).addTo(map);
+    [normalLayer, satelliteLayer].forEach(function (layer) {
+        layer.on("tileerror", function () {
+            mapAccessStatus.textContent =
+                "Map tiles could not be loaded. Try the other map layer or check network access.";
+        });
+        layer.on("tileload", function () {
+            mapAccessStatus.textContent = "";
+        });
+    });
+
+    let marker = null;
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | CREATE MARKER
+    |--------------------------------------------------------------------------
+    */
+
+    function createMarker(lat, lng) {
+
+        if (marker) {
+
+            map.removeLayer(marker);
+
+        }
+
+
+        marker = L.marker(
+            [lat, lng],
+            {
+                draggable: true
+            }
+        ).addTo(map);
+
+
+        marker.bindPopup(
+            "📍 Delivery Location"
+        ).openPopup();
+
+
+        marker.on(
+            "dragend",
+            function () {
+
+                const position =
+                    marker.getLatLng();
+
+                updateLocation(
+                    position.lat,
+                    position.lng
+                );
+
+            }
+        );
+
+
+        updateLocation(lat, lng);
+
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | MAP CLICK
+    |--------------------------------------------------------------------------
+    */
+
+    map.on(
+        "click",
+        function (event) {
+
+            createMarker(
+                event.latlng.lat,
+                event.latlng.lng
+            );
+
+        }
+    );
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | UPDATE LOCATION
+    |--------------------------------------------------------------------------
+    */
+
+    function updateLocation(lat, lng) {
+
+        lat = parseFloat(lat);
+        lng = parseFloat(lng);
+
+
+        if (
+            isNaN(lat) ||
+            isNaN(lng)
+        ) {
+            return;
+        }
+
+
+        /*
+        Hidden coordinates
+        */
+
+        const latitudeField =
+            document.getElementById(
+                "id_latitude"
+            );
+
+        const longitudeField =
+            document.getElementById(
+                "id_longitude"
+            );
+
+
+        if (latitudeField) {
+
+            latitudeField.value =
+                lat.toFixed(7);
+
+        }
+
+
+        if (longitudeField) {
+
+            longitudeField.value =
+                lng.toFixed(7);
+
+        }
+
+
+        /*
+        Display coordinates
+        */
+
+        document.getElementById(
+            "displayCoordinates"
+        ).textContent =
+            `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+
+
+        /*
+        Reverse geocode
+        */
+
+        reverseGeocode(
+            lat,
+            lng
+        );
+
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | REVERSE GEOCODING
+    |--------------------------------------------------------------------------
+    */
+
+    function reverseGeocode(lat, lng) {
+        const requestId = ++geocodeRequestId;
+
+        const loading =
+            document.getElementById(
+                "locationLoading"
+            );
+
+
+        loading.style.display =
+            "block";
+
+
+        const url =
+            "https://nominatim.openstreetmap.org/reverse" +
+            `?format=jsonv2` +
+            `&lat=${encodeURIComponent(lat)}` +
+            `&lon=${encodeURIComponent(lng)}` +
+            `&zoom=18` +
+            `&addressdetails=1`;
+
+
+        fetch(
+            url,
+            {
+                headers: {
+                    "Accept":
+                        "application/json"
+                }
+            }
+        )
+        .then(function(response) {
+
+            if (!response.ok) {
+
+                throw new Error(
+                    "Reverse geocoding failed"
+                );
+
+            }
+
+            return response.json();
+
+        })
+        .then(function(data) {
+            if (requestId !== geocodeRequestId) {
+                return;
+            }
+
+            const address =
+                data.address || {};
+
+
+            /*
+            City
+            */
+
+            const city =
+                address.city ||
+                address.town ||
+                address.municipality ||
+                address.village ||
+                address.suburb ||
+                address.city_district ||
+                "";
+
+
+            /*
+            Pincode
+            */
+
+            const pincode =
+                address.postcode ||
+                "";
+
+            const stateName = (address.state || "").trim().toLocaleLowerCase();
+            const normalizedStateName = stateName
+                .replace(/\b(the|state of|union territory of)\b/g, "")
+                .replace(/[^a-z]/g, "");
+            const stateAliases = {
+                nctdelhi: "07",
+                nationalcapitalterritorydelhi: "07",
+                orissa: "21",
+                pondicherry: "34",
+                uttaranchal: "05",
+                andhrapradesh: "37",
+            };
+            const detectedStateCode = stateAliases[normalizedStateName] ||
+                (stateField && Array.from(stateField.options).find(function (option) {
+                    const normalizedOption = option.text
+                        .toLocaleLowerCase()
+                        .replace(/[^a-z]/g, "");
+                    return option.value && normalizedOption === normalizedStateName;
+                })?.value) || "";
+
+            if (
+                requestId === geocodeRequestId &&
+                stateField &&
+                !stateWasExplicitlySelected &&
+                detectedStateCode
+            ) {
+                stateField.value = detectedStateCode;
+                if (stateDetectionMessage) {
+                    const selectedState = stateField.options[stateField.selectedIndex];
+                    stateDetectionMessage.textContent =
+                        `Detected ${selectedState.text} from the pin location.`;
+                }
+            }
+
+
+            /*
+            Full address
+            */
+
+            const fullAddress =
+                data.display_name ||
+                "";
+
+
+            /*
+            Label
+            */
+
+            let label = "";
+
+
+            if (
+                city &&
+                pincode
+            ) {
+
+                label =
+                    `${city} - ${pincode}`;
+
+            }
+            else if (city) {
+
+                label = city;
+
+            }
+            else if (pincode) {
+
+                label =
+                    `Pincode - ${pincode}`;
+
+            }
+            else {
+
+                label =
+                    "Delivery Location";
+
+            }
+
+
+            /*
+            Fill fields
+            */
+
+            setFieldValue(
+                "id_city",
+                city
+            );
+
+
+            setFieldValue(
+                "id_pincode",
+                pincode
+            );
+
+
+            setFieldValue(
+                "id_label",
+                label
+            );
+
+
+            setFieldValue(
+                "id_address",
+                fullAddress
+            );
+
+
+            /*
+            Display
+            */
+
+            document.getElementById(
+                "displayCity"
+            ).textContent =
+                city || "Not found";
+
+
+            document.getElementById(
+                "displayPincode"
+            ).textContent =
+                pincode || "Not found";
+
+
+            /*
+            Marker popup
+            */
+
+            if (marker) {
+
+                marker
+                    .bindPopup(
+                        `<strong>📍 ${escapeHtml(label)}</strong><br>` +
+                        `${escapeHtml(fullAddress)}`
+                    )
+                    .openPopup();
+
+            }
+
+        })
+        .catch(function(error) {
+            if (requestId !== geocodeRequestId) {
+                return;
+            }
+
+            console.error(
+                "Geocoding error:",
+                error
+            );
+
+            document.getElementById(
+                "displayCity"
+            ).textContent =
+                "Unable to find";
+
+
+            document.getElementById(
+                "displayPincode"
+            ).textContent =
+                "Unable to find";
+
+        })
+        .finally(function() {
+            if (requestId === geocodeRequestId) {
+                loading.style.display = "none";
+            }
+
+        });
+
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | SET FIELD
+    |--------------------------------------------------------------------------
+    */
+
+    function setFieldValue(
+        id,
+        value
+    ) {
+
+        const field =
+            document.getElementById(id);
+
+        if (field) {
+
+            field.value =
+                value || "";
+
+        }
+
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | ESCAPE HTML
+    |--------------------------------------------------------------------------
+    */
+
+    function escapeHtml(value) {
+
+        const div =
+            document.createElement(
+                "div"
+            );
+
+        div.textContent =
+            value || "";
+
+        return div.innerHTML;
+
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | CURRENT LOCATION
+    |--------------------------------------------------------------------------
+    */
+
+    document
+        .getElementById(
+            "currentLocationBtn"
+        )
+        .addEventListener(
+            "click",
+            function () {
+
+                if (!navigator.geolocation) {
+
+                    alert(
+                        "Your browser does not support location."
+                    );
+
+                    return;
+
+                }
+
+
+                const button =
+                    this;
+
+
+                button.disabled =
+                    true;
+
+
+                button.innerHTML =
+                    "⏳ Getting location...";
+
+
+                navigator.geolocation.getCurrentPosition(
+
+                    function(position) {
+
+                        const lat =
+                            position.coords.latitude;
+
+                        const lng =
+                            position.coords.longitude;
+
+
+                        map.setView(
+                            [lat, lng],
+                            17
+                        );
+
+
+                        createMarker(
+                            lat,
+                            lng
+                        );
+
+
+                        button.disabled =
+                            false;
+
+
+                        button.innerHTML =
+                            "📍 Current Location";
+
+                    },
+
+
+                    function(error) {
+
+                        console.error(
+                            error
+                        );
+
+
+                        const message = error.code === error.PERMISSION_DENIED
+                            ? "Location access is blocked. Allow location permission in your browser, or choose the location directly on the map."
+                            : "Unable to get your location. Choose the location directly on the map.";
+                        mapAccessStatus.textContent = message;
+
+
+                        button.disabled =
+                            false;
+
+
+                        button.innerHTML =
+                            "📍 Current Location";
+
+                    },
+
+                    {
+                        enableHighAccuracy: true,
+                        timeout: 15000,
+                        maximumAge: 0
+                    }
+
+                );
+
+            }
+        );
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | EXISTING MARKER
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+        existingLat &&
+        existingLng
+    ) {
+
+        createMarker(
+            parseFloat(existingLat),
+            parseFloat(existingLng)
+        );
+
+    }
+
+});
+
+</script>
+
+{% endblock %}

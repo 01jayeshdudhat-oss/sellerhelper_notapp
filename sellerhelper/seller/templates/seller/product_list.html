@@ -1,0 +1,623 @@
+{% extends 'base.html' %}
+
+{% block title %}Products{% endblock %}
+
+{% block content %}
+
+<style>
+
+    .product-table {
+        font-size: 14px;
+    }
+
+    .product-table th {
+        white-space: nowrap;
+        font-weight: 600;
+        background: #f8fafc;
+        color: #1e293b;
+        border-bottom: 2px solid #e2e8f0;
+        padding: 14px 12px;
+    }
+
+    .product-table td {
+        padding: 14px 12px;
+        vertical-align: middle;
+    }
+
+    .product-row:hover {
+        background: #f8fafc;
+    }
+
+    /* Product information */
+    .product-name {
+        font-weight: 700;
+        color: #0f172a;
+        font-size: 15px;
+    }
+
+    .product-title {
+        color: #64748b;
+        font-size: 13px;
+        margin-top: 3px;
+    }
+
+    .sku-badge {
+        background: #f1f5f9;
+        border: 1px solid #cbd5e1;
+        color: #334155;
+        padding: 4px 8px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    /* Shop container */
+    .shop-list {
+        min-width: 320px;
+        max-width: 430px;
+    }
+
+    .shop-item {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 9px;
+        padding: 9px 11px;
+        margin-bottom: 7px;
+    }
+
+    .shop-item:last-child {
+        margin-bottom: 0;
+    }
+
+    .shop-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 7px;
+    }
+
+    .shop-name {
+        font-weight: 700;
+        color: #1d4ed8;
+        background: #dbeafe;
+        padding: 4px 9px;
+        border-radius: 6px;
+        font-size: 13px;
+    }
+
+    .shop-details {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        flex-wrap: wrap;
+    }
+
+    .shop-price {
+        font-size: 15px;
+        font-weight: 700;
+        color: #047857;
+    }
+
+    .default-price {
+        color: #0f172a;
+    }
+
+    .price-label {
+        font-size: 11px;
+        color: #64748b;
+        margin-left: 2px;
+    }
+
+    .stock-badge {
+        padding: 4px 8px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 700;
+    }
+
+    .stock-good {
+        background: #dcfce7;
+        color: #166534;
+    }
+
+    .stock-empty {
+        background: #fee2e2;
+        color: #b91c1c;
+    }
+
+    .active-badge {
+        background: #dcfce7;
+        color: #15803d;
+        padding: 4px 8px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    .inactive-badge {
+        background: #fee2e2;
+        color: #b91c1c;
+        padding: 4px 8px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    .no-shop {
+        color: #94a3b8;
+        font-size: 13px;
+        font-style: italic;
+    }
+
+    .global-status {
+        margin-bottom: 6px;
+    }
+
+    .action-buttons {
+        display: flex;
+        gap: 5px;
+        flex-wrap: nowrap;
+    }
+
+    .action-buttons .btn {
+        white-space: nowrap;
+    }
+
+    .product-image {
+        width: 45px;
+        height: 45px;
+        object-fit: cover;
+        border-radius: 7px;
+        border: 1px solid #e2e8f0;
+    }
+
+    .no-image {
+        width: 45px;
+        height: 45px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #f1f5f9;
+        border-radius: 7px;
+        color: #94a3b8;
+        font-size: 18px;
+    }
+
+    @media (max-width: 1200px) {
+
+        .shop-list {
+            min-width: 280px;
+        }
+
+        .product-table {
+            font-size: 13px;
+        }
+
+    }
+
+</style>
+
+
+<!-- ================= HEADER ================= -->
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+
+    <div>
+
+        <h2 class="mb-1">
+            Products
+        </h2>
+
+        <p class="text-muted mb-0">
+            Manage products, shop prices and shop-wise inventory.
+        </p>
+
+    </div>
+
+    <a
+        href="{% url 'product_create' %}"
+        class="btn btn-primary"
+    >
+        ➕ New Product
+    </a>
+
+</div>
+
+
+<!-- ================= PRODUCT TABLE ================= -->
+
+<div class="card border-0 shadow-sm">
+
+    <div class="card-body p-0">
+
+        <div class="table-responsive">
+
+            <table class="table table-hover product-table mb-0">
+
+                <thead>
+
+                    <tr>
+
+                        <th>ID</th>
+
+                        <th>SKU</th>
+
+                        <th>Product</th>
+
+                        <th>Color</th>
+
+                        <th>Size</th>
+
+                        <th>Base Price</th>
+
+                        <th>Unit</th>
+
+                        <th>
+                            Shop-wise Details
+                        </th>
+
+                        <th>Status</th>
+
+                        <th class="text-end">
+                            Actions
+                        </th>
+
+                    </tr>
+
+                </thead>
+
+
+                <tbody>
+
+                {% for product in products %}
+
+                    <tr class="product-row">
+
+                        <!-- ID -->
+
+                        <td>
+
+                            <span class="text-muted">
+                                #{{ product.id }}
+                            </span>
+
+                        </td>
+
+
+                        <!-- SKU -->
+
+                        <td>
+
+                            {% if product.sku %}
+
+                                <span class="sku-badge">
+                                    {{ product.sku }}
+                                </span>
+
+                            {% else %}
+
+                                <span class="text-muted">
+                                    —
+                                </span>
+
+                            {% endif %}
+
+                        </td>
+
+
+                        <!-- PRODUCT -->
+
+                        <td>
+
+                            <div class="d-flex align-items-center gap-2">
+
+                                {% if product.image_url %}
+
+                                    <img
+                                        src="{{ product.image_url }}"
+                                        class="product-image"
+                                        alt="{{ product.product_name }}"
+                                    >
+
+                                {% else %}
+
+                                    <div class="no-image">
+                                        📦
+                                    </div>
+
+                                {% endif %}
+
+
+                                <div>
+
+                                    <div class="product-name">
+                                        {{ product.product_name }}
+                                    </div>
+
+                                    {% if product.product_title %}
+
+                                        <div class="product-title">
+                                            {{ product.product_title }}
+                                        </div>
+
+                                    {% endif %}
+
+                                </div>
+
+                            </div>
+
+                        </td>
+
+
+                        <!-- COLOR -->
+
+                        <td>
+
+                            {% if product.product_color %}
+
+                                {{ product.product_color }}
+
+                            {% else %}
+
+                                <span class="text-muted">
+                                    —
+                                </span>
+
+                            {% endif %}
+
+                        </td>
+
+
+                        <!-- SIZE -->
+
+                        <td>
+
+                            {% if product.product_size %}
+
+                                {{ product.product_size }}
+
+                            {% else %}
+
+                                <span class="text-muted">
+                                    —
+                                </span>
+
+                            {% endif %}
+
+                        </td>
+
+
+                        <!-- BASE PRICE -->
+
+                        <td>
+
+                            <strong>
+                                ₹{{ product.price }}
+                            </strong>
+
+                            <div class="small text-muted">
+                                Default
+                            </div>
+
+                        </td>
+
+
+                        <!-- UNIT -->
+
+                        <td>
+
+                            {% if product.unit %}
+
+                                <span class="badge text-bg-light border">
+                                    {{ product.unit }}
+                                </span>
+
+                            {% else %}
+
+                                <span class="text-muted">
+                                    —
+                                </span>
+
+                            {% endif %}
+
+                        </td>
+
+
+                        <!-- ================= SHOP DETAILS ================= -->
+
+                        <td>
+
+                            <div class="shop-list">
+
+                            {% for assignment in product.shop_assignments.all %}
+
+                                <div class="shop-item">
+
+                                    <!-- Shop name -->
+
+                                    <div class="shop-header">
+
+                                        <span class="shop-name">
+                                            🏪 {{ assignment.shop.name }}
+                                        </span>
+
+
+                                        {% if assignment.is_active %}
+
+                                            <span class="active-badge">
+                                                ✓ Active
+                                            </span>
+
+                                        {% else %}
+
+                                            <span class="inactive-badge">
+                                                ✕ Inactive
+                                            </span>
+
+                                        {% endif %}
+
+                                    </div>
+
+
+                                    <!-- Price / Stock -->
+
+                                    <div class="shop-details">
+
+                                        {% if assignment.price %}
+
+                                            <span class="shop-price">
+                                                ₹{{ assignment.price }}
+                                            </span>
+
+                                            <span class="price-label">
+                                                shop price
+                                            </span>
+
+                                        {% else %}
+
+                                            <span class="shop-price default-price">
+                                                ₹{{ product.price }}
+                                            </span>
+
+                                            <span class="price-label">
+                                                default price
+                                            </span>
+
+                                        {% endif %}
+
+
+                                        {% if assignment.stock > 0 %}
+
+                                            <span class="stock-badge stock-good">
+                                                Stock: {{ assignment.stock }}
+                                            </span>
+
+                                        {% else %}
+
+                                            <span class="stock-badge stock-empty">
+                                                Stock: 0
+                                            </span>
+
+                                        {% endif %}
+
+                                    </div>
+
+                                </div>
+
+                            {% empty %}
+
+                                <div class="no-shop">
+                                    No shops assigned
+                                </div>
+
+                            {% endfor %}
+
+                            </div>
+
+                        </td>
+
+
+                        <!-- ================= PRODUCT STATUS ================= -->
+
+                        <td>
+
+                            {% if product.is_active %}
+
+                                <div class="global-status">
+
+                                    <span class="active-badge">
+                                        Active
+                                    </span>
+
+                                </div>
+
+                            {% else %}
+
+                                <div class="global-status">
+
+                                    <span class="inactive-badge">
+                                        Inactive
+                                    </span>
+
+                                </div>
+
+                            {% endif %}
+
+                        </td>
+
+
+                        <!-- ================= ACTIONS ================= -->
+
+                        <td class="text-end">
+
+                            <div class="action-buttons">
+
+                                <a
+                                    href="{% url 'product_edit' product.id %}"
+                                    class="btn btn-sm btn-outline-primary"
+                                    title="Edit Product"
+                                >
+                                    ✏️
+                                </a>
+
+                                <a
+                                    href="{% url 'product_delete' product.id %}"
+                                    class="btn btn-sm btn-outline-danger"
+                                    title="Delete Product"
+                                >
+                                    🗑️
+                                </a>
+
+                            </div>
+
+                        </td>
+
+                    </tr>
+
+
+                {% empty %}
+
+                    <tr>
+
+                        <td
+                            colspan="10"
+                            class="text-center py-5"
+                        >
+
+                            <div style="font-size:45px;">
+                                📦
+                            </div>
+
+                            <div class="fw-semibold mt-2">
+                                No products found
+                            </div>
+
+                            <div class="text-muted small">
+                                Add your first product to get started.
+                            </div>
+
+                            <a
+                                href="{% url 'product_create' %}"
+                                class="btn btn-primary btn-sm mt-3"
+                            >
+                                ➕ Add Product
+                            </a>
+
+                        </td>
+
+                    </tr>
+
+                {% endfor %}
+
+                </tbody>
+
+            </table>
+
+        </div>
+
+    </div>
+
+</div>
+
+{% endblock %}

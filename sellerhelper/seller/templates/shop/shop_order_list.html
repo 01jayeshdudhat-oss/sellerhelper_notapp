@@ -1,0 +1,645 @@
+{% extends "base.html" %}
+
+{% block title %}Shop Orders{% endblock %}
+
+{% block content %}
+
+<div class="container-fluid py-4">
+
+    <!-- Header -->
+    <div class="d-flex flex-wrap justify-content-between align-items-center mb-4">
+
+        <div>
+            <h2 class="fw-bold mb-1">
+                📦 Shop Orders
+            </h2>
+
+            <p class="text-muted mb-0">
+                Manage orders, packing and delivery for your shops.
+            </p>
+        </div>
+
+        <div class="mt-2 mt-md-0">
+            <span class="badge bg-primary fs-6">
+                {{ shop_orders|length }} Orders
+            </span>
+        </div>
+
+    </div>
+
+    {% if can_verify_rider_pickup_otp %}
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-body">
+                <h5 class="card-title">Verify rider and confirm pickup</h5>
+                <p class="text-muted mb-3">
+                    Enter the rider's six-digit OTP. The matching order opens automatically after successful verification.
+                </p>
+                <form id="verifyRiderPickupOtpForm" method="post" action="{% url 'verify_rider_pickup_otp' %}" class="row g-2">
+                    {% csrf_token %}
+                    <div class="col-12 col-md-8">
+                        <label class="visually-hidden" for="shopPickupOtp">Rider pickup OTP</label>
+                        <input
+                            type="text"
+                            class="form-control"
+                            id="shopPickupOtp"
+                            name="pickup_otp"
+                            data-pickup-otp-input
+                            inputmode="numeric"
+                            pattern="[0-9]{6}"
+                            maxlength="6"
+                            autocomplete="one-time-code"
+                            placeholder="Six-digit rider OTP"
+                            required
+                        >
+                    </div>
+                    <div class="col-12">
+                        <button type="button" class="btn btn-outline-secondary w-100"
+                                data-sellerhelper-scan-order="pickup-otp">
+                            <i class="bi bi-qr-code-scan me-1"></i> Scan rider OTP QR
+                        </button>
+                    </div>
+                    <div class="col-12 col-md-4">
+                        <button type="submit" class="btn btn-warning w-100">
+                            Verify and confirm pickup
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <script>
+            (() => {
+                const form = document.getElementById("verifyRiderPickupOtpForm");
+                const input = document.getElementById("shopPickupOtp");
+                if (!form || !input) return;
+
+                input.addEventListener("input", () => {
+                    const otp = input.value.replace(/[^0-9]/g, "").slice(0, 6);
+                    if (input.value !== otp) input.value = otp;
+                    if (otp.length === 6) form.requestSubmit();
+                });
+            })();
+        </script>
+    {% endif %}
+
+    {% if rider_cod_handover_groups %}
+        <section class="card border-warning shadow-sm mb-4" aria-label="Rider COD handovers">
+            <div class="card-body">
+                <h5 class="fw-bold mb-1">Rider COD handovers</h5>
+                <p class="small text-muted mb-3">
+                    Enter one total amount received for a rider. Partial payments are allocated to the oldest orders first; the remaining amount stays outstanding.
+                </p>
+                {% for group in rider_cod_handover_groups %}
+                    {% if group.can_confirm %}
+                        <form method="post"
+                              action="{% url 'confirm_rider_cod_handover_total' group.shop.id group.rider.id %}"
+                              class="border rounded p-3 mb-2">
+                            {% csrf_token %}
+                            <input type="hidden" name="payment_method" value="{{ group.payment_method }}">
+                            <div class="d-flex flex-wrap justify-content-between gap-2 mb-2">
+                                <strong>{{ group.rider.user.get_full_name|default:group.rider.user.username }} · {{ group.shop.name }}</strong>
+                                <span class="badge {% if group.payment_method == 'STAFF_UPI' %}text-bg-info{% else %}text-bg-secondary{% endif %}">
+                                    {% if group.payment_method == "STAFF_UPI" %}Personal UPI{% else %}Cash{% endif %}
+                                </span>
+                            </div>
+                            <div class="small text-muted mb-2">
+                                {{ group.order_count }} order(s) · ₹{{ group.remaining_amount|floatformat:2 }} remains to hand over
+                            </div>
+                            <details class="small mb-2">
+                                <summary class="text-primary">View order details ({{ group.order_count }})</summary>
+                                <div class="list-group list-group-flush border rounded mt-2">
+                                    {% for order_detail in group.orders %}
+                                        <div class="list-group-item">
+                                            <a href="{% url 'shop_order_detail' order_detail.shop_order.id %}">
+                                                Order #{{ order_detail.shop_order.shop_order_number|default:order_detail.shop_order.order.order_id }}
+                                            </a>
+                                            <div class="text-muted">
+                                                Collected ₹{{ order_detail.collected_amount|floatformat:2 }} ·
+                                                Handed over ₹{{ order_detail.handed_over_amount|floatformat:2 }} ·
+                                                Remaining ₹{{ order_detail.remaining_amount|floatformat:2 }}
+                                            </div>
+                                        </div>
+                                    {% endfor %}
+                                </div>
+                            </details>
+                            <div class="d-flex flex-wrap align-items-center gap-2">
+                                <div class="input-group flex-grow-1" style="min-width: 220px;">
+                                    <span class="input-group-text">₹ Amount received</span>
+                                    <input class="form-control" type="number" name="received_amount"
+                                           min="0.01" max="{{ group.remaining_amount|floatformat:2 }}"
+                                           step="0.01" value="0.00" required>
+                                </div>
+                                <button class="btn btn-sm btn-outline-primary" type="button"
+                                        data-fill-full-handover="{{ group.remaining_amount|floatformat:2 }}">
+                                    Fill full amount
+                                </button>
+                                <button class="btn btn-success" type="submit">Confirm received</button>
+                            </div>
+                        </form>
+                    {% endif %}
+                {% endfor %}
+            </div>
+        </section>
+        <script>
+            document.querySelectorAll("[data-fill-full-handover]").forEach((button) => {
+                button.addEventListener("click", () => {
+                    const input = button.closest("form")?.querySelector('input[name="received_amount"]');
+                    if (!input) return;
+                    input.value = button.dataset.fillFullHandover;
+                    input.dispatchEvent(new Event("input", { bubbles: true }));
+                    input.dispatchEvent(new Event("change", { bubbles: true }));
+                });
+            });
+        </script>
+    {% endif %}
+
+    <!-- Shop Filter -->
+    <div class="card border-0 shadow-sm mb-4">
+
+        <div class="card-body">
+
+            <form method="get">
+
+                <div class="row g-3 align-items-end">
+
+                    <div class="col-12 col-md-6 col-xl-3">
+
+                        <label class="form-label fw-semibold">
+                            Shop
+                        </label>
+
+                        <select
+                            name="shop"
+                            class="form-select"
+                            onchange="this.form.submit()"
+                        >
+
+                            <option value="" {% if not request.GET.shop %}selected{% endif %}>
+                                All My Shops
+                            </option>
+
+                            {% for shop in shops %}
+
+                                <option
+                                    value="{{ shop.id }}"
+                                    {% if request.GET.shop == shop.id|stringformat:"s" %}selected{% endif %}
+                                >
+                                    {{ shop.name }}
+                                </option>
+
+                            {% endfor %}
+
+                        </select>
+
+                    </div>
+
+
+                    <div class="col-12 col-md-6 col-xl-2">
+
+                        <label class="form-label fw-semibold">
+                            Status
+                        </label>
+
+                        <select
+                            name="status"
+                            class="form-select"
+                            onchange="this.form.submit()"
+                        >
+
+                            <option value="">
+                                All Status
+                            </option>
+                            <option value="pending"
+                                {% if request.GET.status == "pending" %}selected{% endif %}
+                            >
+                                Pending
+                            </option>
+
+                            <option value="PLACED"
+                                {% if request.GET.status == "PLACED" %}selected{% endif %}
+                            >
+                                Order Placed
+                            </option>
+
+                            <option value="CONFIRMED"
+                                {% if request.GET.status == "CONFIRMED" %}selected{% endif %}
+                            >
+                                Confirmed
+                            </option>
+
+                            <option value="PACKING"
+                                {% if request.GET.status == "PACKING" %}selected{% endif %}
+                            >
+                                Packing
+                            </option>
+
+                            <option value="READY"
+                                {% if request.GET.status == "READY" %}selected{% endif %}
+                            >
+                                Ready
+                            </option>
+
+                            <option value="RIDER_ASSIGNED"
+                                {% if request.GET.status == "RIDER_ASSIGNED" %}selected{% endif %}
+                            >
+                                Accepted by Rider
+                            </option>
+
+                            <option value="PICKED_UP"
+                                {% if request.GET.status == "PICKED_UP" %}selected{% endif %}
+                            >
+                                Picked Up
+                            </option>
+
+                            <option value="OUT_FOR_DELIVERY"
+                                {% if request.GET.status == "OUT_FOR_DELIVERY" %}selected{% endif %}
+                            >
+                                Out for Delivery
+                            </option>
+
+                            <option value="DELIVERED"
+                                {% if request.GET.status == "DELIVERED" %}selected{% endif %}
+                            >
+                                Delivered
+                            </option>
+
+                            <option value="CANCELLED"
+                                {% if request.GET.status == "CANCELLED" %}selected{% endif %}
+                            >
+                                Cancelled
+                            </option>
+
+                        </select>
+
+                    </div>
+
+
+                    <div class="col-12 col-md-6 col-xl-2">
+                        <label class="form-label fw-semibold" for="orderDateFilter">Order date</label>
+                        <input
+                            class="form-control"
+                            id="orderDateFilter"
+                            name="date"
+                            type="date"
+                            value="{{ order_date_filter }}"
+                        >
+                        <div class="form-text">You can also search using DD-MM-YYYY.</div>
+                    </div>
+
+                    <div class="col-12 col-md-6 col-xl-3">
+                        <label class="form-label fw-semibold" for="orderNumberFilter">Order number</label>
+                        <input
+                            class="form-control"
+                            id="orderNumberFilter"
+                            name="order_number"
+                            type="search"
+                            maxlength="120"
+                            placeholder="e.g. ORD-05-10-2026-11-08-28-2"
+                            value="{{ order_number_filter }}"
+                        >
+                    </div>
+
+                    <div class="col-6 col-xl-1">
+
+                        <button
+                            type="submit"
+                            class="btn btn-primary w-100"
+                        >
+                            🔍 Filter
+                        </button>
+
+                    </div>
+
+
+                    <div class="col-6 col-xl-1">
+
+                        <a
+                            href="{% url 'shop_order_list' %}"
+                            class="btn btn-outline-secondary w-100"
+                        >
+                            Reset
+                        </a>
+
+                    </div>
+
+                </div>
+
+            </form>
+
+        </div>
+
+    </div>
+
+
+    <!-- Orders -->
+    <div class="card border-0 shadow-sm">
+
+        <div class="card-body p-0">
+
+            <div class="table-responsive">
+
+                <table class="table table-hover align-middle mb-0">
+
+                    <thead class="table-light">
+
+                        <tr>
+
+                            <th>Order</th>
+
+                            <th>Shop</th>
+
+                            <th>Customer</th>
+
+                            <th>Items</th>
+
+                            <th>Amount</th>
+
+                            <th>Payment</th>
+
+                            <th>Status</th>
+
+                            <th>Order Time</th>
+
+                            <th class="text-end">
+                                Action
+                            </th>
+
+                        </tr>
+
+                    </thead>
+
+
+                    <tbody>
+
+                    {% for shop_order in shop_orders %}
+
+                        <tr>
+
+                            <!-- Order -->
+                            <td>
+
+                                <div class="fw-bold">
+                                    {{ shop_order.shop_order_number|default:shop_order.order.order_id }}
+                                </div>
+
+                                <small class="text-muted">
+                                    #{{ shop_order.id }}
+                                </small>
+
+                            </td>
+
+
+                            <!-- Shop -->
+                            <td>
+
+                                <span class="badge bg-primary-subtle text-primary">
+
+                                    🏪
+                                    {{ shop_order.shop.name }}
+
+                                </span>
+
+                            </td>
+
+
+                            <!-- Customer -->
+                            <td>
+
+                                <div class="fw-semibold">
+
+                                    {{ shop_order.order.user|default:"Customer" }}
+
+                                </div>
+
+                                {% if shop_order.order.delivery_contact_no %}
+
+                                    <small class="text-muted">
+
+                                        📞
+                                        {{ shop_order.order.delivery_contact_no }}
+
+                                    </small>
+
+                                {% endif %}
+
+                            </td>
+
+
+                            <!-- Items -->
+                            <td>
+
+                                <span class="badge bg-secondary">
+
+                                    {{ shop_order.product_count }}
+
+                                </span>
+
+                            </td>
+
+
+                            <!-- Amount -->
+                            <td>
+
+                                <strong class="text-success">
+
+                                    ₹{{ shop_order.total_amount|floatformat:2 }}
+
+                                </strong>
+
+                                {% if shop_order.delivery_fee %}
+
+                                    <br>
+
+                                    <small class="text-muted">
+
+                                        Delivery:
+                                        ₹{{ shop_order.delivery_fee|floatformat:2 }}
+
+                                    </small>
+
+                                {% endif %}
+
+                            </td>
+
+
+                            <!-- Payment -->
+                            <td>
+
+                                {% if shop_order.order.is_payment_done %}
+
+                                    <span class="badge bg-success">
+                                        Paid
+                                    </span>
+
+                                {% else %}
+
+                                    <span class="badge bg-warning text-dark">
+                                        Pending
+                                    </span>
+
+                                {% endif %}
+                                {% if shop_order.cash_handover_pending %}
+                                    <div class="small mt-1">
+                                        <span class="badge text-bg-warning">COD cash handover pending</span>
+                                    </div>
+                                    <small class="text-muted">₹{{ shop_order.cod_cash_handover_remaining|floatformat:2 }} remains of ₹{{ shop_order.cod_cash_collected|floatformat:2 }}</small>
+                                {% endif %}
+
+                            </td>
+
+
+                            <!-- Status -->
+                            <td>
+
+                                {% if shop_order.status == "PLACED" %}
+
+                                    <span class="badge bg-primary">
+                                        Placed
+                                    </span>
+
+                                {% elif shop_order.status == "CONFIRMED" %}
+
+                                    <span class="badge bg-info text-dark">
+                                        Confirmed
+                                    </span>
+
+                                {% elif shop_order.status == "PACKING" %}
+
+                                    <span class="badge bg-warning text-dark">
+                                        Packing
+                                    </span>
+
+                                {% elif shop_order.status == "READY" %}
+
+                                    <span class="badge bg-success">
+                                        Ready
+                                    </span>
+
+                                {% elif shop_order.status == "RIDER_ASSIGNED" %}
+
+                                    <span class="badge bg-warning text-dark">
+                                        Accepted by Rider
+                                    </span>
+
+                                {% elif shop_order.status == "PICKED_UP" %}
+
+                                    <span class="badge bg-primary">
+                                        Picked Up
+                                    </span>
+
+                                {% elif shop_order.status == "OUT_FOR_DELIVERY" %}
+
+                                    <span class="badge bg-info text-dark">
+                                        Out for Delivery
+                                    </span>
+
+                                {% elif shop_order.status == "DELIVERED" %}
+
+                                    <span class="badge bg-success">
+                                        Delivered
+                                    </span>
+
+                                {% elif shop_order.status == "RETURNED" %}
+
+                                    <span class="badge bg-warning text-dark">
+                                        Returned to Shop
+                                    </span>
+
+                                {% elif shop_order.status == "CANCELLED" %}
+
+                                    <span class="badge bg-danger">
+                                        Cancelled
+                                    </span>
+
+                                {% else %}
+
+                                    <span class="badge bg-secondary">
+                                        {{ shop_order.status|default:"Pending" }}
+                                    </span>
+
+                                {% endif %}
+
+                                {% for item in shop_order.order_items.all %}
+                                    {% if item.pending_return_quantity %}
+                                        <div class="small text-warning-emphasis mt-1">
+                                            <i class="bi bi-arrow-return-left me-1"></i>
+                                            Rider return: {{ item.pending_return_quantity }} × {{ item.product_name }}
+                                        </div>
+                                    {% endif %}
+                                {% endfor %}
+
+                            </td>
+
+
+                            <!-- Time -->
+                            <td>
+
+                                <small>
+
+                                    {{ shop_order.created_at|date:"d M Y" }}
+
+                                    <br>
+
+                                    <span class="text-muted">
+                                        {{ shop_order.created_at|date:"h:i A" }}
+                                    </span>
+
+                                </small>
+
+                            </td>
+
+
+                            <!-- Action -->
+                            <td class="text-end">
+
+                                <a
+                                    href="{% url 'shop_order_detail' shop_order.id %}"
+                                    class="btn btn-sm btn-outline-primary"
+                                >
+                                    👁 View
+                                </a>
+
+                            </td>
+
+                        </tr>
+
+                    {% empty %}
+
+                        <tr>
+
+                            <td
+                                colspan="9"
+                                class="text-center py-5"
+                            >
+
+                                <div class="display-5 mb-3">
+                                    📦
+                                </div>
+
+                                <h5>
+                                    No orders found
+                                </h5>
+
+                                <p class="text-muted mb-0">
+                                    There are currently no orders
+                                    for your shops.
+                                </p>
+
+                            </td>
+
+                        </tr>
+
+                    {% endfor %}
+
+                    </tbody>
+
+                </table>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+{% endblock %}

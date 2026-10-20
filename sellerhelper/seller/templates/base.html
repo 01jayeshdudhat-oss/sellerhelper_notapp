@@ -1,0 +1,2172 @@
+{% load static %}
+
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    >
+    <meta name="theme-color" content="#0b5ed7">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="{{ site_branding.site_name|default:'Seller Helper' }}">
+    <link rel="manifest" href="{% url 'site_manifest' %}">
+    {% if site_branding.app_icon %}
+        <link rel="apple-touch-icon" href="{{ site_branding.app_icon.url }}">
+    {% else %}
+        <link rel="apple-touch-icon" href="{% static 'seller/img/app-icon-192.png' %}">
+    {% endif %}
+    {% if site_branding.favicon %}
+        <link rel="icon" href="{{ site_branding.favicon.url }}">
+    {% else %}
+        <link rel="icon" href="{% static 'seller/img/favicon.svg' %}" type="image/svg+xml">
+    {% endif %}
+
+    <title>
+        {% block title %}{{ site_branding.site_name|default:'Seller Helper' }}{% endblock %}
+    </title>
+
+
+    <!-- Bootstrap -->
+    <link
+        href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+        rel="stylesheet"
+    >
+
+    <!-- Bootstrap Icons -->
+    <link
+        rel="stylesheet"
+        href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
+    >
+
+
+    <style>
+
+        body {
+            background: #f5f7fb;
+            color: #1f2937;
+            margin: 0;
+            font-family:
+                Inter,
+                system-ui,
+                -apple-system,
+                BlinkMacSystemFont,
+                "Segoe UI",
+                sans-serif;
+        }
+
+
+        /* =========================
+           NAVBAR
+        ========================= */
+
+        .main-navbar {
+            background: #ffffff;
+            border-bottom: 1px solid #e5e7eb;
+            box-shadow: 0 2px 8px rgba(0,0,0,.05);
+            position: sticky;
+            top: 0;
+            z-index: 1030;
+        }
+
+        .navbar-market-search { position: relative; width: min(330px, 28vw); }
+        .navbar-market-search .form-control { min-width: 0; border-radius: 12px 0 0 12px; }
+        .navbar-market-search .btn { border-radius: 0 12px 12px 0; }
+        .navbar-market-search [data-voice-search],
+        .mobile-market-search [data-voice-search] { border-radius: 0; }
+        .mobile-market-search { position: relative; }
+        .mobile-market-search [data-voice-search-status],
+        .navbar-market-search [data-voice-search-status] {
+            position: absolute;
+            top: calc(100% + 4px);
+            right: 0;
+            z-index: 1035;
+            width: min(320px, 90vw);
+            padding: 7px 10px;
+            border: 1px solid #dce5e8;
+            border-radius: 9px;
+            background: #fff;
+            box-shadow: 0 4px 14px rgba(0,0,0,.12);
+            color: #334155;
+            font-size: .78rem;
+        }
+        .mobile-market-search [data-voice-search-status]:empty,
+        .navbar-market-search [data-voice-search-status]:empty { display: none; }
+        .navbar-delivery-label { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .navbar-delivery-menu { max-width: 310px; }
+        .navbar-delivery-menu .dropdown-toggle { display: flex; align-items: center; gap: 7px; max-width: 100%; }
+        .navbar-delivery-address { display: block; max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .navbar-delivery-menu .dropdown-menu { min-width: min(340px, 92vw); }
+        @media (max-width: 991.98px) {
+            .navbar-market-search { width: 100%; padding: 8px 12px 4px; }
+            .mobile-market-search {
+                display: flex;
+                order: 3;
+                flex: 0 0 100%;
+                width: 100%;
+                padding: 3px 0 8px;
+            }
+            .mobile-market-search .form-control {
+                min-width: 0;
+                min-height: 40px;
+                border-radius: 10px 0 0 10px;
+            }
+            .mobile-market-search .btn { border-radius: 0 10px 10px 0; }
+            .main-navbar .navbar-collapse { order: 4; flex-basis: 100%; }
+            .navbar-market-search-desktop { display: none !important; }
+            .navbar-delivery-label { max-width: min(60vw, 220px); }
+            .navbar-delivery-menu { max-width: 100%; }
+            .navbar-delivery-address { max-width: min(65vw, 260px); }
+        }
+        @media (min-width: 992px) {
+            .mobile-market-search { display: none !important; }
+        }
+
+
+        .navbar-brand {
+            font-weight: 800;
+            font-size: 20px;
+            color: #2563eb !important;
+        }
+
+
+        .navbar-brand span {
+            color: #111827;
+        }
+
+
+        .nav-link {
+            font-weight: 500;
+            color: #374151 !important;
+            border-radius: 8px;
+            padding: 8px 12px !important;
+            margin: 0 2px;
+        }
+
+
+        .nav-link:hover {
+            background: #eff6ff;
+            color: #2563eb !important;
+        }
+
+
+        .nav-link.active {
+            background: #2563eb;
+            color: white !important;
+        }
+
+        .owner-add-shop {
+            color: #ffffff !important;
+        }
+
+
+        /* =========================
+           DROPDOWN
+        ========================= */
+
+        .dropdown-menu {
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,.10);
+            padding: 8px;
+        }
+
+
+        .dropdown-item {
+            border-radius: 8px;
+            padding: 9px 12px;
+        }
+
+
+        .dropdown-item:hover {
+            background: #eff6ff;
+        }
+
+
+        .dropdown-divider {
+            margin: 6px 0;
+        }
+
+
+        /* =========================
+           CART
+        ========================= */
+
+        .cart-nav {
+            position: relative;
+        }
+
+
+        .cart-badge {
+            position: absolute;
+            top: 0;
+            right: 0;
+
+            min-width: 18px;
+            height: 18px;
+
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            background: #dc2626;
+            color: white;
+
+            border-radius: 50%;
+
+            font-size: 10px;
+            font-weight: 700;
+
+            padding: 0 4px;
+        }
+
+
+        /* =========================
+           USER
+        ========================= */
+
+        .user-menu {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+
+        .user-avatar {
+            width: 34px;
+            height: 34px;
+
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            background: #2563eb;
+            color: white;
+
+            border-radius: 50%;
+
+            font-weight: 700;
+        }
+
+
+        /* =========================
+           MAIN
+        ========================= */
+
+        .main-container {
+            min-height: calc(100vh - 130px);
+            padding-top: 25px;
+            padding-bottom: 80px;
+        }
+
+
+        /* =========================
+           ALERTS
+        ========================= */
+
+        .alert-container {
+            position: fixed;
+            top: 75px;
+            right: 20px;
+
+            width: min(420px, calc(100% - 40px));
+
+            z-index: 2000;
+        }
+
+
+        /* =========================
+           FOOTER
+        ========================= */
+
+        .site-footer {
+            background: #ffffff;
+            border-top: 1px solid #e5e7eb;
+
+            padding: 18px;
+
+            color: #6b7280;
+            text-align: center;
+        }
+
+
+        /* =========================
+           MOBILE NAV
+        ========================= */
+
+        .mobile-bottom-nav {
+
+            position: fixed;
+
+            left: 0;
+            right: 0;
+            bottom: 0;
+
+            height: 64px;
+
+            background: white;
+
+            border-top: 1px solid #e5e7eb;
+
+            display: flex;
+
+            justify-content: space-around;
+            align-items: center;
+
+            z-index: 1040;
+
+            box-shadow: 0 -4px 15px rgba(0,0,0,.08);
+        }
+
+
+        .mobile-bottom-nav a {
+
+            flex: 1;
+
+            text-align: center;
+
+            text-decoration: none;
+
+            color: #6b7280;
+
+            font-size: 11px;
+
+            padding: 6px 2px;
+        }
+
+        .mobile-bottom-nav button {
+            flex: 1;
+            border: 0;
+            background: transparent;
+            text-align: center;
+            color: #6b7280;
+            font-size: 11px;
+            padding: 6px 2px;
+        }
+
+
+        .mobile-bottom-nav a i {
+
+            display: block;
+
+            font-size: 20px;
+
+            margin-bottom: 2px;
+        }
+
+        .mobile-bottom-nav button i {
+            display: block;
+            font-size: 20px;
+            margin-bottom: 2px;
+        }
+
+
+        .mobile-bottom-nav a.active {
+
+            color: #2563eb;
+            font-weight: 600;
+        }
+
+
+        /* =========================
+           RESPONSIVE
+        ========================= */
+
+        @media (max-width: 991px) {
+
+            .desktop-only {
+                display: none !important;
+            }
+
+        }
+
+
+        @media (min-width: 992px) {
+
+            .mobile-only {
+                display: none !important;
+            }
+
+        }
+
+    </style>
+
+    <link rel="stylesheet" href="{% static 'seller/css/base.css' %}">
+    <link
+        rel="stylesheet"
+        href="{% static 'seller/css/mobile.css' %}?v=20261008-bottom-nav-height-v2"
+        media="(max-width: 991.98px)"
+    >
+
+    {% block extra_css %}
+    {% endblock %}
+
+</head>
+
+
+<body>
+
+
+<!-- =========================================================
+     NAVBAR
+========================================================= -->
+
+<nav class="navbar navbar-expand-lg main-navbar">
+
+    <div class="container-fluid px-3">
+
+
+        <!-- BRAND -->
+
+        <a
+            class="navbar-brand"
+            href="{% url 'home' %}"
+        >
+
+            {% if site_branding.logo %}
+                <img src="{{ site_branding.logo.url }}" alt="{{ site_branding.site_name|default:'Seller Helper' }}" style="max-height: 40px; max-width: 180px; object-fit: contain;">
+            {% else %}
+                {{ site_branding.site_name|default:'Seller Helper' }}
+            {% endif %}
+
+        </a>
+
+
+        <!-- MOBILE TOGGLE -->
+
+        <button
+            class="navbar-toggler"
+            type="button"
+            data-bs-toggle="collapse"
+            data-bs-target="#mainNavbar"
+            aria-controls="mainNavbar"
+            aria-expanded="false"
+            aria-label="Toggle navigation"
+        >
+
+            <span class="navbar-toggler-icon"></span>
+
+        </button>
+
+        {% if is_customer_portal %}
+        <form method="get" action="{% url 'marketplace' %}" class="input-group input-group-sm mobile-market-search">
+            <input type="search" name="q" value="{% if request.GET.q %}{{ request.GET.q }}{% endif %}"
+                   class="form-control" placeholder="Search products or shops…" aria-label="Search marketplace">
+            {% if address %}
+                <input type="hidden" name="address" value="{{ address.id }}">
+            {% elif market_delivery_address %}
+                <input type="hidden" name="address" value="{{ market_delivery_address.id }}">
+            {% elif request.GET.current_lat and request.GET.current_lng %}
+                <input type="hidden" name="current_lat" value="{{ request.GET.current_lat }}">
+                <input type="hidden" name="current_lng" value="{{ request.GET.current_lng }}">
+            {% endif %}
+            <button class="btn btn-outline-secondary" type="button" data-voice-search
+                    aria-label="Search by voice" title="Search by voice">
+                <i class="bi bi-mic-fill" aria-hidden="true"></i>
+            </button>
+            <button class="btn btn-success" type="submit" aria-label="Search marketplace">
+                <i class="bi bi-search"></i>
+            </button>
+            <span data-voice-search-status role="status" aria-live="polite"></span>
+        </form>
+        {% endif %}
+
+
+        <div
+            class="collapse navbar-collapse"
+            id="mainNavbar"
+        >
+
+
+            <!-- =================================================
+                 LEFT NAVIGATION
+            ================================================= -->
+
+            <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+
+
+                <!-- HOME -->
+
+                <li class="nav-item">
+
+                    <a
+                        class="nav-link"
+                        href="{% url 'home' %}"
+                    >
+
+                        <i class="bi bi-house"></i>
+                        Home
+
+                    </a>
+
+                </li>
+
+                <li class="nav-item">
+                    <a class="nav-link" href="{% url 'job_openings' %}">
+                        <i class="bi bi-briefcase"></i>
+                        Jobs
+                    </a>
+                </li>
+
+                {% if user.is_authenticated %}
+
+
+                <!-- =============================================
+                     CLIENT MARKETPLACE
+                ============================================== -->
+
+                {% if is_customer_portal %}
+
+                <li class="nav-item">
+
+                    <a
+                        class="nav-link"
+                        href="{% url 'marketplace' %}"
+                    >
+
+                        <i class="bi bi-shop"></i>
+                        Shop
+
+                    </a>
+
+                </li>
+
+
+                <!-- DELIVERY ADDRESSES -->
+
+                <li class="nav-item">
+
+                    <a
+                        class="nav-link"
+                        href="{% url 'delivery_address_list' %}"
+                    >
+
+                        <i class="bi bi-geo-alt"></i>
+                        Addresses
+
+                    </a>
+
+                </li>
+
+
+                <!-- MY ORDERS -->
+
+                <li class="nav-item">
+
+                    <a
+                        class="nav-link"
+                        href="{% url 'order_list' %}"
+                    >
+
+                        <i class="bi bi-bag-check"></i>
+                        My Orders
+
+                    </a>
+
+                </li>
+
+
+                <li class="nav-item">
+                    <a class="nav-link" href="{% url 'customer_favorites' %}">
+                        <i class="bi bi-heart"></i> Favourites
+                    </a>
+                </li>
+
+                {% endif %}
+
+
+                <!-- =============================================
+                     SHOP OWNER
+                ============================================== -->
+
+                {% if is_shop_owner_portal %}
+
+                <li class="nav-item dropdown">
+
+                    <a
+                        class="nav-link dropdown-toggle"
+                        href="#"
+                        role="button"
+                        data-bs-toggle="dropdown"
+                    >
+
+                        <i class="bi bi-shop-window"></i>
+                        My Shop
+
+                    </a>
+
+
+                    <ul class="dropdown-menu">
+
+
+                        <!-- SHOP LIST -->
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_list' %}"
+                            >
+
+                                <i class="bi bi-shop me-2"></i>
+
+                                Shops
+
+                            </a>
+
+                        </li>
+
+
+                        <!-- ADD SHOP -->
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_add' %}"
+                            >
+
+                                <i class="bi bi-plus-circle me-2"></i>
+
+                                Add Shop
+
+                            </a>
+
+                        </li>
+
+
+                        <li>
+                            <hr class="dropdown-divider">
+                        </li>
+
+
+                        <!-- SHOP ORDERS -->
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_order_list' %}"
+                            >
+
+                                <i class="bi bi-receipt me-2"></i>
+
+                                Orders
+
+                            </a>
+
+                        </li>
+
+
+                        <!-- PRODUCTS -->
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'product_list' %}"
+                            >
+
+                                <i class="bi bi-box-seam me-2"></i>
+
+                                Products
+
+                            </a>
+
+                        </li>
+
+
+                        <!-- ADD PRODUCT -->
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'product_create' %}"
+                            >
+
+                                <i class="bi bi-plus-square me-2"></i>
+
+                                Add Product
+
+                            </a>
+
+                        </li>
+
+
+                        <li>
+                            <hr class="dropdown-divider">
+                        </li>
+
+
+                        <!-- STAFF -->
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_staff_list' %}"
+                            >
+
+                                <i class="bi bi-people me-2"></i>
+
+                                Staff
+
+                            </a>
+
+                        </li>
+
+
+                        <!-- ADD STAFF -->
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_staff_create' %}"
+                            >
+
+                                <i class="bi bi-person-plus me-2"></i>
+
+                                Add Staff
+
+                            </a>
+
+                        </li>
+
+                    </ul>
+
+                </li>
+
+                {% endif %}
+
+
+                <!-- =============================================
+                     SHOP STAFF
+                ============================================== -->
+
+                {% if is_staff_portal %}
+
+                <li class="nav-item dropdown">
+
+                    <a
+                        class="nav-link dropdown-toggle"
+                        href="#"
+                        data-bs-toggle="dropdown"
+                    >
+
+                        <i class="bi bi-person-badge"></i>
+
+                        Staff Panel
+
+                    </a>
+
+
+                    <ul class="dropdown-menu">
+
+
+                        <!-- ORDERS -->
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_order_list' %}"
+                            >
+
+                                <i class="bi bi-receipt me-2"></i>
+
+                                Shop Orders
+
+                            </a>
+
+                        </li>
+
+                        <li>
+                            <a class="dropdown-item" href="{% url 'staff_dashboard' %}">
+                                <i class="bi bi-speedometer2 me-2"></i>
+                                Staff Dashboard
+                            </a>
+                        </li>
+
+
+                        {% if staff_permissions.can_confirm_orders %}
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_order_list' %}?status=PLACED"
+                            >
+
+                                <i class="bi bi-check-circle me-2"></i>
+
+                                Confirm Orders
+
+                            </a>
+
+                        </li>
+
+                        {% endif %}
+
+
+                        {% if staff_permissions.can_pack_orders %}
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_order_list' %}?status=PACKING"
+                            >
+
+                                <i class="bi bi-box-seam me-2"></i>
+
+                                Packing
+
+                            </a>
+
+                        </li>
+
+                        {% endif %}
+
+
+                        {% if staff_permissions.can_change_order_status %}
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_order_list' %}"
+                            >
+
+                                <i class="bi bi-arrow-repeat me-2"></i>
+
+                                Update Status
+
+                            </a>
+
+                        </li>
+
+                        {% endif %}
+
+
+                        {% if staff_permissions.can_manage_stock %}
+
+                        <li>
+                            <hr class="dropdown-divider">
+                        </li>
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'product_list' %}"
+                            >
+
+                                <i class="bi bi-boxes me-2"></i>
+
+                                Manage Stock
+
+                            </a>
+
+                        </li>
+
+                        {% endif %}
+
+
+                        {% if staff_permissions.can_manage_staff %}
+
+                        <li>
+                            <hr class="dropdown-divider">
+                        </li>
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_staff_list' %}"
+                            >
+
+                                <i class="bi bi-people me-2"></i>
+
+                                Manage Staff
+
+                            </a>
+
+                        </li>
+
+                        {% endif %}
+
+                    </ul>
+
+                </li>
+
+                {% endif %}
+
+
+                <!-- =============================================
+                     ADMIN
+                ============================================== -->
+
+                {% if user.is_superuser and active_portal == "ADMIN" %}
+
+                <li class="nav-item dropdown">
+
+                    <a
+                        class="nav-link dropdown-toggle"
+                        href="#"
+                        data-bs-toggle="dropdown"
+                    >
+
+                        <i class="bi bi-shield-lock"></i>
+
+                        Admin
+
+                    </a>
+
+
+                    <ul class="dropdown-menu">
+
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'admin_catalog_dashboard' %}"
+                            >
+
+                                <i class="bi bi-speedometer2 me-2"></i>
+
+                                Catalog workspace
+
+                            </a>
+
+                        </li>
+
+                        <li>
+                            <a class="dropdown-item" href="{% url 'admin_catalog_dashboard' %}">
+                                <i class="bi bi-tags me-2"></i>
+                                Product Catalog
+                            </a>
+                        </li>
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_list' %}"
+                            >
+
+                                <i class="bi bi-shop me-2"></i>
+
+                                All Shops
+
+                            </a>
+
+                        </li>
+
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'product_list' %}"
+                            >
+
+                                <i class="bi bi-box-seam me-2"></i>
+
+                                All Products
+
+                            </a>
+
+                        </li>
+
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_order_list' %}"
+                            >
+
+                                <i class="bi bi-receipt me-2"></i>
+
+                                All Orders
+
+                            </a>
+
+                        </li>
+
+                    </ul>
+
+                </li>
+
+                {% endif %}
+
+                {% if user.is_superuser %}
+                <li class="nav-item">
+                    <a class="nav-link btn btn-sm btn-outline-primary ms-lg-2"
+                       href="{% url 'admin_catalog_dashboard' %}">
+                        <i class="bi bi-shield-lock me-1"></i>Admin Catalog
+                    </a>
+                </li>
+                {% endif %}
+
+                {% endif %}
+
+            </ul>
+
+
+            <!-- =================================================
+                 RIGHT NAVIGATION
+            ================================================= -->
+
+            <ul class="navbar-nav ms-auto align-items-lg-center">
+
+
+                {% if user.is_authenticated %}
+
+                {% if is_shop_owner_portal %}
+                <li class="nav-item me-lg-2">
+                    <a class="nav-link btn btn-outline-primary px-3" href="{% url 'shop_list' %}">
+                        <i class="bi bi-shop me-1"></i>All shops
+                    </a>
+                </li>
+                <li class="nav-item me-lg-2">
+                    <a class="nav-link btn btn-primary text-white owner-add-shop px-3" href="{% url 'shop_add' %}">
+                        <i class="bi bi-plus-lg me-1"></i>Add shop
+                    </a>
+                </li>
+                {% endif %}
+
+                {% if is_customer_portal %}
+                <li class="nav-item dropdown navbar-delivery-menu me-lg-2">
+                    <a class="nav-link dropdown-toggle border rounded-pill px-3"
+                       href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                        <i class="bi bi-geo-alt-fill text-success"></i>
+                        <span class="text-start overflow-hidden">
+                            <small class="d-block text-muted lh-1">Delivering to</small>
+                            <strong class="navbar-delivery-address">
+                                {% if address %}{{ address.label|default:"Delivery address" }}{% elif market_delivery_address %}{{ market_delivery_address.label|default:"Delivery address" }}{% else %}Choose address{% endif %}
+                            </strong>
+                        </span>
+                    </a>
+                    <div class="dropdown-menu dropdown-menu-end shadow p-2">
+                        {% for saved_address in market_delivery_addresses %}
+                            <div class="d-flex align-items-center justify-content-between gap-2 px-2 py-2 border-bottom">
+                                <div class="min-w-0">
+                                    <div class="fw-semibold text-truncate">
+                                        {{ saved_address.label|default:"Delivery address" }}
+                                        {% if address %}
+                                            {% if saved_address.id == address.id %}<span class="badge text-bg-success">Selected</span>{% endif %}
+                                        {% elif market_delivery_address %}
+                                            {% if saved_address.id == market_delivery_address.id %}<span class="badge text-bg-success">Selected</span>{% endif %}
+                                        {% endif %}
+                                    </div>
+                                    <small class="text-muted d-block text-truncate">{{ saved_address.address }}</small>
+                                </div>
+                                {% if not saved_address.is_default %}
+                                    <form method="post" action="{% url 'delivery_address_default' saved_address.id %}">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-outline-success text-nowrap">Use this</button>
+                                    </form>
+                                {% endif %}
+                            </div>
+                        {% empty %}
+                            <p class="small text-muted px-2 py-2 mb-0">No saved delivery addresses yet.</p>
+                        {% endfor %}
+                        <a href="{% url 'delivery_address_list' %}" class="dropdown-item mt-1">
+                            <i class="bi bi-pencil-square me-2"></i>Manage delivery addresses
+                        </a>
+                        <a href="{% url 'delivery_address_add' %}" class="dropdown-item">
+                            <i class="bi bi-plus-circle me-2"></i>Add a new address
+                        </a>
+                    </div>
+                </li>
+                <li class="nav-item me-lg-2">
+                    <form method="get" action="{% url 'marketplace' %}" class="input-group input-group-sm navbar-market-search navbar-market-search-desktop">
+                        <input type="search" name="q" value="{% if request.GET.q %}{{ request.GET.q }}{% endif %}"
+                               class="form-control" placeholder="Search products, shops…" aria-label="Search marketplace">
+                        {% if address %}
+                            <input type="hidden" name="address" value="{{ address.id }}">
+                        {% elif market_delivery_address %}
+                            <input type="hidden" name="address" value="{{ market_delivery_address.id }}">
+                        {% elif request.GET.current_lat and request.GET.current_lng %}
+                            <input type="hidden" name="current_lat" value="{{ request.GET.current_lat }}">
+                            <input type="hidden" name="current_lng" value="{{ request.GET.current_lng }}">
+                        {% endif %}
+                        <button class="btn btn-outline-secondary" type="button" data-voice-search
+                                aria-label="Search by voice" title="Search by voice">
+                            <i class="bi bi-mic-fill" aria-hidden="true"></i>
+                        </button>
+                        <button class="btn btn-success" type="submit" aria-label="Search">
+                            <i class="bi bi-search"></i>
+                        </button>
+                        <span data-voice-search-status role="status" aria-live="polite"></span>
+                    </form>
+                </li>
+                {% endif %}
+
+                <!-- CART MOBILE/DESKTOP -->
+
+                {% if is_customer_portal %}
+
+                <li class="nav-item me-lg-2">
+
+                    <a
+                        href="{% url 'cart' %}"
+                        class="nav-link cart-nav"
+                    >
+
+                        <i class="bi bi-cart3 fs-5"></i>
+
+                        <span class="cart-badge cart-count{% if not cart_count %} d-none{% endif %}" data-cart-count>{{ cart_count|default:0 }}</span>
+
+                    </a>
+
+                </li>
+
+                {% endif %}
+
+                <!-- USER -->
+
+                <li class="nav-item dropdown">
+
+
+                    <a
+                        class="nav-link dropdown-toggle user-menu"
+                        href="#"
+                        role="button"
+                        data-bs-toggle="dropdown"
+                        aria-expanded="false"
+                    >
+
+                        <span class="user-avatar">
+
+                            {{ user.username|first|upper }}
+
+                        </span>
+
+
+                        <span>
+
+                            {{ user.get_full_name|default:user.username }}
+
+                        </span>
+
+                    </a>
+
+
+                    <ul
+                        class="dropdown-menu dropdown-menu-end"
+                    >
+
+
+                        <!-- PROFILE -->
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'my_profile' %}"
+                            >
+
+                                <i class="bi bi-person me-2"></i>
+
+                                My Profile
+
+                            </a>
+
+                        </li>
+
+                        {% if user.shop_staff %}
+                            <li>
+                                <a class="dropdown-item" href="{% url 'staff_payment_settings' %}">
+                                    <i class="bi bi-qr-code me-2"></i>My UPI payment settings
+                                </a>
+                            </li>
+                        {% endif %}
+
+                        {% if is_customer_portal %}
+                        <li>
+                            <div class="dropdown-item-text d-flex align-items-center justify-content-between gap-3 px-3 py-2">
+                                <span class="text-muted">
+                                    <i class="bi bi-wallet2 me-2 text-success"></i>Wallet balance
+                                </span>
+                                <strong class="text-success">
+                                    ₹{{ user.client_profile.wallet_balance|default:"0.00" }}
+                                </strong>
+                            </div>
+                        </li>
+                        <li>
+                            <a class="dropdown-item" href="{% url 'customer_wallet_history' %}">
+                                <i class="bi bi-clock-history me-2"></i>
+                                Wallet &amp; payment history
+                            </a>
+                        </li>
+                        {% endif %}
+
+
+                        <!-- CLIENT ADDRESS -->
+
+                        {% if is_customer_portal %}
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'delivery_address_list' %}"
+                            >
+
+                                <i class="bi bi-geo-alt me-2"></i>
+
+                                Delivery Addresses
+
+                            </a>
+
+                        </li>
+
+                        {% endif %}
+
+                        <li>
+                            <a class="dropdown-item" href="{% url 'my_job_applications' %}">
+                                <i class="bi bi-briefcase me-2"></i>
+                                My Job Applications
+                            </a>
+                        </li>
+
+
+                        <!-- STAFF -->
+
+                        {% if is_staff_portal %}
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'shop_order_list' %}"
+                            >
+
+                                <i class="bi bi-person-badge me-2"></i>
+
+                                Staff Dashboard
+
+                            </a>
+
+                        </li>
+
+                        {% endif %}
+
+
+                        <!-- ADMIN -->
+
+                        {% if user.is_superuser and active_portal == "ADMIN" %}
+
+                        <li>
+
+                            <a
+                                class="dropdown-item"
+                                href="{% url 'admin_catalog_dashboard' %}"
+                            >
+
+                                <i class="bi bi-shield-lock me-2"></i>
+
+                                Admin
+
+                            </a>
+
+                        </li>
+
+                        {% endif %}
+
+
+                        <li>
+                            <hr class="dropdown-divider">
+                        </li>
+
+
+                        <!-- LOGOUT -->
+
+                        <li>
+
+                            <form
+                                method="post"
+                                action="{% url 'logout' %}"
+                                class="px-2"
+                            >
+
+                                {% csrf_token %}
+
+                                <button
+                                    type="submit"
+                                    class="dropdown-item text-danger"
+                                >
+
+                                    <i class="bi bi-box-arrow-right me-2"></i>
+
+                                    Logout
+
+                                </button>
+
+                            </form>
+
+                        </li>
+
+                    </ul>
+
+                </li>
+
+
+                {% else %}
+
+
+                <!-- LOGIN -->
+
+                <li class="nav-item">
+
+                    <a
+                        class="nav-link"
+                        href="{% url 'login' %}"
+                    >
+
+                        <i class="bi bi-box-arrow-in-right"></i>
+
+                        Login
+
+                    </a>
+
+                </li>
+
+
+                <!-- SIGNUP -->
+
+                <li class="nav-item">
+
+                    <a
+                        class="btn btn-primary btn-sm px-3"
+                        href="{% url 'signup' %}"
+                    >
+
+                        Sign Up
+
+                    </a>
+
+                </li>
+
+
+                {% endif %}
+
+            </ul>
+
+        </div>
+
+    </div>
+
+</nav>
+
+
+
+<!-- =========================================================
+     ALERT MESSAGES
+========================================================= -->
+
+{% if messages %}
+
+<div class="alert-container">
+
+    {% for message in messages %}
+
+    <div
+        class="alert
+        {% if message.tags %}
+            alert-{{ message.tags }}
+        {% else %}
+            alert-info
+        {% endif %}
+        alert-dismissible fade show shadow-sm"
+        role="alert"
+    >
+
+        {{ message }}
+
+        <button
+            type="button"
+            class="btn-close"
+            data-bs-dismiss="alert"
+        ></button>
+
+    </div>
+
+    {% endfor %}
+
+</div>
+
+{% endif %}
+
+
+
+<!-- =========================================================
+     MAIN CONTENT
+========================================================= -->
+
+<main class="main-container">
+
+    <div class="container-fluid px-3 px-lg-4">
+
+        {% block content %}
+        {% endblock %}
+
+    </div>
+
+</main>
+
+
+
+<!-- =========================================================
+     FOOTER
+========================================================= -->
+
+<footer class="site-footer">
+
+    <div class="container">
+        <small class="d-block mb-2">
+            © {% now "Y" %} {{ site_branding.site_name|default:'Seller Helper' }} — {{ site_branding.tagline|default:"Marketplace and shop management" }}
+        </small>
+        {% if site_branding.support_email or site_branding.support_phone or site_branding.support_address %}
+            <small class="d-block mb-2">
+                {{ site_branding.support_email }}{% if site_branding.support_email and site_branding.support_phone %} · {% endif %}{{ site_branding.support_phone }}{% if site_branding.support_address %} · {{ site_branding.support_address }}{% endif %}
+            </small>
+        {% endif %}
+        <nav class="d-flex flex-wrap justify-content-center gap-2 gap-md-3" aria-label="About and legal">
+            <a href="{% url 'about' %}">About us</a>
+            <a href="{% url 'contact' %}">Contact us</a>
+            <a href="{% url 'terms' %}">Terms &amp; conditions</a>
+            <a href="{% url 'privacy_policy' %}">Privacy</a>
+            <a href="{% url 'disclaimer' %}">Disclaimer</a>
+            <a href="{% url 'refund_policy' %}">Cancellation &amp; refunds</a>
+            <a href="{% url 'delivery_policy' %}">Delivery policy</a>
+            <a href="{% url 'grievance_policy' %}">Grievance redressal</a>
+        </nav>
+    </div>
+
+</footer>
+
+
+
+<!-- =========================================================
+     MOBILE BOTTOM NAV
+========================================================= -->
+
+{% if user.is_authenticated %}
+
+<div class="mobile-bottom-nav mobile-only">
+
+
+    <!-- HOME -->
+
+    <a href="{% url 'home' %}">
+
+        <i class="bi bi-house"></i>
+
+        Home
+
+    </a>
+
+
+    {% if is_customer_portal %}
+
+    <!-- SHOP -->
+
+    <a href="{% url 'marketplace' %}">
+
+        <i class="bi bi-shop"></i>
+
+        Shop
+
+    </a>
+
+    
+    <!-- CART -->
+    <a
+        href="{% url 'cart' %}"
+        style="position:relative;"
+    >
+
+        <i class="bi bi-cart3"></i>
+
+        Cart
+
+        <span class="cart-badge cart-count{% if not cart_count %} d-none{% endif %}" data-cart-count>{{ cart_count|default:0 }}</span>
+
+    </a>
+
+    <a href="{% url 'notifications' %}" style="position:relative;" aria-label="Alerts" title="Alerts">
+        <i class="bi bi-bell"></i>
+        <span class="mobile-nav-label">Alerts</span>
+        {% if unread_notifications_count %}
+            <span class="cart-badge">{{ unread_notifications_count }}</span>
+        {% endif %}
+    </a>
+
+
+    <!-- ORDERS -->
+
+    <a href="{% url 'order_list' %}">
+
+        <i class="bi bi-bag-check"></i>
+
+        Orders
+
+    </a>
+
+    {% elif is_staff_portal %}
+
+        <button type="button" data-sellerhelper-scan-order aria-label="Scan order QR code">
+            <i class="bi bi-qr-code-scan"></i>
+            Scan
+        </button>
+
+        {% if active_staff.role == "RIDER" %}
+            <a href="{% url 'rider_dashboard' %}">
+                <i class="bi bi-bicycle"></i>
+                Deliveries
+            </a>
+        {% elif active_staff.can_pack_orders %}
+            <a href="{% url 'packer_dashboard' %}">
+                <i class="bi bi-box-seam"></i>
+                Packing
+            </a>
+        {% elif active_staff.can_view_orders %}
+            <a href="{% url 'shop_order_list' %}">
+                <i class="bi bi-receipt"></i>
+                Orders
+            </a>
+        {% endif %}
+
+
+    {% else %}
+
+        <a href="{% url 'shop_list' %}">
+            <i class="bi bi-shop"></i>
+            All shops
+        </a>
+        <a href="{% url 'shop_order_list' %}">
+            <i class="bi bi-receipt"></i>
+            Orders
+        </a>
+        <a href="{% url 'product_list' %}">
+            <i class="bi bi-box-seam"></i>
+            Products
+        </a>
+
+    {% endif %}
+
+    <!-- PROFILE -->
+
+    <a href="{% url 'my_profile' %}">
+
+        <i class="bi bi-person"></i>
+
+        Profile
+
+    </a>
+
+</div>
+
+{% endif %}
+
+<aside
+    id="pwa-install-prompt"
+    class="pwa-install-prompt"
+    aria-labelledby="pwa-install-title"
+    aria-describedby="pwa-install-description"
+    hidden
+>
+    <div class="pwa-install-heading">
+        {% if site_branding.app_icon %}
+            <img class="pwa-install-icon" src="{{ site_branding.app_icon.url }}" alt="">
+        {% else %}
+            <span class="pwa-install-icon" aria-hidden="true">SH</span>
+        {% endif %}
+        <div>
+        <h2 id="pwa-install-title">Install {{ site_branding.site_name|default:'Seller Helper' }}</h2>
+        <p id="pwa-install-description">Add {{ site_branding.site_name|default:'Seller Helper' }} to your home screen for quick access.</p>
+        </div>
+        <button type="button" class="pwa-install-close" data-pwa-dismiss aria-label="Dismiss install prompt">×</button>
+    </div>
+    <ol id="pwa-ios-steps" class="pwa-ios-steps" hidden>
+        <li>Tap the Share button in Safari.</li>
+        <li>Choose <strong>Add to Home Screen</strong>, then tap <strong>Add</strong>.</li>
+    </ol>
+    <div class="pwa-install-actions">
+        <button type="button" class="btn btn-primary" id="pwa-install-action" hidden>Install</button>
+        <button type="button" class="btn btn-primary" id="pwa-ios-installed" hidden>I’ve added it</button>
+        <button type="button" class="btn btn-outline-secondary" data-pwa-dismiss>Not now</button>
+    </div>
+</aside>
+
+
+
+<!-- Bootstrap JS -->
+
+<script
+    src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+></script>
+
+<script>
+    document.querySelectorAll("[data-sellerhelper-scan-order]").forEach(function (button) {
+        button.addEventListener("click", function () {
+            document.dispatchEvent(new CustomEvent("sellerhelper:open-qr-scanner", {
+                detail: {
+                    purpose: button.dataset.sellerhelperScanOrder === "pickup-otp"
+                        ? "pickup-otp"
+                        : "general"
+                }
+            }));
+        });
+    });
+
+    {% if user.is_authenticated %}
+    document.addEventListener("sellerhelper:native-push-token", function (event) {
+        const detail = event.detail || {};
+        if (typeof detail.token !== "string" || !detail.token) return;
+        window.__sellerHelperPushToken = detail.token;
+
+        fetch("{% url 'register_notification_device_token' %}", {
+            credentials: "same-origin"
+        })
+            .then(function (response) {
+                if (!response.ok) throw new Error("Could not prepare push-token registration.");
+                return response.json();
+            })
+            .then(function (csrf) {
+                return fetch("{% url 'register_notification_device_token' %}", {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: {
+                        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                        "X-CSRFToken": csrf.csrf_token
+                    },
+                    body: new URLSearchParams({
+                        token: detail.token,
+                        platform: detail.platform
+                    })
+                });
+            })
+            .then(function (response) {
+                return response.json().then(function (result) {
+                    if (!response.ok || !result.success) {
+                        throw new Error(result.message || "Could not register push notifications.");
+                    }
+                    if (window.ReactNativeWebView) {
+                        window.ReactNativeWebView.postMessage(JSON.stringify({ type: "push.registered" }));
+                    }
+                });
+            })
+            .catch(function (error) {
+                console.error("SellerHelper push-token registration failed.", error);
+            });
+    });
+
+    document.querySelectorAll('form[action="{% url "logout" %}"]').forEach(function (form) {
+        form.addEventListener("submit", function (event) {
+            const token = window.__sellerHelperPushToken;
+            if (!token || form.dataset.pushUnregistering === "true") return;
+            event.preventDefault();
+            form.dataset.pushUnregistering = "true";
+            const csrfInput = form.querySelector('[name="csrfmiddlewaretoken"]');
+            fetch("{% url 'register_notification_device_token' %}", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                    "X-CSRFToken": csrfInput ? csrfInput.value : ""
+                },
+                body: new URLSearchParams({ token: token, action: "unregister" })
+            })
+                .then(function (response) {
+                    if (!response.ok) throw new Error("Could not unregister this device's push token.");
+                })
+                .catch(function (error) {
+                    console.error("SellerHelper push-token unregistration failed.", error);
+                })
+                .finally(function () {
+                    form.submit();
+                });
+        });
+    });
+    {% endif %}
+
+    document.addEventListener("sellerhelper:qr-scanned", function (event) {
+        const value = event.detail && typeof event.detail.value === "string"
+            ? event.detail.value.trim()
+            : "";
+        const match = /^SH-PICKUP:([0-9]{6})$/.exec(value);
+        if (!match) {
+            alert("This QR code is not a valid rider pickup OTP.");
+            document.dispatchEvent(new Event("sellerhelper:qr-scan-retry"));
+            return;
+        }
+
+        const input = document.querySelector("[data-pickup-otp-input]");
+        if (!input || !input.form) {
+            alert("Open the rider pickup verification form before scanning this QR code.");
+            document.dispatchEvent(new Event("sellerhelper:qr-scan-retry"));
+            return;
+        }
+        input.value = match[1];
+        const form = input.form;
+        fetch(form.action, {
+            method: "POST",
+            body: new FormData(form),
+            credentials: "same-origin",
+            headers: { "X-Requested-With": "XMLHttpRequest" }
+        })
+            .then(function (response) {
+                return response.json().then(function (result) {
+                    if (!response.ok || !result.success) {
+                        throw new Error(result.message || "Rider OTP verification failed.");
+                    }
+                    document.dispatchEvent(new Event("sellerhelper:qr-scan-close"));
+                    window.location.assign(result.redirect_url);
+                });
+            })
+            .catch(function (error) {
+                alert(error instanceof Error
+                    ? error.message
+                    : "Rider OTP verification failed. The order was not confirmed.");
+                document.dispatchEvent(new Event("sellerhelper:qr-scan-retry"));
+            });
+    });
+</script>
+
+<script>
+
+    /*
+     * Automatically close Django messages
+     */
+
+    setTimeout(function () {
+
+        document
+            .querySelectorAll(".alert-container .alert")
+            .forEach(function (alert) {
+
+                const bsAlert =
+                    bootstrap.Alert.getOrCreateInstance(alert);
+
+                bsAlert.close();
+
+            });
+
+    }, 5000);
+
+
+    /*
+     * Highlight current navigation item
+     */
+
+    document
+        .querySelectorAll(".nav-link")
+        .forEach(function (link) {
+
+            if (
+                link.href === window.location.href
+            ) {
+
+                link.classList.add("active");
+
+            }
+
+        });
+
+    window.syncCartCount = function (count) {
+        document.querySelectorAll("[data-cart-count]").forEach(function (badge) {
+            badge.textContent = String(count);
+            badge.classList.toggle("d-none", Number(count) <= 0);
+        });
+    };
+
+    (function () {
+        const soundKey = "sellerhelper_notification_sound";
+        const latestKey = "sellerhelper_latest_notification_id";
+        const soundToggle = document.querySelector("[data-notification-sound-toggle]");
+        let audioContext = null;
+        let hasLoadedBaseline = false;
+
+        function updateSoundToggle() {
+            if (!soundToggle) return;
+            const enabled = localStorage.getItem(soundKey) === "enabled";
+            soundToggle.setAttribute("aria-pressed", String(enabled));
+            soundToggle.querySelector("[data-sound-label]").textContent =
+                enabled ? "Sound enabled" : "Enable sound";
+            soundToggle.querySelector("[data-sound-icon]").className =
+                enabled ? "bi bi-volume-up me-1" : "bi bi-volume-mute me-1";
+        }
+
+        function playNotificationSound() {
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextClass) return;
+            audioContext = audioContext || new AudioContextClass();
+            if (audioContext.state === "suspended") audioContext.resume();
+            const oscillator = audioContext.createOscillator();
+            const gain = audioContext.createGain();
+            oscillator.frequency.value = 880;
+            gain.gain.setValueAtTime(0.12, audioContext.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.25);
+            oscillator.connect(gain);
+            gain.connect(audioContext.destination);
+            oscillator.start();
+            oscillator.stop(audioContext.currentTime + 0.25);
+        }
+
+        if (soundToggle) {
+            soundToggle.addEventListener("click", function () {
+                const enabled = localStorage.getItem(soundKey) === "enabled";
+                localStorage.setItem(soundKey, enabled ? "disabled" : "enabled");
+                if (!enabled) playNotificationSound();
+                updateSoundToggle();
+            });
+            updateSoundToggle();
+        }
+
+        function checkForNotifications() {
+            fetch("{% url 'notifications_api' %}", {
+                headers: {"X-Requested-With": "XMLHttpRequest"}
+            }).then(function (response) {
+                if (!response.ok) throw new Error("Notification check failed.");
+                return response.json();
+            }).then(function (payload) {
+                const newestId = payload.items.length ? Number(payload.items[0].id) : 0;
+                const previousId = Number(localStorage.getItem(latestKey) || "0");
+                if (
+                    hasLoadedBaseline &&
+                    newestId > previousId &&
+                    localStorage.getItem(soundKey) === "enabled"
+                ) {
+                    playNotificationSound();
+                }
+                if (newestId > previousId) {
+                    localStorage.setItem(latestKey, String(newestId));
+                }
+                hasLoadedBaseline = true;
+            }).catch(function (error) {
+                console.error("Unable to check for notifications.", error);
+            });
+        }
+
+        checkForNotifications();
+        document.addEventListener("sellerhelper:live-event", function (event) {
+            if (event.detail?.type === "notifications.created") {
+                checkForNotifications();
+            }
+        });
+        document.addEventListener("sellerhelper:live-fallback", checkForNotifications);
+    })();
+
+</script>
+
+{% if user.is_authenticated %}
+<script>
+    (function () {
+        let reconnectDelay = 1000;
+        let hasConnected = false;
+        let reloadTimer = null;
+        let reloadNotice = null;
+        const liveStatus = document.getElementById("sellerhelper-live-status");
+        window.sellerHelperLiveConnected = false;
+        window.sellerHelperLiveSocket = null;
+
+        function setLiveStatus(message, connected) {
+            if (!liveStatus) return;
+            liveStatus.textContent = message;
+            liveStatus.classList.toggle("text-success", connected);
+            liveStatus.classList.toggle("text-muted", !connected);
+            liveStatus.classList.toggle("bg-light", !connected);
+            liveStatus.classList.toggle("bg-success-subtle", connected);
+        }
+
+        function showReloadNotice() {
+            if (reloadNotice) return;
+            reloadNotice = document.createElement("div");
+            reloadNotice.className = "alert alert-info shadow position-fixed bottom-0 start-50 translate-middle-x mb-5";
+            reloadNotice.setAttribute("role", "status");
+            reloadNotice.innerHTML = '<span>New order updates are available.</span> ';
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "btn btn-sm btn-primary ms-2";
+            button.textContent = "Refresh";
+            button.addEventListener("click", function () {
+                window.location.reload();
+            });
+            reloadNotice.appendChild(button);
+            document.body.appendChild(reloadNotice);
+        }
+
+        function requestPageRefresh() {
+            if (document.querySelector("#order-tracking-live")) return;
+            if (document.visibilityState !== "visible") {
+                window.__sellerHelperRefreshWhenVisible = true;
+                return;
+            }
+            const hasUnsavedChanges = Array.from(document.forms).some(function (form) {
+                return form.dataset.liveDirty === "true";
+            });
+            if (hasUnsavedChanges) {
+                showReloadNotice();
+                return;
+            }
+            if (reloadTimer === null) {
+                reloadTimer = window.setTimeout(function () {
+                    window.location.reload();
+                }, 1200);
+            }
+        }
+
+        document.addEventListener("input", function (event) {
+            if (event.target.form) event.target.form.dataset.liveDirty = "true";
+        });
+        document.addEventListener("change", function (event) {
+            if (event.target.form) event.target.form.dataset.liveDirty = "true";
+        });
+        document.addEventListener("visibilitychange", function () {
+            if (document.visibilityState === "visible" && window.__sellerHelperRefreshWhenVisible) {
+                window.__sellerHelperRefreshWhenVisible = false;
+                requestPageRefresh();
+            }
+        });
+        document.addEventListener("sellerhelper:live-event", function (event) {
+            if (event.detail?.type === "orders.updated") requestPageRefresh();
+        });
+        document.addEventListener("sellerhelper:live-fallback", requestPageRefresh);
+
+        function connect() {
+            const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
+            const socket = new WebSocket(`${scheme}//${window.location.host}/ws/live/`);
+            window.sellerHelperLiveSocket = socket;
+            socket.addEventListener("open", function () {
+                window.sellerHelperLiveConnected = true;
+                reconnectDelay = 1000;
+                setLiveStatus("Live updates connected", true);
+                document.dispatchEvent(new CustomEvent("sellerhelper:live-connection", {
+                    detail: { connected: true }
+                }));
+                if (hasConnected) {
+                    document.dispatchEvent(new CustomEvent("sellerhelper:live-event", {
+                        detail: { type: "orders.updated" }
+                    }));
+                    document.dispatchEvent(new CustomEvent("sellerhelper:live-event", {
+                        detail: { type: "notifications.created" }
+                    }));
+                }
+                hasConnected = true;
+            });
+            socket.addEventListener("message", function (event) {
+                let message;
+                try {
+                    message = JSON.parse(event.data);
+                } catch (error) {
+                    console.error("Received an invalid live update message.", error);
+                    return;
+                }
+                if (message.type === "connection.ready") {
+                    if (message.shared_channel_layer) {
+                        setLiveStatus("Live updates connected", true);
+                    } else {
+                        setLiveStatus("Socket connected; Redis is needed across workers", false);
+                        console.warn(
+                            "Live updates use an in-memory channel layer. Configure CHANNEL_REDIS_URL (or REDIS_URL) for multiple workers."
+                        );
+                    }
+                    return;
+                }
+                document.dispatchEvent(new CustomEvent("sellerhelper:live-event", {
+                    detail: message
+                }));
+            });
+            socket.addEventListener("close", function () {
+                window.sellerHelperLiveConnected = false;
+                setLiveStatus("Reconnecting to live updates…", false);
+                document.dispatchEvent(new CustomEvent("sellerhelper:live-connection", {
+                    detail: { connected: false }
+                }));
+                window.setTimeout(connect, reconnectDelay);
+                reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+            });
+            socket.addEventListener("error", function () {
+                socket.close();
+            });
+        }
+
+        setLiveStatus("Connecting to live updates…", false);
+        connect();
+        window.setInterval(function () {
+            if (!window.sellerHelperLiveConnected) {
+                document.dispatchEvent(new Event("sellerhelper:live-fallback"));
+            }
+        }, 300000);
+    })();
+</script>
+{% endif %}
+
+<script src="{% static 'seller/js/pwa-install.js' %}" defer></script>
+
+<script>
+    (function () {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+        document.querySelectorAll("[data-voice-search]").forEach(function (button) {
+            const form = button.closest("form");
+            const input = form && form.querySelector('input[name="q"]');
+            const status = form && form.querySelector("[data-voice-search-status]");
+            if (!form || !input || !status) return;
+
+            function announce(message) {
+                status.textContent = message;
+            }
+
+            function setListening(listening) {
+                button.classList.toggle("btn-danger", listening);
+                button.classList.toggle("btn-outline-secondary", !listening);
+                if (listening) {
+                    button.setAttribute("aria-pressed", "true");
+                } else {
+                    button.removeAttribute("aria-pressed");
+                }
+            }
+
+            document.addEventListener("sellerhelper:native-voice-start", function () {
+                if (window.__sellerHelperVoiceSearchTarget !== button) return;
+                setListening(true);
+                announce("Listening. Speak the product or shop name.");
+            });
+            document.addEventListener("sellerhelper:native-voice-result", function (event) {
+                if (window.__sellerHelperVoiceSearchTarget !== button) return;
+                const detail = event.detail || {};
+                const transcript = String(detail.transcript || "").trim();
+                if (!transcript) return;
+                input.value = transcript;
+                input.dispatchEvent(new Event("input", { bubbles: true }));
+                announce(detail.isFinal ? "Heard: " + transcript : "Listening: " + transcript);
+                if (detail.isFinal) {
+                    setListening(false);
+                    window.__sellerHelperVoiceSearchTarget = null;
+                    if (typeof form.requestSubmit === "function") {
+                        form.requestSubmit();
+                    } else {
+                        form.submit();
+                    }
+                }
+            });
+            document.addEventListener("sellerhelper:native-voice-error", function (event) {
+                if (window.__sellerHelperVoiceSearchTarget !== button) return;
+                setListening(false);
+                announce((event.detail && event.detail.message) || "Voice search failed. Please type your search instead.");
+                window.__sellerHelperVoiceSearchTarget = null;
+            });
+            document.addEventListener("sellerhelper:native-voice-end", function () {
+                if (window.__sellerHelperVoiceSearchTarget !== button) return;
+                setListening(false);
+                if (!input.value.trim()) announce("No words were recognized. Tap the microphone and try again.");
+                window.__sellerHelperVoiceSearchTarget = null;
+            });
+
+            button.addEventListener("click", function () {
+                if (window.ReactNativeWebView) {
+                    if (window.__sellerHelperVoiceSearchTarget === button) {
+                        window.ReactNativeWebView.postMessage(JSON.stringify({ type: "voice.stop" }));
+                        return;
+                    }
+                    if (window.__sellerHelperVoiceSearchTarget) {
+                        announce("Another voice search is already listening.");
+                        return;
+                    }
+                    window.__sellerHelperVoiceSearchTarget = button;
+                    input.value = "";
+                    input.dispatchEvent(new Event("input", { bubbles: true }));
+                    announce("Starting voice search…");
+                    window.ReactNativeWebView.postMessage(JSON.stringify({
+                        type: "voice.start",
+                        language: navigator.language || "en-IN"
+                    }));
+                    return;
+                }
+
+                if (!SpeechRecognition) {
+                    announce("Voice search is not supported in this browser. Type your search instead.");
+                    return;
+                }
+                if (button._sellerHelperRecognition) {
+                    button._sellerHelperRecognition.stop();
+                    return;
+                }
+
+                const recognition = new SpeechRecognition();
+                button._sellerHelperRecognition = recognition;
+                recognition.lang = navigator.language || "en-IN";
+                recognition.interimResults = true;
+                recognition.maxAlternatives = 1;
+
+                recognition.onstart = function () {
+                    setListening(true);
+                    announce("Listening. Speak the product or shop name.");
+                };
+                recognition.onresult = function (event) {
+                    let transcript = "";
+                    let isFinal = false;
+                    for (let index = 0; index < event.results.length; index += 1) {
+                        transcript += event.results[index][0].transcript;
+                        isFinal = event.results[index].isFinal;
+                    }
+                    transcript = transcript.trim();
+                    if (!transcript) {
+                        announce("No words were recognized. Tap the microphone and try again.");
+                        return;
+                    }
+                    input.value = transcript;
+                    input.dispatchEvent(new Event("input", { bubbles: true }));
+                    announce(isFinal ? "Heard: " + transcript + ". Searching…" : "Listening: " + transcript);
+                    if (!isFinal) return;
+                    setListening(false);
+                    if (typeof form.requestSubmit === "function") {
+                        form.requestSubmit();
+                    } else {
+                        form.submit();
+                    }
+                };
+                recognition.onerror = function (event) {
+                    const messages = {
+                        "not-allowed": "Microphone permission is blocked. Allow microphone access in your browser settings.",
+                        "service-not-allowed": "Your browser's speech recognition service is unavailable.",
+                        "audio-capture": "No microphone was found. Check your microphone and try again.",
+                        "no-speech": "No speech was detected. Tap the microphone and try again.",
+                        "network": "Speech recognition needs a working internet connection."
+                    };
+                    announce(messages[event.error] || "Voice search failed. Please type your search instead.");
+                };
+                recognition.onend = function () {
+                    button._sellerHelperRecognition = null;
+                    setListening(false);
+                };
+
+                try {
+                    recognition.start();
+                } catch (error) {
+                    button._sellerHelperRecognition = null;
+                    announce("Could not start voice search. Check microphone permission and try again.");
+                }
+            });
+        });
+    })();
+</script>
+
+{% block extra_js %}
+{% endblock %}
+
+</body>
+
+</html>
