@@ -53,7 +53,7 @@
                         <tr>
                             <td class="text-nowrap">{{ assignment.shop.name }}</td>
                             <td>{{ assignment.product.product_name }}</td>
-                            <td class="text-end">{{ assignment.stock }}</td>
+                            <td class="text-end">{{ assignment.stock|floatformat:-4 }}</td>
                             <td class="text-end text-nowrap">₹{{ assignment.price|floatformat:2 }}</td>
                             <td>{% if assignment.is_active and assignment.product.is_active %}Active{% else %}Inactive{% endif %}</td>
                         </tr>

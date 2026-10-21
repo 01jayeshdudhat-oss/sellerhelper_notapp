@@ -118,6 +118,29 @@
 
             <form method="POST">
                 {% csrf_token %}
+                <h6 class="fw-semibold">Rider delivery options</h6>
+                {% if not public_rider_service_enabled %}
+                    <div class="alert alert-warning py-2">
+                        Public rider service is currently disabled for all shops by the site administrator.
+                    </div>
+                {% endif %}
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" id="public_rider_network_enabled" name="public_rider_network_enabled" {% if shop.public_rider_network_enabled %}checked{% endif %} {% if not has_active_shop_rider %}disabled{% endif %}>
+                    <label class="form-check-label" for="public_rider_network_enabled">
+                        Allow approved public riders to accept this shop's deliveries
+                    </label>
+                    {% if not has_active_shop_rider %}
+                        <div class="form-text">When there is no active shop rider, public rider delivery is enabled automatically.</div>
+                    {% endif %}
+                </div>
+                <div class="mb-3">
+                    <label class="form-label" for="rider_delivery_preference">Default rider preference</label>
+                    <select class="form-select" id="rider_delivery_preference" name="rider_delivery_preference">
+                        <option value="STAFF" {% if shop.rider_delivery_preference == "STAFF" %}selected{% endif %} {% if not has_active_shop_rider %}disabled{% endif %}>Shop staff riders</option>
+                        <option value="PUBLIC" {% if shop.rider_delivery_preference == "PUBLIC" %}selected{% endif %} {% if not shop.public_rider_network_enabled %}disabled{% endif %}>Public rider network</option>
+                    </select>
+                    <div class="form-text">Choose which rider source is preferred by default. Existing shop staff rider operations remain available.</div>
+                </div>
                 <div class="form-check form-switch mb-3">
                     <input class="form-check-input" type="checkbox" id="allow_scheduled_delivery" name="allow_scheduled_delivery" {% if shop.allow_scheduled_delivery %}checked{% endif %}>
                     <label class="form-check-label" for="allow_scheduled_delivery">

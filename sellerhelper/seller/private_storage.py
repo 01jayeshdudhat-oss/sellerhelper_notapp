@@ -10,3 +10,15 @@ class PrivateOrderAudioStorage(FileSystemStorage):
             location=settings.BASE_DIR / "private_order_audio",
             base_url=None,
         )
+
+
+@deconstructible
+class PrivateRiderDocumentStorage(FileSystemStorage):
+    def __init__(self):
+        super().__init__(
+            location=settings.BASE_DIR / "private_rider_documents",
+            base_url=None,
+        )
+
+    def url(self, name):
+        raise ValueError("Public URLs are disabled for private rider documents.")

@@ -397,7 +397,8 @@ def user_can_access_shop(user, shop):
     return ShopStaff.objects.filter(
         shop=shop,
         user=user,
-        is_active=True
+        is_active=True,
+        is_public_rider=False,
     ).exists()
 
 def user_can_manage_orders(user, shop):

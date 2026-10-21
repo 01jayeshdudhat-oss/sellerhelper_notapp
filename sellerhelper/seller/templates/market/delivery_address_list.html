@@ -41,7 +41,7 @@
 
     <div class="col-12 col-md-6 col-xl-4">
 
-        <div class="card h-100 border-0 shadow-sm">
+        <div class="card h-100 shadow-sm {% if address.is_default %}border-success border-2 bg-success-subtle{% else %}border-0{% endif %}">
 
             <div class="card-body">
 
@@ -54,7 +54,7 @@
 
                         {% if address.is_default %}
                             <span class="badge bg-success">
-                                Default
+                                ★ Default address
                             </span>
                         {% endif %}
 
@@ -72,6 +72,11 @@
 
                 </div>
 
+                {% if address.is_default %}
+                    <div class="small text-success fw-semibold mb-3">
+                        This address is selected automatically at checkout.
+                    </div>
+                {% endif %}
 
                 <div class="mb-3">
 
@@ -86,27 +91,6 @@
                     {% endif %}
 
                 </div>
-
-
-                {% if address.location %}
-
-                    <div class="small text-muted mb-3">
-
-                        📌 Location
-
-                        {% if address.location.lat %}
-                            {{ address.location.lat|floatformat:6 }}
-                        {% endif %}
-
-                        ,
-
-                        {% if address.location.lng %}
-                            {{ address.location.lng|floatformat:6 }}
-                        {% endif %}
-
-                    </div>
-
-                {% endif %}
 
 
                 <div class="d-flex gap-2 flex-wrap">

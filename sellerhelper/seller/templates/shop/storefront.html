@@ -105,7 +105,11 @@
                                 <p class="small text-muted">{{ item.product.product_description|truncatewords:18 }}</p>
                             {% endif %}
                             <div class="fw-bold text-success fs-5">₹{{ item.storefront_price|floatformat:2 }} <small class="fs-6 text-muted">/ {{ item.storefront_unit }}</small></div>
-                            <div class="small text-muted mb-3">{{ item.storefront_stock }} available</div>
+                            <div class="small text-muted mb-3">
+                                Retail: {{ item.storefront_retail_stock|floatformat:-4 }}
+                                · B2B: {{ item.storefront_b2b_stock|floatformat:-4 }}
+                                · Total: {{ item.storefront_total_stock|floatformat:-4 }}
+                            </div>
                             {% if can_order and storefront_is_open %}
                                 <form class="add-product" method="post" action="{% url 'cart_add' item.id %}" data-storefront-retail data-update-url="{% url 'cart_update' item.id %}" data-stock="{{ item.storefront_stock }}">
                                     {% csrf_token %}

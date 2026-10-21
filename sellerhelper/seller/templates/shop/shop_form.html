@@ -32,10 +32,15 @@
 
         <div class="card-body">
 
-            <form method="POST" id="shopForm">
+            <form method="POST" id="shopForm" enctype="multipart/form-data">
 
                 {% csrf_token %}
 
+                {% if form.non_field_errors %}
+                    <div class="alert alert-danger" role="alert">
+                        {{ form.non_field_errors }}
+                    </div>
+                {% endif %}
 
                 <!-- ============================= -->
                 <!-- SHOP INFORMATION -->
@@ -128,6 +133,44 @@
 
                         {{ form.email_no }}
 
+                    </div>
+
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label" for="{{ form.logo_image.id_for_label }}">Shop logo</label>
+                        {% if shop and shop.logo_image %}
+                            <div class="mb-2"><img src="{{ shop.logo_image.url }}" alt="{{ shop.name }} logo" style="max-width:120px;max-height:90px;object-fit:contain"></div>
+                        {% elif shop and shop.logo_url %}
+                            <div class="mb-2"><img src="{{ shop.logo_url }}" alt="{{ shop.name }} logo" style="max-width:120px;max-height:90px;object-fit:contain"></div>
+                        {% endif %}
+                        {{ form.logo_image }}
+                        <div class="form-text">Upload a JPG, PNG, or WebP logo. A new upload replaces the current logo.</div>
+                        {% for error in form.logo_image.errors %}
+                            <div class="text-danger small">{{ error }}</div>
+                        {% endfor %}
+                        <label class="form-label mt-2" for="{{ form.logo_url.id_for_label }}">Or use a logo image URL</label>
+                        {{ form.logo_url }}
+                        {% for error in form.logo_url.errors %}
+                            <div class="text-danger small">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label" for="{{ form.cover_image.id_for_label }}">Shop cover image</label>
+                        {% if shop and shop.cover_image %}
+                            <div class="mb-2"><img src="{{ shop.cover_image.url }}" alt="{{ shop.name }} cover" style="max-width:240px;max-height:90px;object-fit:cover"></div>
+                        {% elif shop and shop.cover_image_url %}
+                            <div class="mb-2"><img src="{{ shop.cover_image_url }}" alt="{{ shop.name }} cover" style="max-width:240px;max-height:90px;object-fit:cover"></div>
+                        {% endif %}
+                        {{ form.cover_image }}
+                        <div class="form-text">Upload a JPG, PNG, or WebP shop photo. A new upload replaces the current cover image.</div>
+                        {% for error in form.cover_image.errors %}
+                            <div class="text-danger small">{{ error }}</div>
+                        {% endfor %}
+                        <label class="form-label mt-2" for="{{ form.cover_image_url.id_for_label }}">Or use a cover image URL</label>
+                        {{ form.cover_image_url }}
+                        {% for error in form.cover_image_url.errors %}
+                            <div class="text-danger small">{{ error }}</div>
+                        {% endfor %}
                     </div>
 
                     <div class="col-md-6 mb-3">
@@ -309,6 +352,12 @@
                     <span id="shopLocationMessage" class="small text-muted" aria-live="polite"></span>
                 </div>
 
+                <div class="mb-3">
+                    <label for="primaryPickupAddress" class="form-label">Primary shop pickup address</label>
+                    <input type="text" class="form-control" id="primaryPickupAddress"
+                           name="primary_pickup_address" maxlength="500"
+                           value="{{ primary_pickup_address }}">
+                </div>
 
                 <div class="row">
 
@@ -345,6 +394,18 @@
 
                 </div>
 
+                <hr>
+                <h5>Additional Pickup Locations</h5>
+                <p class="text-muted">
+                    Add pickup addresses for this shop. Orders are assigned to the pickup point nearest the customer delivery address.
+                    Product stock remains shared across your shop locations. The platform allows up to
+                    {{ max_additional_pickup_locations }} additional address{{ max_additional_pickup_locations|pluralize }}.
+                </p>
+                <div id="pickupLocationsList" class="mb-2"></div>
+                <button type="button" class="btn btn-outline-primary btn-sm mb-3" id="addPickupLocation">
+                    + Add pickup location
+                </button>
+                <input type="hidden" name="pickup_locations_json" id="pickup_locations_json">
 
                 <!-- ============================= -->
                 <!-- DELIVERY AREA -->
@@ -510,6 +571,7 @@
     src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js">
 </script>
 
+{{ pickup_locations_data|json_script:"existing-pickup-locations" }}
 
 <script>
 
@@ -528,6 +590,10 @@ const existingPincodes =
 
 const existingBreakTimes =
     {{ shop.shop_break_time_list|default:"[]"|safe }};
+const existingPickupLocations = JSON.parse(
+    document.getElementById("existing-pickup-locations").textContent
+);
+const maxAdditionalPickupLocations = {{ max_additional_pickup_locations }};
 
 
 /* ============================================================
@@ -550,6 +616,93 @@ const locationMap = L.map("locationMap").setView(
     [defaultLat, defaultLng],
     13
 )
+const additionalPickupMarkers = L.layerGroup().addTo(locationMap);
+let activePickupLocationRow = null;
+
+function refreshAdditionalPickupMarkers() {
+    additionalPickupMarkers.clearLayers();
+    document.querySelectorAll(".pickup-location-row").forEach((row) => {
+        const lat = Number(row.querySelector("[data-pickup-lat]").value);
+        const lng = Number(row.querySelector("[data-pickup-lng]").value);
+        if (Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
+            L.marker([lat, lng]).addTo(additionalPickupMarkers);
+        }
+    });
+}
+
+function syncAdditionalPickupLocations() {
+    const rows = Array.from(document.querySelectorAll(".pickup-location-row"));
+    const locations = rows.map((row) => ({
+        name: row.querySelector("[data-pickup-name]").value.trim(),
+        address: row.querySelector("[data-pickup-address]").value.trim(),
+        lat: row.querySelector("[data-pickup-lat]").value,
+        lng: row.querySelector("[data-pickup-lng]").value,
+    }));
+    document.getElementById("pickup_locations_json").value = JSON.stringify(locations);
+    document.getElementById("addPickupLocation").disabled =
+        rows.length >= maxAdditionalPickupLocations;
+    refreshAdditionalPickupMarkers();
+}
+
+function addAdditionalPickupLocation(location = {}) {
+    const list = document.getElementById("pickupLocationsList");
+    const row = document.createElement("div");
+    row.className = "pickup-location-row border rounded p-3 mb-2";
+    row.innerHTML = `
+        <div class="row g-2 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label">Location name</label>
+                <input class="form-control" data-pickup-name maxlength="120" required>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">Pickup address</label>
+                <input class="form-control" data-pickup-address maxlength="500">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Latitude</label>
+                <input class="form-control" data-pickup-lat type="number" min="-90" max="90" step="any" required>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Longitude</label>
+                <input class="form-control" data-pickup-lng type="number" min="-180" max="180" step="any" required>
+            </div>
+            <div class="col-md-1 d-flex flex-column gap-1">
+                <button type="button" class="btn btn-sm btn-outline-primary" data-pickup-map>Map</button>
+                <button type="button" class="btn btn-sm btn-outline-danger" data-pickup-remove>Remove</button>
+            </div>
+        </div>`;
+    row.querySelector("[data-pickup-name]").value = location.name || "";
+    row.querySelector("[data-pickup-address]").value = location.address || "";
+    row.querySelector("[data-pickup-lat]").value = location.lat ?? "";
+    row.querySelector("[data-pickup-lng]").value = location.lng ?? "";
+    row.querySelectorAll("input").forEach((input) => {
+        input.addEventListener("input", syncAdditionalPickupLocations);
+    });
+    row.querySelector("[data-pickup-map]").addEventListener("click", () => {
+        activePickupLocationRow = row;
+        document.getElementById("shopLocationMessage").textContent =
+            "Click the map to set this additional pickup location.";
+    });
+    row.querySelector("[data-pickup-remove]").addEventListener("click", () => {
+        if (activePickupLocationRow === row) activePickupLocationRow = null;
+        row.remove();
+        syncAdditionalPickupLocations();
+    });
+    list.appendChild(row);
+    syncAdditionalPickupLocations();
+}
+
+if (Array.isArray(existingPickupLocations)) {
+    existingPickupLocations.forEach(additionalPickupLocation => {
+        addAdditionalPickupLocation(additionalPickupLocation);
+    });
+}
+document.getElementById("addPickupLocation").addEventListener("click", () => {
+    if (document.querySelectorAll(".pickup-location-row").length < maxAdditionalPickupLocations) {
+        addAdditionalPickupLocation();
+    }
+});
+syncAdditionalPickupLocations();
 
 /* ============================================================
    NORMAL MAP
@@ -716,6 +869,14 @@ if (
 locationMap.on(
     "click",
     function(e) {
+        if (activePickupLocationRow) {
+            activePickupLocationRow.querySelector("[data-pickup-lat]").value = e.latlng.lat.toFixed(7);
+            activePickupLocationRow.querySelector("[data-pickup-lng]").value = e.latlng.lng.toFixed(7);
+            activePickupLocationRow = null;
+            document.getElementById("shopLocationMessage").textContent = "";
+            syncAdditionalPickupLocations();
+            return;
+        }
 
         setLocation(
             e.latlng.lat,
@@ -787,11 +948,20 @@ function updateLocation(lat, lng) {
     ).value = JSON.stringify({
 
         lat: lat,
-        lng: lng
+        lng: lng,
+        address: document.getElementById("primaryPickupAddress").value.trim()
 
     });
 
 }
+
+document.querySelector("form").addEventListener("submit", () => {
+    const lat = Number(document.getElementById("latitude").value);
+    const lng = Number(document.getElementById("longitude").value);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        updateLocation(lat, lng);
+    }
+});
 
 
 /* ============================================================

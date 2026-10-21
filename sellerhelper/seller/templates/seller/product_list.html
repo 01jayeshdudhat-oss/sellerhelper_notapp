@@ -27,6 +27,59 @@
     .product-row:hover {
         background: #f8fafc;
     }
+    .product-row {
+        cursor: pointer;
+    }
+    .product-details-row > td {
+        background: #f8fafc;
+    }
+    .product-description-details {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+    }
+    .product-row.is-focus-target {
+        animation: product-row-focus 1.2s ease-in-out 3;
+        scroll-margin-top: 100px;
+    }
+    .product-search-field {
+        position: relative;
+        overflow: visible;
+    }
+    .product-search-field .form-control {
+        padding-right: 4.5rem;
+    }
+    .product-search-voice {
+        position: absolute;
+        top: 50%;
+        right: .5rem;
+        z-index: 4;
+        display: inline-flex;
+        width: 34px;
+        height: 34px;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border: 1px solid rgba(148, 163, 184, 0.6);
+        border-radius: 8px !important;
+        background: rgba(255, 255, 255, 0.96);
+        color: #495057;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+        transform: translateY(-50%);
+    }
+    .product-search-voice:hover,
+    .product-search-voice:focus-visible {
+        background: rgba(13, 110, 253, 0.08);
+        border-color: rgba(13, 110, 253, 0.35);
+        color: #0d6efd;
+    }
+    .shop-item.is-focus-target {
+        outline: 3px solid #f59e0b;
+        background: #fffbeb;
+    }
+    @keyframes product-row-focus {
+        0%, 100% { background: transparent; }
+        50% { background: #fef3c7; }
+    }
 
     /* Product information */
     .product-name {
@@ -224,6 +277,39 @@
 
 </div>
 
+<form id="productSearchForm" method="get" class="card border-0 shadow-sm mb-3">
+    <div class="card-body">
+        <div class="row g-2 align-items-end">
+            <div class="col-12 col-lg">
+                <label for="productSearch" class="form-label">Search products</label>
+                <div class="product-search-field">
+                    <input id="productSearch" type="search" name="q" value="{{ product_search_query }}"
+                           class="form-control" placeholder="Name, SKU, category, color, size or description">
+                    <button class="product-search-voice" type="button" data-voice-search
+                            aria-label="Search products by voice" title="Search products by voice">
+                        <i class="bi bi-mic-fill" aria-hidden="true"></i>
+                    </button>
+                </div>
+                <div class="small text-muted mt-1" data-voice-search-status role="status" aria-live="polite"></div>
+            </div>
+            <div class="col-12 col-sm-8 col-lg-4">
+                <label for="productSort" class="form-label">Sort</label>
+                <select id="productSort" name="sort" class="form-select">
+                    <option value="recent" {% if not product_stock_sort %}selected{% endif %}>Recently added</option>
+                    <option value="stock_low" {% if product_stock_sort %}selected{% endif %}>Stock: low to high</option>
+                </select>
+            </div>
+        </div>
+        {% if product_search_query %}
+            <a class="small d-inline-block mt-2" href="{% if product_stock_sort %}?sort=stock_low{% else %}{% url 'product_list' %}{% endif %}">Clear search</a>
+        {% endif %}
+        <div class="form-text mt-2">
+            Filters loaded products as you type; if there are no local matches, all products are searched automatically.
+            Stock totals include active shop assignments. Double-click a product row to expand its full details.
+        </div>
+        <div id="productSearchStatus" class="small text-muted mt-1" aria-live="polite"></div>
+    </div>
+</form>
 
 <!-- ================= PRODUCT TABLE ================= -->
 
@@ -253,6 +339,8 @@
 
                         <th>Unit</th>
 
+                        <th>Total Stock</th>
+
                         <th>
                             Shop-wise Details
                         </th>
@@ -272,7 +360,11 @@
 
                 {% for product in products %}
 
-                    <tr class="product-row">
+                    <tr class="product-row" id="product-row-{{ product.id }}"
+                        data-product-row="{{ product.id }}" tabindex="0"
+                        data-product-search="{{ product.product_name }} {{ product.product_alias_name }} {{ product.product_title }} {{ product.product_description }} {{ product.product_category }} {{ product.product_color }} {{ product.product_size }} {{ product.sku }}"
+                        aria-expanded="false" aria-controls="product-details-{{ product.id }}"
+                        title="Double-click to show product details">
 
                         <!-- ID -->
 
@@ -423,6 +515,12 @@
 
                         </td>
 
+                        <td data-sort-value="{{ product.total_shop_stock }}">
+                            <span class="badge {% if product.total_shop_stock <= 5 %}text-bg-warning{% else %}text-bg-success{% endif %}">
+                                {{ product.total_shop_stock|floatformat:-4 }}
+                            </span>
+                        </td>
+
 
                         <!-- ================= SHOP DETAILS ================= -->
 
@@ -432,7 +530,7 @@
 
                             {% for assignment in product.shop_assignments.all %}
 
-                                <div class="shop-item">
+                                <div class="shop-item" data-assignment-shop="{{ assignment.shop_id }}">
 
                                     <!-- Shop name -->
 
@@ -490,7 +588,7 @@
                                         {% if assignment.stock > 0 %}
 
                                             <span class="stock-badge stock-good">
-                                                Stock: {{ assignment.stock }}
+                                                Stock: {{ assignment.stock|floatformat:-4 }}
                                             </span>
 
                                         {% else %}
@@ -575,13 +673,61 @@
 
                     </tr>
 
+                    <tr class="product-details-row" id="product-details-{{ product.id }}"
+                        data-product-details-for="{{ product.id }}" hidden>
+                        <td colspan="11">
+                            <div class="row g-3">
+                                <div class="col-12 col-md-5">
+                                    <h6 class="fw-bold mb-2">{{ product.product_name }} · Details</h6>
+                                    <dl class="row small mb-0">
+                                        <dt class="col-5">Category</dt>
+                                        <dd class="col-7">{{ product.product_category|default:"—" }}</dd>
+                                        <dt class="col-5">Alias</dt>
+                                        <dd class="col-7">{{ product.product_alias_name|default:"—" }}</dd>
+                                        <dt class="col-5">Title</dt>
+                                        <dd class="col-7">{{ product.product_title|default:"—" }}</dd>
+                                        <dt class="col-5">Color / size</dt>
+                                        <dd class="col-7">{{ product.product_color|default:"—" }} / {{ product.product_size|default:"—" }}</dd>
+                                        <dt class="col-5">Base price / unit</dt>
+                                        <dd class="col-7">₹{{ product.price }} / {{ product.unit|default:"unit" }}</dd>
+                                        <dt class="col-5">Total shop stock</dt>
+                                        <dd class="col-7">{{ product.total_shop_stock|floatformat:-4 }}</dd>
+                                        <dt class="col-5">Availability</dt>
+                                        <dd class="col-7">{% if product.is_active %}Active{% else %}Inactive{% endif %}</dd>
+                                    </dl>
+                                </div>
+                                <div class="col-12 col-md-7">
+                                    <h6 class="fw-bold mb-2">Description</h6>
+                                    <div class="small product-description-details">{{ product.product_description|default:"No description provided." }}</div>
+                                </div>
+                                <div class="col-12">
+                                    <h6 class="fw-bold mb-2">Shop inventory and pricing</h6>
+                                    <div class="d-flex flex-wrap gap-2">
+                                        {% for assignment in product.shop_assignments.all %}
+                                            <div class="border rounded bg-white p-2 small">
+                                                <strong>{{ assignment.shop.name }}</strong>
+                                                <div>Stock: {{ assignment.stock|floatformat:-4 }} · B2B stock: {{ assignment.b2b_stock|floatformat:-4 }}</div>
+                                                <div>Price: ₹{{ assignment.price|default:product.price }} / {{ product.unit|default:"unit" }}</div>
+                                                {% if assignment.b2b_price %}<div>B2B price: ₹{{ assignment.b2b_price }} / {{ assignment.common_b2b_unit|default:product.unit|default:"unit" }}</div>{% endif %}
+                                                {% if assignment.bulk_price %}<div>Bulk: ₹{{ assignment.bulk_price }} / {{ assignment.bulk_unit|default:"unit" }} (min {{ assignment.bulk_min_quantity }})</div>{% endif %}
+                                                {% if assignment.expires_at %}<div>Expires: {{ assignment.expires_at|date:"d M Y" }}</div>{% endif %}
+                                                <div>{% if assignment.is_active %}Active{% else %}Inactive{% endif %}</div>
+                                            </div>
+                                        {% empty %}
+                                            <span class="small text-muted">No shops assigned.</span>
+                                        {% endfor %}
+                                    </div>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
 
                 {% empty %}
 
                     <tr>
 
                         <td
-                            colspan="10"
+                            colspan="11"
                             class="text-center py-5"
                         >
 
@@ -619,5 +765,88 @@
     </div>
 
 </div>
+
+<script>
+const productSearchForm = document.getElementById("productSearchForm");
+const productSearchInput = document.getElementById("productSearch");
+const productSearchStatus = document.getElementById("productSearchStatus");
+const productRows = Array.from(document.querySelectorAll("[data-product-row]"));
+let productSearchTimer;
+const filterLoadedProducts = (query) => {
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    let matchingCount = 0;
+    productRows.forEach((row) => {
+        const matches = !normalizedQuery
+            || row.dataset.productSearch.toLocaleLowerCase().includes(normalizedQuery);
+        row.hidden = !matches;
+        const details = document.querySelector(
+            `[data-product-details-for="${CSS.escape(row.dataset.productRow)}"]`,
+        );
+        if (details) details.hidden = !matches || row.getAttribute("aria-expanded") !== "true";
+        if (matches) matchingCount += 1;
+    });
+    return matchingCount;
+};
+productSearchInput.addEventListener("input", () => {
+    window.clearTimeout(productSearchTimer);
+    const query = productSearchInput.value;
+    const matchingCount = filterLoadedProducts(query);
+    if (!query.trim()) {
+        productSearchStatus.textContent = "";
+        return;
+    }
+    if (matchingCount) {
+        productSearchStatus.textContent = `${matchingCount} matching product${matchingCount === 1 ? "" : "s"} loaded.`;
+        return;
+    }
+    productSearchStatus.textContent = "No loaded products match. Searching all products...";
+    productSearchTimer = window.setTimeout(() => productSearchForm.requestSubmit(), 500);
+});
+document.getElementById("productSort").addEventListener("change", () => {
+    productSearchForm.requestSubmit();
+});
+
+document.querySelectorAll("[data-product-row]").forEach((row) => {
+    const toggleDetails = () => {
+        const details = document.getElementById(row.getAttribute("aria-controls"));
+        if (!details) return;
+        const expanded = row.getAttribute("aria-expanded") !== "true";
+        row.setAttribute("aria-expanded", String(expanded));
+        details.hidden = !expanded;
+    };
+    row.addEventListener("dblclick", (event) => {
+        if (event.target.closest("a,button,input,select,textarea,label")) return;
+        toggleDetails();
+    });
+    row.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            toggleDetails();
+        }
+    });
+});
+</script>
+
+{% if focus_product_id %}
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    const row = document.querySelector(
+        `[data-product-row="${CSS.escape("{{ focus_product_id|escapejs }}")}"]`,
+    );
+    if (!row) return;
+    row.classList.add("is-focus-target");
+    const targetShopId = "{{ focus_shop_id|escapejs }}";
+    const shop = targetShopId
+        ? row.querySelector(`[data-assignment-shop="${CSS.escape(targetShopId)}"]`)
+        : null;
+    shop?.classList.add("is-focus-target");
+    row.scrollIntoView({ behavior: "smooth", block: "center" });
+    window.setTimeout(() => {
+        row.classList.remove("is-focus-target");
+        shop?.classList.remove("is-focus-target");
+    }, 4200);
+});
+</script>
+{% endif %}
 
 {% endblock %}

@@ -1,0 +1,790 @@
+{% extends "base.html" %}
+
+{% block title %}Purchase & vendor accounts · {{ shop.name }}{% endblock %}
+
+{% block content %}
+<style>
+    .purchase-tabs {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scrollbar-width: thin;
+    }
+    .purchase-tabs .nav-link {
+        white-space: nowrap;
+        color: #334155 !important;
+        background: #f8fafc;
+    }
+    .purchase-tabs .nav-link.active {
+        color: #0b5ed7 !important;
+        background: #fff;
+        border-color: #dee2e6 #dee2e6 #fff;
+    }
+    [data-purchase-tab-panel][hidden],
+    .manual-pricing-controls[hidden],
+    .margin-pricing-controls[hidden] {
+        display: none !important;
+    }
+    .purchase-form-section + .purchase-form-section {
+        border-top: 1px solid #e2e8f0;
+        margin-top: 1.25rem;
+        padding-top: 1.25rem;
+    }
+    .purchase-line-fields {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: .75rem;
+    }
+    .purchase-field {
+        min-width: 0;
+    }
+    .purchase-field--wide {
+        grid-column: 1 / -1;
+    }
+    .purchase-line .form-label {
+        font-size: .875rem;
+        font-weight: 600;
+    }
+    .purchase-price-preview {
+        background: #f8fafc;
+        border-radius: .375rem;
+        padding: .75rem;
+    }
+    @media (min-width: 768px) {
+        .purchase-line-fields {
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+        .purchase-field--half {
+            grid-column: span 2;
+        }
+    }
+</style>
+<div class="container py-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+        <div>
+            <h1 class="h3 mb-1">Purchases, stock & vendor accounts</h1>
+            <div class="text-muted">{{ shop.name }}</div>
+        </div>
+        <a class="btn btn-outline-secondary" href="{% if is_shop_owner_access %}{% url 'shop_detail' shop.id %}{% else %}{% url 'staff_dashboard' %}{% endif %}">Back to dashboard</a>
+    </div>
+
+    {% if messages %}
+        {% for message in messages %}
+        <div class="alert {% if message.tags == 'error' %}alert-danger{% else %}alert-success{% endif %}">{{ message }}</div>
+        {% endfor %}
+    {% endif %}
+
+    <ul class="nav nav-tabs purchase-tabs mb-4" role="tablist" aria-label="Purchase manager sections">
+        <li class="nav-item" role="presentation"><button class="nav-link{% if active_tab == 'overview' %} active{% endif %}" type="button" role="tab" aria-selected="{% if active_tab == 'overview' %}true{% else %}false{% endif %}" data-purchase-tab="overview">Overview</button></li>
+        <li class="nav-item" role="presentation"><button class="nav-link{% if active_tab == 'purchase' %} active{% endif %}" type="button" role="tab" aria-selected="{% if active_tab == 'purchase' %}true{% else %}false{% endif %}" data-purchase-tab="purchase">New purchase</button></li>
+        <li class="nav-item" role="presentation"><button class="nav-link{% if active_tab == 'history' %} active{% endif %}" type="button" role="tab" aria-selected="{% if active_tab == 'history' %}true{% else %}false{% endif %}" data-purchase-tab="history">Purchase history <span class="badge text-bg-secondary">{{ purchases|length }}</span></button></li>
+        <li class="nav-item" role="presentation"><button class="nav-link{% if active_tab == 'products' %} active{% endif %}" type="button" role="tab" aria-selected="{% if active_tab == 'products' %}true{% else %}false{% endif %}" data-purchase-tab="products">Products & pricing</button></li>
+        <li class="nav-item" role="presentation"><button class="nav-link{% if active_tab == 'reports' %} active{% endif %}" type="button" role="tab" aria-selected="{% if active_tab == 'reports' %}true{% else %}false{% endif %}" data-purchase-tab="reports">Reports</button></li>
+    </ul>
+
+    <section class="card border-0 shadow-sm mb-4" data-purchase-tab-panel="overview" {% if active_tab != "overview" %}hidden{% endif %}>
+        <div class="card-body">
+            <h2 class="h5">Vendor accounts payable</h2>
+            <p class="text-muted">Overview of supplier balances and products that need replenishment.</p>
+            <div class="d-flex flex-wrap gap-2 mb-3">
+                <div class="badge text-bg-light border">Vendors: {{ vendors|length }}</div>
+                <div class="badge text-bg-light border">Invoices: {{ purchase_count }}</div>
+            </div>
+            <div class="row g-3">
+                {% for vendor in vendors %}
+                <div class="col-12 col-md-6 col-xl-4">
+                    <div class="border rounded p-3 h-100">
+                        <div class="fw-semibold">{{ vendor.name }}</div>
+                        <div class="small text-muted">{{ vendor.contact_name }}{% if vendor.phone %} · {{ vendor.phone }}{% endif %}</div>
+                        <div class="mt-2 small">Purchased ₹{{ vendor.purchased_total|floatformat:2 }} · Paid ₹{{ vendor.paid_total|floatformat:2 }} · Credits ₹{{ vendor.credited_total|floatformat:2 }}</div>
+                        <div class="fw-bold">Outstanding ₹{{ vendor.balance_due_total|floatformat:2 }}</div>
+                        <div class="small text-muted">Payments in {{ selected_report_month }}: ₹{{ vendor.selected_month_payment_total|floatformat:2 }} ({{ vendor.selected_month_payment_count }})</div>
+                    </div>
+                </div>
+                {% empty %}
+                <div class="col-12 text-muted">Add a vendor to start tracking invoices and balances.</div>
+                {% endfor %}
+            </div>
+        </div>
+    </section>
+
+    <div class="row g-4 mb-4" data-purchase-tab-panel="purchase" {% if active_tab != "purchase" %}hidden{% endif %}>
+        <div class="col-12 col-xl-4">
+            <section class="card border-0 shadow-sm h-100">
+                <div class="card-body">
+                    <h2 class="h5">Add vendor</h2>
+                    <form method="post" class="row g-2">
+                        {% csrf_token %}
+                        <input type="hidden" name="tab" value="purchase">
+                        <input type="hidden" name="action" value="add_vendor">
+                        <div class="col-12"><label class="form-label" for="vendor-name">Vendor name</label><input id="vendor-name" class="form-control" name="name" required maxlength="200"></div>
+                        <div class="col-12 col-md-6"><label class="form-label" for="vendor-contact">Contact</label><input id="vendor-contact" class="form-control" name="contact_name"></div>
+                        <div class="col-12 col-md-6"><label class="form-label" for="vendor-phone">Phone</label><input id="vendor-phone" class="form-control" name="phone"></div>
+                        <div class="col-12 col-md-6"><label class="form-label" for="vendor-email">Email</label><input id="vendor-email" class="form-control" type="email" name="email"></div>
+                        <div class="col-12 col-md-6"><label class="form-label" for="vendor-tax">GST / tax ID</label><input id="vendor-tax" class="form-control" name="tax_id"></div>
+                        <div class="col-12"><label class="form-label" for="vendor-address">Address</label><textarea id="vendor-address" class="form-control" name="address" rows="2"></textarea></div>
+                        <div class="col-12"><button class="btn btn-outline-primary" type="submit">Save vendor</button></div>
+                    </form>
+                </div>
+            </section>
+        </div>
+        <div class="col-12 col-xl-8">
+            <section class="card border-0 shadow-sm h-100">
+                <div class="card-body">
+                    <h2 class="h5">Record supplier invoice / stock receipt</h2>
+                    <p class="small text-muted">Stock received = purchase quantity × each-contains value converted to the selected stock unit − waste. Unit cost is per purchased item. The landed cost includes purchased goods and allocated delivery expense.</p>
+                    <form method="post" id="purchase-form">
+                        {% csrf_token %}
+                        <input type="hidden" name="tab" value="purchase">
+                        <input type="hidden" name="action" value="create_purchase">
+                        <section class="purchase-form-section mb-3">
+                            <h3 class="h6 mb-3">Invoice details</h3>
+                            <div class="row g-2">
+                                <div class="col-12 col-md-6"><label class="form-label" for="purchase-vendor">Vendor</label><select id="purchase-vendor" class="form-select" name="vendor_id" required><option value="">Select vendor</option>{% for vendor in vendors %}<option value="{{ vendor.id }}">{{ vendor.name }}</option>{% endfor %}</select></div>
+                                <div class="col-12 col-md-6"><label class="form-label" for="invoice-number">Invoice / reference</label><input id="invoice-number" class="form-control" name="invoice_number" maxlength="100"></div>
+                                <div class="col-6 col-md-3"><label class="form-label" for="purchase-date">Purchase date</label><input id="purchase-date" class="form-control" type="date" name="purchase_date" value="{{ today|date:'Y-m-d' }}" required></div>
+                                <div class="col-6 col-md-3"><label class="form-label" for="due-date">Due date</label><input id="due-date" class="form-control" type="date" name="due_date"></div>
+                                <div class="col-12 col-md-6">
+                                    <label class="form-label" for="cost-method">Purchase cost for this invoice</label>
+                                    <select id="cost-method" class="form-select" name="cost_method">
+                                        {% for value, label in cost_methods %}<option value="{{ value }}"{% if value == "AVERAGE" %} selected{% endif %}>{{ label }}</option>{% endfor %}
+                                    </select>
+                                    <div class="form-text">Weighted average combines existing stock and this receipt. Latest purchase cost replaces the saved cost.</div>
+                                </div>
+                            </div>
+                        </section>
+                        <section class="purchase-form-section">
+                            <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+                                <div>
+                                    <h3 class="h6 mb-1">Products received</h3>
+                                    <p class="small text-muted mb-0">Choose the stock pool, enter pack size and cost, then review the stock and price preview.</p>
+                                </div>
+                            </div>
+                        <div id="purchase-lines">
+                            <div class="purchase-line border rounded p-3 mb-3">
+                                <div class="purchase-line-fields">
+                                <div class="purchase-field purchase-field--half"><label class="form-label d-block">Product<select class="form-select purchase-product" name="product_shop_id" required><option value="">Select product</option>{% for assignment in all_assignments %}<option value="{{ assignment.id }}"
+                                    data-retail-cost="{{ assignment.purchase_price|default_if_none:'0' }}"
+                                    data-b2b-cost="{{ assignment.b2b_purchase_price|default_if_none:assignment.purchase_price|default_if_none:'0' }}"
+                                    data-retail-has-cost="{% if assignment.purchase_price is not None %}true{% else %}false{% endif %}"
+                                    data-b2b-has-cost="{% if assignment.b2b_purchase_price is not None %}true{% else %}false{% endif %}"
+                                    data-retail-stock="{{ assignment.stock }}"
+                                    data-b2b-stock="{{ assignment.b2b_stock }}"
+                                    data-retail-unit-value="{{ assignment.retail_unit_value }}"
+                                    data-retail-unit-text="{{ assignment.retail_unit_text }}"
+                                    data-b2b-unit-value="{{ assignment.b2b_unit_value }}"
+                                    data-b2b-unit-text="{{ assignment.b2b_unit_text }}"
+                                    data-pricing-mode="{{ assignment.pricing_mode }}"
+                                    data-price="{{ assignment.price|default:assignment.product.price }}"
+                                    data-bulk-price="{{ assignment.bulk_price|default_if_none:'' }}"
+                                    data-b2b-price="{{ assignment.b2b_price|default_if_none:'' }}"
+                                    data-b2b-bulk-price="{{ assignment.b2b_bulk_price|default_if_none:'' }}"
+                                    data-retail-margin-percent="{{ assignment.retail_margin_percent }}" data-retail-margin-fixed="{{ assignment.retail_margin_fixed }}"
+                                    data-bulk-margin-percent="{{ assignment.bulk_margin_percent }}" data-bulk-margin-fixed="{{ assignment.bulk_margin_fixed }}"
+                                    data-b2b-margin-percent="{{ assignment.b2b_margin_percent }}" data-b2b-margin-fixed="{{ assignment.b2b_margin_fixed }}"
+                                    data-b2b-bulk-margin-percent="{{ assignment.b2b_bulk_margin_percent }}" data-b2b-bulk-margin-fixed="{{ assignment.b2b_bulk_margin_fixed }}">{{ assignment.product.product_name }}</option>{% endfor %}</select></label></div>
+                                <div class="purchase-field"><label class="form-label d-block">Stock pool<select class="form-select" name="stock_type"><option value="RETAIL">Retail</option><option value="B2B">B2B</option></select></label></div>
+                                <div class="purchase-field"><label class="form-label d-block">Purchase qty<input class="form-control" type="number" min="1" step="1" name="quantity" required></label></div>
+                                <div class="purchase-field"><label class="form-label d-block">Each contains<input class="form-control" type="number" min="0.0001" step="0.0001" name="purchase_unit_value" value="1" required></label></div>
+                                <div class="purchase-field"><label class="form-label d-block">Purchase unit<input class="form-control" type="text" maxlength="30" name="purchase_unit_text" placeholder="e.g. kg, pcs" required></label></div>
+                                <div class="purchase-field"><label class="form-label d-block">Waste (stock units)<input class="form-control" type="number" min="0" step="0.0001" name="wastage_quantity" value="0" required></label></div>
+                                <div class="purchase-field purchase-field--half"><label class="form-label d-block">Cost per bought item (₹)<input class="form-control" type="number" min="0" step="0.01" name="unit_cost" required></label></div>
+                                <div class="purchase-field"><label class="form-label d-block">GST %<input class="form-control" type="number" min="0" max="100" step="0.01" name="gst_rate" value="0" required></label></div>
+                                <div class="purchase-field purchase-field--wide small text-muted purchase-price-preview" aria-live="polite">Select a product, then enter quantity and cost to preview received stock and updated unit cost.</div>
+                                <div class="purchase-field purchase-field--wide"><button class="btn btn-sm btn-outline-danger remove-line" type="button" aria-label="Remove purchase line">Remove product line</button></div>
+                                </div>
+                            </div>
+                        </div>
+                        <button class="btn btn-sm btn-outline-secondary mb-3" id="add-purchase-line" type="button">+ Add another product</button>
+                        </section>
+                        <section class="purchase-form-section">
+                            <h3 class="h6 mb-3">Delivery and payment</h3>
+                            <div class="row g-2 mb-3">
+                                <div class="col-6 col-md-3"><label class="form-label" for="delivery-expense">Delivery expense (₹)</label><input id="delivery-expense" class="form-control" type="number" name="delivery_expense" min="0" step="0.01" value="0"></div>
+                                <div class="col-6 col-md-3"><label class="form-label" for="delivery-gst-rate">Delivery GST %</label><input id="delivery-gst-rate" class="form-control" type="number" name="delivery_gst_rate" min="0" max="100" step="0.01" value="0"></div>
+                                <div class="col-12 col-md-6 d-flex align-items-end"><div class="alert alert-light border w-100 mb-0 small">Delivery expense is included in inventory landed cost and invoice total. GST is tracked separately for the purchase GST report.</div></div>
+                            </div>
+                            <div class="alert alert-primary py-2 mb-3 small fw-semibold" id="purchase-total-preview" aria-live="polite"></div>
+                            <div class="row g-2">
+                                <div class="col-6 col-md-3"><label class="form-label" for="initial-payment">Paid now (₹)</label><input id="initial-payment" class="form-control" type="number" name="initial_payment" min="0" step="0.01" value="0"></div>
+                                <div class="col-6 col-md-3"><label class="form-label" for="payment-method">Payment method</label><select id="payment-method" class="form-select" name="payment_method">{% for value, label in payment_methods %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></div>
+                                <div class="col-12 col-md-3"><label class="form-label" for="payment-reference">Payment reference</label><input id="payment-reference" class="form-control" name="payment_reference" maxlength="160"></div>
+                                <div class="col-12 col-md-3"><label class="form-label" for="purchase-notes">Notes</label><input id="purchase-notes" class="form-control" name="notes"></div>
+                                <div class="col-12"><button class="btn btn-primary btn-lg" type="submit" {% if not vendors %}disabled{% endif %}>Record invoice & receive stock</button>{% if not vendors %}<div class="form-text text-danger">Add a vendor before recording a purchase.</div>{% endif %}</div>
+                            </div>
+                        </section>
+                    </form>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <section class="card border-0 shadow-sm mb-4" data-purchase-tab-panel="purchase" {% if active_tab != "purchase" %}hidden{% endif %}>
+        <div class="card-body">
+            <h2 class="h5">Add a product to this shop</h2>
+            <p class="small text-muted">Open the product form to add a new item to this shop, then select it on a supplier invoice to receive inventory.</p>
+            <a class="btn btn-outline-primary" href="{% url 'purchase_manager_add_product' shop.id %}">Go to add product page</a>
+        </div>
+    </section>
+
+    <section class="card border-0 shadow-sm mb-4" data-purchase-tab-panel="overview" {% if active_tab != "overview" %}hidden{% endif %}>
+        <div class="card-body">
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+                <h2 class="h5 mb-0">Shortage recommendations</h2>
+                <span class="badge text-bg-warning">{{ shortage_count }} product{{ shortage_count|pluralize }} below forecast</span>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0">
+                    <thead><tr><th>Product</th><th>Retail stock</th><th>Suggested buy</th><th>Recent supplier prices</th></tr></thead>
+                    <tbody>
+                    {% for assignment in shortage_assignments %}
+                        <tr>
+                            <td>{{ assignment.product.product_name }}</td>
+                            <td>{{ assignment.retail_stock_display }}</td>
+                            <td>{{ assignment.recommended_restock }} {{ assignment.product.unit }}</td>
+                            <td>{% for item in assignment.recent_purchase_items %}<div>{{ item.purchase.purchase_date|date:"Y-m-d" }} · {{ item.purchase.vendor.name }} · ₹{{ item.unit_cost|floatformat:2 }}</div>{% empty %}<span class="text-muted">No purchase history</span>{% endfor %}</td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="4" class="text-muted">No forecast shortages right now. Products below their recommended stock level will appear here.</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section class="card border-0 shadow-sm mb-4" data-purchase-tab-panel="history" {% if active_tab != "history" %}hidden{% endif %}>
+        <div class="card-body">
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+                <h2 class="h5 mb-0">Purchase history & payments</h2>
+                <form method="get" class="d-flex gap-2">
+                    <input type="hidden" name="tab" value="history">
+                    <select class="form-select form-select-sm" name="vendor" aria-label="Filter purchases by vendor">
+                        <option value="">All vendors</option>
+                        {% for vendor in vendors %}<option value="{{ vendor.id }}" {% if selected_vendor == vendor.id|stringformat:"s" %}selected{% endif %}>{{ vendor.name }}</option>{% endfor %}
+                    </select>
+                    <button class="btn btn-sm btn-outline-secondary" type="submit">Filter</button>
+                </form>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm align-middle">
+                    <thead><tr><th>Date / invoice</th><th>Vendor & products</th><th>Total</th><th>Paid</th><th>Balance</th><th>Status / payment</th></tr></thead>
+                    <tbody>
+                    {% for purchase in purchases %}
+                    <tr>
+                        <td>{{ purchase.purchase_date|date:"Y-m-d" }}<br><span class="small text-muted">{{ purchase.invoice_number|default:"No invoice reference" }}<br>{{ purchase.get_cost_method_display }}{% if purchase.due_date %}<br>Due {{ purchase.due_date|date:"Y-m-d" }}{% endif %}</span></td>
+                        <td>
+                            <strong>{{ purchase.vendor.name }}</strong>
+                            {% for item in purchase.items.all %}<div class="small">{{ item.product_shop.product.product_name }} · {{ item.get_stock_type_display }} · Bought {{ item.purchased_quantity }} × {{ item.purchase_unit_value|floatformat:-4 }} {{ item.purchase_unit_text|default:item.product_shop.product.unit }}{% if item.wastage_quantity %}, waste {{ item.wastage_quantity|floatformat:-4 }} {{ item.inventory_unit_text|default:item.product_shop.product.unit }}{% endif %}, received {{ item.quantity|floatformat:-4 }} {{ item.inventory_unit_value|floatformat:-4 }}{{ item.inventory_unit_text|default:item.product_shop.product.unit }} × ₹{{ item.unit_cost|floatformat:2 }} per purchase unit{% if item.gst_amount %}, GST ₹{{ item.gst_amount|floatformat:2 }}{% endif %}</div>{% endfor %}
+                            {% if purchase.delivery_expense %}<div class="small">Delivery ₹{{ purchase.delivery_expense|floatformat:2 }}</div>{% endif %}
+                            {% if purchase.returns.all %}
+                            <div class="small text-warning-emphasis mt-1">Vendor credits: ₹{{ purchase.credited_amount_display|floatformat:2 }}</div>
+                            {% for purchase_return in purchase.returns.all %}
+                            <div class="small text-muted">Return {{ purchase_return.returned_at|date:"Y-m-d" }} · Credit ₹{{ purchase_return.total_amount|floatformat:2 }}{% if purchase_return.reason %} · {{ purchase_return.reason }}{% endif %}</div>
+                            {% endfor %}
+                            {% endif %}
+                            {% if purchase.has_returnable_items %}
+                            <form method="post" class="border rounded p-2 mt-2">
+                                {% csrf_token %}
+                                <input type="hidden" name="tab" value="history">
+                                <input type="hidden" name="action" value="return_purchase">
+                                <input type="hidden" name="purchase_id" value="{{ purchase.id }}">
+                                <div class="small fw-semibold mb-1">Return to vendor</div>
+                                {% for item in purchase.items.all %}
+                                    {% if item.returnable_quantity %}
+                                    <div class="d-flex align-items-center gap-2 small mb-1">
+                                        <input type="hidden" name="return_item_id" value="{{ item.id }}">
+                                        <label class="flex-grow-1" for="return-{{ purchase.id }}-{{ item.id }}">{{ item.product_shop.product.product_name }} (max {{ item.returnable_quantity }})</label>
+                                        <input id="return-{{ purchase.id }}-{{ item.id }}" class="form-control form-control-sm" type="number" name="return_quantity" min="0" max="{{ item.returnable_quantity }}" step="0.0001" placeholder="Qty" style="max-width:90px">
+                                    </div>
+                                    {% endif %}
+                                {% endfor %}
+                                <input class="form-control form-control-sm my-1" name="return_reason" maxlength="240" placeholder="Return reason (optional)">
+                                <button class="btn btn-sm btn-outline-warning" type="submit">Record return & vendor credit</button>
+                            </form>
+                            {% endif %}
+                        </td>
+                        <td>₹{{ purchase.total_amount|floatformat:2 }}<div class="small text-muted">Goods ₹{{ purchase.subtotal_amount|floatformat:2 }} · GST ₹{{ purchase.gst_amount|floatformat:2 }}{% if purchase.credited_amount_display %}<br>Credit ₹{{ purchase.credited_amount_display|floatformat:2 }}{% endif %}</div></td>
+                        <td>₹{{ purchase.amount_paid_display|floatformat:2 }}{% for payment in purchase.payments.all %}<div class="small text-muted">{{ payment.paid_at|date:"Y-m-d" }} · {{ payment.get_payment_method_display }}{% if payment.reference %} · {{ payment.reference }}{% endif %} · ₹{{ payment.amount|floatformat:2 }}</div>{% endfor %}</td>
+                        <td>₹{{ purchase.balance_due_display|floatformat:2 }}</td>
+                        <td>
+                            <span class="badge {% if purchase.payment_status_display == 'PAID' %}text-bg-success{% elif purchase.payment_status_display == 'PARTIAL' %}text-bg-warning{% else %}text-bg-danger{% endif %}">{{ purchase.payment_status_display }}</span>
+                            {% if purchase.balance_due_display > 0 %}
+                            <form method="post" class="d-flex flex-wrap gap-1 mt-2">
+                                {% csrf_token %}<input type="hidden" name="tab" value="history"><input type="hidden" name="action" value="record_payment"><input type="hidden" name="purchase_id" value="{{ purchase.id }}">
+                                <input class="form-control form-control-sm" type="number" name="amount" min="0.01" max="{{ purchase.balance_due_display }}" step="0.01" placeholder="Amount" required style="max-width:110px">
+                                <select class="form-select form-select-sm" name="payment_method" aria-label="Payment method" style="max-width:115px">{% for value, label in payment_methods %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select>
+                                <input class="form-control form-control-sm" name="reference" placeholder="Reference" maxlength="160" style="max-width:125px">
+                                <button class="btn btn-sm btn-outline-primary" type="submit">Pay</button>
+                            </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="6" class="text-muted">No vendor purchases recorded yet.</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section class="mb-4" data-purchase-tab-panel="reports" {% if active_tab != "reports" %}hidden{% endif %}>
+        <div class="d-flex flex-wrap justify-content-between align-items-end gap-3 mb-3">
+            <div>
+                <h2 class="h5 mb-1">Purchase & GST reports</h2>
+                <p class="text-muted mb-0">Monthly purchase, input GST, delivery expense, payable, and vendor payment summaries.</p>
+            </div>
+            <form method="get" class="d-flex flex-wrap gap-2 align-items-end">
+                <input type="hidden" name="tab" value="reports">
+                <div><label class="form-label mb-1" for="report-month">Report month</label><input id="report-month" class="form-control" type="month" name="report_month" value="{{ selected_report_month }}"></div>
+                <button class="btn btn-outline-primary" type="submit">Generate report</button>
+                <button class="btn btn-outline-secondary" type="submit" name="report_format" value="csv">Download CSV</button>
+            </form>
+        </div>
+
+        <section class="card border-0 shadow-sm mb-4">
+            <div class="card-body">
+                <h3 class="h6">Month-wise purchase summary</h3>
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                        <thead><tr><th>Month</th><th>Invoices</th><th>Taxable goods</th><th>Input GST</th><th>Delivery</th><th>Invoice total</th><th>Paid</th><th>Outstanding</th><th>Vendor credits / returns</th></tr></thead>
+                        <tbody>
+                        {% for report in monthly_reports %}
+                        <tr{% if report.month == selected_report_month %} class="table-primary"{% endif %}>
+                            <td><a href="?tab=reports&amp;report_month={{ report.month }}">{{ report.month }}</a></td>
+                            <td>{{ report.invoice_count }}</td>
+                            <td>₹{{ report.subtotal|floatformat:2 }}</td>
+                            <td>₹{{ report.gst|floatformat:2 }}</td>
+                            <td>₹{{ report.delivery|floatformat:2 }}</td>
+                            <td>₹{{ report.total|floatformat:2 }}</td>
+                            <td>₹{{ report.paid|floatformat:2 }}</td>
+                            <td>₹{{ report.outstanding|floatformat:2 }}</td>
+                            <td>₹{{ report.returns|floatformat:2 }}</td>
+                        </tr>
+                        {% empty %}
+                        <tr><td colspan="9" class="text-muted">No purchases to report yet.</td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <section class="card border-0 shadow-sm mb-4">
+            <div class="card-body">
+                <h3 class="h6">Input GST by rate · {{ selected_report_month|default:"All months" }}</h3>
+                <div class="table-responsive">
+                    <table class="table table-sm">
+                        <thead><tr><th>GST rate</th><th>Taxable amount</th><th>Input GST</th></tr></thead>
+                        <tbody>
+                        {% for row in gst_rate_rows %}
+                        <tr><td>{{ row.rate|floatformat:2 }}%</td><td>₹{{ row.taxable|floatformat:2 }}</td><td>₹{{ row.gst|floatformat:2 }}</td></tr>
+                        {% empty %}
+                        <tr><td colspan="3" class="text-muted">No GST purchase lines for the selected month.</td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <div class="small text-muted">GST is reported at the entered invoice rates. Confirm invoice tax rates and eligibility with your accountant before filing.</div>
+            </div>
+        </section>
+
+        <section class="card border-0 shadow-sm mb-4">
+            <div class="card-body">
+                <h3 class="h6">Vendor-wise payments</h3>
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                        <thead><tr><th>Paid on</th><th>Vendor</th><th>Invoice</th><th>Method / reference</th><th>Amount</th></tr></thead>
+                        <tbody>
+                        {% for entry in payment_records %}
+                            {% if not selected_report_month or entry.payment.paid_at|date:"Y-m" == selected_report_month %}
+                            <tr>
+                                <td>{{ entry.payment.paid_at|date:"Y-m-d" }}</td>
+                                <td>{{ entry.vendor.name }}</td>
+                                <td>{{ entry.purchase.invoice_number|default:entry.purchase.id }}</td>
+                                <td>{{ entry.payment.get_payment_method_display }}{% if entry.payment.reference %} · {{ entry.payment.reference }}{% endif %}</td>
+                                <td>₹{{ entry.payment.amount|floatformat:2 }}</td>
+                            </tr>
+                            {% endif %}
+                        {% empty %}
+                        <tr><td colspan="5" class="text-muted">No vendor payments recorded yet.</td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+    </section>
+
+    <section class="mb-3" data-purchase-tab-panel="products" {% if active_tab != "products" %}hidden{% endif %}>
+        <h2 class="h5">Product prices & stock</h2>
+        <form method="get" class="row g-2 mb-3">
+            <input type="hidden" name="tab" value="products">
+            <div class="col-12 col-md-6"><input class="form-control" type="search" name="q" value="{{ search_query }}" placeholder="Search product" aria-label="Search product"></div>
+            <div class="col-8 col-md-3"><select class="form-select" name="stock"><option value="all" {% if stock_filter == "all" %}selected{% endif %}>All stock</option><option value="shortage" {% if stock_filter == "shortage" %}selected{% endif %}>Forecast shortage</option><option value="out" {% if stock_filter == "out" %}selected{% endif %}>Out of stock</option></select></div>
+            <div class="col-4 col-md-3"><button class="btn btn-outline-primary w-100" type="submit">Search / filter</button></div>
+        </form>
+        {% for assignment in assignments %}
+        <section class="card border-0 shadow-sm mb-3">
+            <div class="card-header bg-white py-3 d-flex flex-wrap justify-content-between gap-2">
+                <div class="d-flex align-items-center gap-3">
+                    {% if assignment.pricing_image_url %}
+                    <img src="{{ assignment.pricing_image_url }}" alt="{{ assignment.product.product_name }}" class="rounded border" width="64" height="64" loading="lazy" style="object-fit:cover">
+                    {% else %}
+                    <div class="rounded border bg-light d-flex align-items-center justify-content-center text-muted small" style="width:64px;height:64px">No image</div>
+                    {% endif %}
+                    <div>
+                        <h3 class="h6 mb-1">{{ assignment.product.product_name }}</h3>
+                        <div class="small text-muted">SKU: {{ assignment.product.sku|default:"—" }}</div>
+                    </div>
+                </div>
+                <div class="small text-muted">Retail {{ assignment.retail_stock_display }} · B2B {{ assignment.b2b_stock_display }}</div>
+            </div>
+            <div class="card-body">
+                <form method="post" class="pricing-form">
+                    {% csrf_token %}<input type="hidden" name="tab" value="products"><input type="hidden" name="action" value="save_pricing"><input type="hidden" name="product_shop_id" value="{{ assignment.id }}">
+                    <div class="row g-3 mb-3">
+                        <div class="col-12 col-md-6"><label class="form-label" for="retail-cost-{{ assignment.id }}">Current retail purchase cost (editable)</label><div class="input-group"><span class="input-group-text">₹</span><input id="retail-cost-{{ assignment.id }}" class="form-control" type="number" name="purchase_price" min="0" step="0.01" value="{{ assignment.purchase_price|default_if_none:'' }}" placeholder="Enter current cost"></div><div class="small text-muted">Last received or manually adjusted unit cost.</div></div>
+                        <div class="col-12 col-md-6"><label class="form-label" for="b2b-cost-{{ assignment.id }}">Current B2B purchase cost (editable)</label><div class="input-group"><span class="input-group-text">₹</span><input id="b2b-cost-{{ assignment.id }}" class="form-control" type="number" name="b2b_purchase_price" min="0" step="0.01" value="{{ assignment.b2b_purchase_price|default_if_none:'' }}" placeholder="Retail cost converted to B2B unit when blank"></div><div class="small text-muted">When blank, retail cost is converted by the B2B-to-retail unit-value ratio.</div></div>
+                    </div>
+                    {% if assignment.pricing_mode == "MANUAL" %}<p class="small text-primary">Manual sale pricing is active. Supplier purchases will update stock and cost history without changing these sale prices.</p>{% else %}<p class="small text-muted">B2B and retail share the same unit text. If B2B purchase cost is blank, its base cost is retail cost ÷ retail unit value × B2B unit value. Percentage margin and fixed add-on are then applied. Bulk prices scale from their selected unit values.</p>{% endif %}
+                    <div class="row g-3 mb-3">
+                        <div class="col-12 col-md-4">
+                            <label class="form-label" for="pricing-mode-{{ assignment.id }}">Sale price method</label>
+                            <select class="form-select pricing-mode" id="pricing-mode-{{ assignment.id }}" name="pricing_mode">
+                                <option value="AUTO" {% if assignment.pricing_mode == "AUTO" %}selected{% endif %}>Calculate from purchase cost and margins</option>
+                                <option value="MANUAL" {% if assignment.pricing_mode == "MANUAL" %}selected{% endif %}>Set sale prices manually</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="row g-3 margin-pricing-controls">
+                        <div class="col-12 col-md-6 col-xl-3"><fieldset class="border rounded p-3 h-100"><legend class="float-none w-auto px-2 fs-6">Retail</legend><label class="form-label">Unit value</label><input class="form-control mb-2" type="number" name="retail_unit_value" min="0.0001" step="0.0001" value="{{ assignment.retail_unit_value|floatformat:-4 }}"><label class="form-label">Unit text</label><input class="form-control mb-2" type="text" name="retail_unit_text" maxlength="30" value="{{ assignment.retail_unit_text }}"><label class="form-label">Margin (%)</label><input class="form-control mb-2" type="number" name="retail_margin_percent" min="0" step="0.01" value="{{ assignment.retail_margin_percent }}" data-margin="price"><label class="form-label">Fixed add-on ₹</label><input class="form-control" type="number" name="retail_margin_fixed" min="0" step="0.01" value="{{ assignment.retail_margin_fixed }}" data-fixed="price"><div class="small mt-2">Sale price for <span data-price-unit-label="price">{{ assignment.retail_unit_value|floatformat:-4 }} {{ assignment.retail_unit_text }}</span>: <strong data-current-price="{{ assignment.price|default:assignment.product.price }}" data-preview="price">₹—</strong></div></fieldset></div>
+                        <div class="col-12 col-md-6 col-xl-3"><fieldset class="border rounded p-3 h-100"><legend class="float-none w-auto px-2 fs-6">Bulk</legend><label class="form-label">Unit value</label><input class="form-control mb-2" type="number" name="bulk_unit_value" min="0.0001" step="0.0001" value="{{ assignment.bulk_unit_value|floatformat:-4 }}"><label class="form-label">Unit text</label><input class="form-control mb-2" type="text" name="bulk_unit_text" maxlength="30" value="{{ assignment.bulk_unit_text }}"><label class="form-label">Margin (%)</label><input class="form-control mb-2" type="number" name="bulk_margin_percent" min="0" step="0.01" value="{{ assignment.bulk_margin_percent }}" data-margin="bulk_price"><label class="form-label">Fixed add-on ₹</label><input class="form-control" type="number" name="bulk_margin_fixed" min="0" step="0.01" value="{{ assignment.bulk_margin_fixed }}" data-fixed="bulk_price"><div class="small mt-2">Sale price for <span data-price-unit-label="bulk_price">{{ assignment.bulk_unit_value|floatformat:-4 }} {{ assignment.bulk_unit_text }}</span>: <strong data-current-price="{{ assignment.bulk_price|default_if_none:'' }}" data-preview="bulk_price">₹—</strong></div></fieldset></div>
+                        <div class="col-12 col-md-6 col-xl-3"><fieldset class="border rounded p-3 h-100"><legend class="float-none w-auto px-2 fs-6">B2B</legend><label class="form-label">Unit value</label><input class="form-control mb-2" type="number" name="b2b_unit_value" min="0.0001" step="0.0001" value="{{ assignment.b2b_unit_value|floatformat:-4 }}"><div class="small text-muted mb-2">Unit text: <span data-common-unit-text>{{ assignment.retail_unit_text }}</span> (shared with retail)</div><label class="form-label">Margin (%)</label><input class="form-control mb-2" type="number" name="b2b_margin_percent" min="0" step="0.01" value="{{ assignment.b2b_margin_percent }}" data-margin="b2b_price"><label class="form-label">Fixed add-on ₹</label><input class="form-control" type="number" name="b2b_margin_fixed" min="0" step="0.01" value="{{ assignment.b2b_margin_fixed }}" data-fixed="b2b_price"><div class="small mt-2">Sale price for <span data-price-unit-label="b2b_price">{{ assignment.b2b_unit_value|floatformat:-4 }} {{ assignment.b2b_unit_text }}</span>: <strong data-current-price="{{ assignment.b2b_price|default_if_none:'' }}" data-preview="b2b_price">₹—</strong></div></fieldset></div>
+                        <div class="col-12 col-md-6 col-xl-3"><fieldset class="border rounded p-3 h-100"><legend class="float-none w-auto px-2 fs-6">B2B bulk</legend><label class="form-label">Unit value</label><input class="form-control mb-2" type="number" name="b2b_bulk_unit_value" min="0.0001" step="0.0001" value="{{ assignment.b2b_bulk_unit_value|floatformat:-4 }}"><label class="form-label">Unit text</label><input class="form-control mb-2" type="text" name="b2b_bulk_unit_text" maxlength="30" value="{{ assignment.b2b_bulk_unit_text }}"><label class="form-label">Margin (%)</label><input class="form-control mb-2" type="number" name="b2b_bulk_margin_percent" min="0" step="0.01" value="{{ assignment.b2b_bulk_margin_percent }}" data-margin="b2b_bulk_price"><label class="form-label">Fixed add-on ₹</label><input class="form-control" type="number" name="b2b_bulk_margin_fixed" min="0" step="0.01" value="{{ assignment.b2b_bulk_margin_fixed }}" data-fixed="b2b_bulk_price"><div class="small mt-2">Sale price for <span data-price-unit-label="b2b_bulk_price">{{ assignment.b2b_bulk_unit_value|floatformat:-4 }} {{ assignment.b2b_bulk_unit_text }}</span>: <strong data-current-price="{{ assignment.b2b_bulk_price|default_if_none:'' }}" data-preview="b2b_bulk_price">₹—</strong></div></fieldset></div>
+                    </div>
+                    <div class="row g-3 manual-pricing-controls" {% if assignment.pricing_mode != "MANUAL" %}hidden{% endif %}>
+                        <div class="col-12 col-md-6 col-xl-3"><label class="form-label" for="manual-price-{{ assignment.id }}">Retail price ₹</label><input id="manual-price-{{ assignment.id }}" class="form-control" type="number" name="price" min="0" step="0.01" value="{% if assignment.price is not None %}{{ assignment.price }}{% else %}{{ assignment.product.price }}{% endif %}" data-manual-price="price"></div>
+                        <div class="col-12 col-md-6 col-xl-3"><label class="form-label" for="manual-bulk-price-{{ assignment.id }}">Bulk price ₹ (optional)</label><input id="manual-bulk-price-{{ assignment.id }}" class="form-control" type="number" name="bulk_price" min="0" step="0.01" value="{{ assignment.bulk_price|default_if_none:'' }}" data-manual-price="bulk_price"></div>
+                        <div class="col-12 col-md-6 col-xl-3"><label class="form-label" for="manual-b2b-price-{{ assignment.id }}">B2B price ₹ (optional)</label><input id="manual-b2b-price-{{ assignment.id }}" class="form-control" type="number" name="b2b_price" min="0" step="0.01" value="{{ assignment.b2b_price|default_if_none:'' }}" data-manual-price="b2b_price"></div>
+                        <div class="col-12 col-md-6 col-xl-3"><label class="form-label" for="manual-b2b-bulk-price-{{ assignment.id }}">B2B bulk price ₹ (optional)</label><input id="manual-b2b-bulk-price-{{ assignment.id }}" class="form-control" type="number" name="b2b_bulk_price" min="0" step="0.01" value="{{ assignment.b2b_bulk_price|default_if_none:'' }}" data-manual-price="b2b_bulk_price"></div>
+                    </div>
+                    <div class="text-end mt-3"><button class="btn btn-outline-primary" type="submit">Save pricing</button></div>
+                </form>
+                {% if assignment.recent_purchase_items %}
+                <details class="mt-3"><summary>Recent supplier price history</summary><div class="small mt-2">{% for item in assignment.recent_purchase_items %}<div>{{ item.purchase.purchase_date|date:"Y-m-d" }} · {{ item.purchase.vendor.name }} · {{ item.get_stock_type_display }} · {{ item.quantity }} × ₹{{ item.unit_cost|floatformat:2 }}</div>{% endfor %}</div></details>
+                {% endif %}
+                <form method="post" class="border-top mt-3 pt-3 row g-2 align-items-end">
+                    {% csrf_token %}
+                    <input type="hidden" name="tab" value="products">
+                    <input type="hidden" name="action" value="add_stock">
+                    <input type="hidden" name="product_shop_id" value="{{ assignment.id }}">
+                    <div class="col-12"><h4 class="h6 mb-0">Add stock</h4><div class="small text-muted">Quick stock adjustment; this does not create a supplier invoice or change purchase cost.</div></div>
+                    <div class="col-6 col-md-3">
+                        <label class="form-label" for="stock-type-{{ assignment.id }}">Stock pool</label>
+                        <select class="form-select" id="stock-type-{{ assignment.id }}" name="stock_type">
+                            <option value="RETAIL">Retail</option>
+                            <option value="B2B">B2B</option>
+                        </select>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <label class="form-label" for="stock-quantity-{{ assignment.id }}">Quantity to add</label>
+                        <input class="form-control" id="stock-quantity-{{ assignment.id }}" type="number" name="quantity" min="0.0001" max="9999999999.9999" step="0.0001" required>
+                    </div>
+                    <div class="col-12 col-md-3"><button class="btn btn-outline-success" type="submit">Add stock</button></div>
+                </form>
+            </div>
+        </section>
+        {% empty %}
+        <div class="alert alert-info">No products match this search or filter.</div>
+        {% endfor %}
+    </section>
+</div>
+
+<script>
+(() => {
+    const tabButtons = document.querySelectorAll("[data-purchase-tab]");
+    const tabPanels = document.querySelectorAll("[data-purchase-tab-panel]");
+    const activateTab = (tabName, updateUrl) => {
+        const validTab = Array.from(tabButtons).some((button) => button.dataset.purchaseTab === tabName);
+        const activeTab = validTab ? tabName : "overview";
+        tabButtons.forEach((button) => {
+            const selected = button.dataset.purchaseTab === activeTab;
+            button.classList.toggle("active", selected);
+            button.setAttribute("aria-selected", String(selected));
+        });
+        tabPanels.forEach((panel) => {
+            panel.hidden = panel.dataset.purchaseTabPanel !== activeTab;
+        });
+        if (updateUrl) {
+            const url = new URL(window.location.href);
+            url.searchParams.set("tab", activeTab);
+            window.history.replaceState({}, "", url);
+        }
+    };
+    tabButtons.forEach((button) => {
+        button.addEventListener("click", () => activateTab(button.dataset.purchaseTab, true));
+    });
+    activateTab(new URLSearchParams(window.location.search).get("tab") || "{{ active_tab }}", false);
+
+    const lines = document.getElementById("purchase-lines");
+    const addLine = document.getElementById("add-purchase-line");
+    const costMethod = document.getElementById("cost-method");
+    if (lines && addLine) {
+        addLine.addEventListener("click", () => {
+            const clone = lines.querySelector(".purchase-line").cloneNode(true);
+            clone.querySelectorAll("input").forEach((input) => {
+                input.value = input.name === "wastage_quantity" || input.name === "gst_rate" ? "0" : "";
+            });
+            clone.querySelectorAll("select").forEach((select) => { select.selectedIndex = 0; });
+            clone.querySelector(".purchase-price-preview").textContent = "Enter quantities and cost to calculate receipt and updated unit cost.";
+            lines.appendChild(clone);
+            updatePurchaseTotalPreview();
+        });
+        lines.addEventListener("click", (event) => {
+            const remove = event.target.closest(".remove-line");
+            if (remove && lines.querySelectorAll(".purchase-line").length > 1) {
+                remove.closest(".purchase-line").remove();
+                updatePurchaseTotalPreview();
+            }
+        });
+        const updatePurchaseTotalPreview = () => {
+            let subtotal = 0;
+            let itemGst = 0;
+            lines.querySelectorAll(".purchase-line").forEach((line) => {
+                const purchased = Number(line.querySelector('[name="quantity"]').value || 0);
+                const cost = Number(line.querySelector('[name="unit_cost"]').value || 0);
+                const rate = Number(line.querySelector('[name="gst_rate"]').value || 0);
+                const lineTotal = purchased * cost;
+                subtotal += lineTotal;
+                itemGst += lineTotal * rate / 100;
+            });
+            const delivery = Number(document.getElementById("delivery-expense")?.value || 0);
+            const deliveryRate = Number(document.getElementById("delivery-gst-rate")?.value || 0);
+            const deliveryGst = delivery * deliveryRate / 100;
+            const preview = document.getElementById("purchase-total-preview");
+            if (preview) {
+                preview.textContent = `Invoice estimate: goods ₹${subtotal.toFixed(2)} + GST ₹${(itemGst + deliveryGst).toFixed(2)} + delivery ₹${delivery.toFixed(2)} = ₹${(subtotal + itemGst + deliveryGst + delivery).toFixed(2)}`;
+            }
+            return subtotal;
+        };
+        const updateLinePreview = (line, resetCost) => {
+            const productSelect = line.querySelector(".purchase-product");
+            const product = productSelect.selectedOptions[0];
+            const preview = line.querySelector(".purchase-price-preview");
+            if (!product || !product.value) {
+                preview.textContent = "";
+                return;
+            }
+            const b2b = line.querySelector('[name="stock_type"]').value === "B2B";
+            const costInput = line.querySelector('[name="unit_cost"]');
+            const costKey = b2b ? "b2bCost" : "retailCost";
+            const hasCostKey = b2b ? "b2bHasCost" : "retailHasCost";
+            const unitValueKey = b2b ? "b2bUnitValue" : "retailUnitValue";
+            const unitTextKey = b2b ? "b2bUnitText" : "retailUnitText";
+            if (resetCost) {
+                costInput.value = product.dataset[hasCostKey] === "true"
+                    ? product.dataset[costKey]
+                    : "";
+                line.querySelector('[name="purchase_unit_value"]').value =
+                    product.dataset[unitValueKey] || "1";
+                line.querySelector('[name="purchase_unit_text"]').value =
+                    product.dataset[unitTextKey] || "unit";
+            }
+            if (!costInput.value) {
+                preview.textContent = "Enter the supplier unit cost to preview the updated cost and sale prices.";
+                return;
+            }
+            const newCost = Number(costInput.value || 0);
+            const quantity = Math.max(0, Number(line.querySelector('[name="quantity"]').value || 0));
+            const wastage = Math.max(0, Number(line.querySelector('[name="wastage_quantity"]').value || 0));
+            const purchaseUnitValue = Number(line.querySelector('[name="purchase_unit_value"]').value || 0);
+            const purchaseUnitText = line.querySelector('[name="purchase_unit_text"]').value.trim().toLowerCase();
+            const inventoryUnitValue = Number(product.dataset[unitValueKey] || 1);
+            const inventoryUnitText = (product.dataset[unitTextKey] || "unit").trim().toLowerCase();
+            const unitInfo = (unit) => {
+                const factors = {
+                    mg: ["mass", 0.001], milligram: ["mass", 0.001], milligrams: ["mass", 0.001],
+                    g: ["mass", 1], gm: ["mass", 1], gms: ["mass", 1], gram: ["mass", 1], grams: ["mass", 1],
+                    kg: ["mass", 1000], kgs: ["mass", 1000], kilo: ["mass", 1000], kilos: ["mass", 1000],
+                    kilogram: ["mass", 1000], kilograms: ["mass", 1000],
+                    lb: ["mass", 453.59237], lbs: ["mass", 453.59237],
+                    pound: ["mass", 453.59237], pounds: ["mass", 453.59237],
+                    oz: ["mass", 28.349523125], ounce: ["mass", 28.349523125], ounces: ["mass", 28.349523125],
+                    l: ["volume", 1000], lt: ["volume", 1000], liter: ["volume", 1000], litre: ["volume", 1000],
+                    liters: ["volume", 1000], litres: ["volume", 1000], ml: ["volume", 1],
+                    milliliter: ["volume", 1], millilitre: ["volume", 1],
+                    m: ["length", 1000], meter: ["length", 1000], metre: ["length", 1000],
+                    cm: ["length", 10], mm: ["length", 1],
+                    pc: ["count", 1], pcs: ["count", 1], piece: ["count", 1], pieces: ["count", 1],
+                    each: ["count", 1], ea: ["count", 1], unit: ["count", 1], units: ["count", 1]
+                };
+                const normalized = unit.replace(/[\s.]/g, "");
+                return factors[normalized] || [`custom:${normalized}`, 1];
+            };
+            const [purchaseDimension, purchaseFactor] = unitInfo(purchaseUnitText);
+            const [inventoryDimension, inventoryFactor] = unitInfo(inventoryUnitText);
+            if (purchaseDimension !== inventoryDimension || purchaseUnitValue <= 0 || inventoryUnitValue <= 0) {
+                preview.textContent = "Choose compatible purchase and inventory units with positive unit values.";
+                return;
+            }
+            const purchasedStock = quantity * purchaseUnitValue * purchaseFactor
+                / (inventoryUnitValue * inventoryFactor);
+            const received = Math.max(0, purchasedStock - wastage);
+            const stockKey = b2b ? "b2bStock" : "retailStock";
+            const existingStock = Number(product.dataset[stockKey] || 0);
+            const existingCost = Number(product.dataset[costKey] || 0);
+            const selectedMethod = costMethod ? costMethod.value : "AVERAGE";
+            let cost = selectedMethod === "AVERAGE"
+                && product.dataset[hasCostKey] === "true"
+                && existingStock > 0
+                && received > 0
+                ? ((existingCost * existingStock) + (newCost * quantity)) / (existingStock + received)
+                : newCost;
+            if (received === 0) {
+                preview.textContent = `Purchased ${quantity} × ${purchaseUnitValue} ${purchaseUnitText}; waste ${wastage}; usable stock received 0. This line adds no inventory.`;
+                return;
+            }
+            const roundedCost = Math.round((cost + Number.EPSILON) * 100) / 100;
+            const costLabel = selectedMethod === "AVERAGE" ? "weighted average cost" : "latest purchase cost";
+            const receiptSummary = `Purchased ${quantity} × ${purchaseUnitValue} ${purchaseUnitText}; equivalent to ${purchasedStock.toFixed(4)} ${inventoryUnitValue} ${inventoryUnitText}; waste ${wastage}; received ${received.toFixed(4)} ${inventoryUnitValue} ${inventoryUnitText}.`;
+            if (product.dataset.pricingMode === "MANUAL") {
+                preview.textContent = `${receiptSummary} Saved ${costLabel}: ₹${roundedCost.toFixed(2)}. Manual sale prices will not change.`;
+                return;
+            }
+            const priceKeys = b2b ? ["b2bPrice", "b2bBulkPrice"] : ["price", "bulkPrice"];
+            const labels = b2b ? ["B2B", "B2B bulk"] : ["Retail", "Bulk"];
+            const marginPrefixes = b2b ? ["b2b", "b2bBulk"] : ["retail", "bulk"];
+            const result = priceKeys.map((priceKey, index) => {
+                const prefix = marginPrefixes[index];
+                const margin = Number(product.dataset[`${prefix}MarginPercent`] || 0);
+                const fixed = Number(product.dataset[`${prefix}MarginFixed`] || 0);
+                const oldPrice = product.dataset[priceKey];
+                const newPrice = (roundedCost * (1 + margin / 100) + fixed).toFixed(2);
+                return `${labels[index]} current: ${oldPrice ? `₹${Number(oldPrice).toFixed(2)}` : "Not set"} → ${costLabel}: ₹${roundedCost.toFixed(2)} → new: ₹${newPrice}`;
+            });
+            if (!b2b && product.dataset.b2bHasCost !== "true") {
+                const retailUnitValue = Number(product.dataset.retailUnitValue || 0);
+                const b2bUnitValue = Number(product.dataset.b2bUnitValue || 0);
+                if (retailUnitValue > 0 && b2bUnitValue > 0) {
+                    const b2bUnitCost = roundedCost / retailUnitValue * b2bUnitValue;
+                    const margin = Number(product.dataset.b2bMarginPercent || 0);
+                    const fixed = Number(product.dataset.b2bMarginFixed || 0);
+                    const oldPrice = product.dataset.b2bPrice;
+                    const newPrice = (b2bUnitCost * (1 + margin / 100) + fixed).toFixed(2);
+                    result.push(`B2B (shared unit text): retail cost ₹${roundedCost.toFixed(2)} ÷ ${retailUnitValue} × ${b2bUnitValue} = ₹${b2bUnitCost.toFixed(2)}; new price ₹${newPrice}${oldPrice ? ` (current ₹${Number(oldPrice).toFixed(2)})` : ""}`);
+                }
+            }
+            preview.textContent = `${receiptSummary} ${result.join(" · ")}`;
+        };
+        lines.addEventListener("change", (event) => {
+            const line = event.target.closest(".purchase-line");
+            if (line) updateLinePreview(line, event.target.matches(".purchase-product, [name='stock_type']"));
+        });
+        lines.addEventListener("input", (event) => {
+            const line = event.target.closest(".purchase-line");
+            if (line && event.target.matches('[name="unit_cost"], [name="quantity"], [name="wastage_quantity"], [name="purchase_unit_value"], [name="purchase_unit_text"], [name="gst_rate"]')) {
+                updateLinePreview(line, false);
+                updatePurchaseTotalPreview();
+            }
+        });
+        lines.addEventListener("change", updatePurchaseTotalPreview);
+        ["delivery-expense", "delivery-gst-rate"].forEach((id) => {
+            document.getElementById(id)?.addEventListener("input", updatePurchaseTotalPreview);
+        });
+        if (costMethod) {
+            costMethod.addEventListener("change", () => {
+                lines.querySelectorAll(".purchase-line").forEach((line) => updateLinePreview(line, false));
+            });
+        }
+        updatePurchaseTotalPreview();
+    }
+    document.querySelectorAll(".pricing-form").forEach((form) => {
+        const unitInfo = (unitText) => {
+            const normalized = (unitText || "").trim().toLowerCase().replace(/[\s.]/g, "");
+            const factors = {
+                mg: ["mass", 0.001], milligram: ["mass", 0.001], milligrams: ["mass", 0.001],
+                g: ["mass", 1], gm: ["mass", 1], gms: ["mass", 1], gram: ["mass", 1], grams: ["mass", 1],
+                kg: ["mass", 1000], kgs: ["mass", 1000], kilo: ["mass", 1000], kilos: ["mass", 1000], kilogram: ["mass", 1000], kilograms: ["mass", 1000],
+                lb: ["mass", 453.59237], lbs: ["mass", 453.59237], pound: ["mass", 453.59237], pounds: ["mass", 453.59237],
+                oz: ["mass", 28.349523125], ounce: ["mass", 28.349523125], ounces: ["mass", 28.349523125],
+                ml: ["volume", 1], milliliter: ["volume", 1], millilitre: ["volume", 1],
+                l: ["volume", 1000], lt: ["volume", 1000], liter: ["volume", 1000], litre: ["volume", 1000],
+                liters: ["volume", 1000], litres: ["volume", 1000],
+                mm: ["length", 1], cm: ["length", 10], m: ["length", 1000], meter: ["length", 1000], metre: ["length", 1000],
+                pc: ["count", 1], pcs: ["count", 1], piece: ["count", 1], pieces: ["count", 1],
+                each: ["count", 1], ea: ["count", 1], unit: ["count", 1], units: ["count", 1]
+            };
+            return factors[normalized] || [`custom:${normalized}`, 1];
+        };
+        const unitRatio = (saleValueName, saleTextName, stockValueName, stockTextName) => {
+            const saleValue = Number(form.querySelector(`[name="${saleValueName}"]`).value || 0);
+            const stockValue = Number(form.querySelector(`[name="${stockValueName}"]`).value || 0);
+            const saleText = form.querySelector(`[name="${saleTextName}"]`).value;
+            const stockText = form.querySelector(`[name="${stockTextName}"]`).value;
+            if (saleValue <= 0 || stockValue <= 0 || !saleText.trim() || !stockText.trim()) return null;
+            const [saleDimension, saleFactor] = unitInfo(saleText);
+            const [stockDimension, stockFactor] = unitInfo(stockText);
+            if (saleDimension !== stockDimension) return null;
+            return saleValue * saleFactor / (stockValue * stockFactor);
+        };
+        const update = () => {
+            const isManual = form.querySelector(".pricing-mode").value === "MANUAL";
+            const marginControls = form.querySelector(".margin-pricing-controls");
+            const manualControls = form.querySelector(".manual-pricing-controls");
+            marginControls.hidden = isManual;
+            manualControls.hidden = !isManual;
+            form.querySelector('[name="price"]').required = isManual;
+            if (isManual) return;
+            const retailCost = Number(form.querySelector('[name="purchase_price"]').value || 0);
+            const b2bCostInput = form.querySelector('[name="b2b_purchase_price"]').value;
+            const b2bUsesRetailCost = b2bCostInput === "";
+            const b2bCost = b2bUsesRetailCost ? retailCost : Number(b2bCostInput);
+            form.querySelectorAll("[data-preview]").forEach((preview) => {
+                const key = preview.dataset.preview;
+                const cost = key.startsWith("b2b") ? b2bCost : retailCost;
+                const margin = Number(form.querySelector(`[data-margin="${key}"]`).value || 0);
+                const fixed = Number(form.querySelector(`[data-fixed="${key}"]`).value || 0);
+                const unitValueName = {
+                    price: "retail_unit_value",
+                    bulk_price: "bulk_unit_value",
+                    b2b_price: "b2b_unit_value",
+                    b2b_bulk_price: "b2b_bulk_unit_value"
+                }[key];
+                const unitTextName = key === "b2b_price"
+                    ? "retail_unit_text"
+                    : unitValueName.replace("_value", "_text");
+                const stockUnitValueName = key.startsWith("b2b")
+                    ? (b2bUsesRetailCost ? "retail_unit_value" : "b2b_unit_value")
+                    : "retail_unit_value";
+                const unitRatioValue = key === "price"
+                    ? 1
+                    : unitRatio(unitValueName, unitTextName, stockUnitValueName, "retail_unit_text");
+                const priceUnitLabel = form.querySelector(`[data-price-unit-label="${key}"]`);
+                const unitValue = form.querySelector(`[name="${unitValueName}"]`).value;
+                const unitText = form.querySelector(`[name="${unitTextName}"]`).value;
+                if (priceUnitLabel) priceUnitLabel.textContent = `${unitValue} ${unitText}`;
+                form.querySelectorAll("[data-common-unit-text]").forEach((label) => {
+                    label.textContent = form.querySelector('[name="retail_unit_text"]').value;
+                });
+                const currentPrice = preview.dataset.currentPrice;
+                const currentDisplay = currentPrice
+                    ? `Current ₹${Number(currentPrice).toFixed(2)} → `
+                    : "Current not set → ";
+                if (unitRatioValue === null) {
+                    preview.textContent = `${currentDisplay}Cannot calculate: sale and stock units must be compatible`;
+                    return;
+                }
+                const adjustedCost = cost * unitRatioValue;
+                const marginAmount = adjustedCost * margin / 100;
+                const newPrice = adjustedCost + marginAmount + fixed;
+                preview.textContent = `${currentDisplay}Unit cost ₹${adjustedCost.toFixed(2)} + margin ₹${marginAmount.toFixed(2)} + fixed ₹${fixed.toFixed(2)} = sale price ₹${newPrice.toFixed(2)}`;
+            });
+        };
+        form.addEventListener("input", update);
+        form.querySelector(".pricing-mode").addEventListener("change", update);
+        update();
+    });
+})();
+</script>
+{% endblock %}

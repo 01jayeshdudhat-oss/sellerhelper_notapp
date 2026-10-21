@@ -11,7 +11,7 @@ import random
 import re
 import secrets
 import uuid
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -20,8 +20,9 @@ from types import SimpleNamespace
 import requests
 import qrcode
 from django.conf import settings
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.paginator import Paginator
+from django.core import signing
 from django.db import transaction
 from django.http import (
     FileResponse,
@@ -47,15 +48,23 @@ from .legal_content import (
     REQUIRED_LEGAL_DOCUMENTS,
     legal_document_version,
 )
-from .offline_keyword_dictionary import dictionary_is_ready
+from .offline_keyword_dictionary import (
+    dictionary_is_ready,
+    format_search_keywords_by_language,
+    normalize_search_text,
+)
 from rapidfuzz.fuzz import ratio
-from django.db.models import Count, F, Prefetch, Q, Sum
+from django.db.models import Count, F, Max, Prefetch, Q, Sum
+from django.db.models.functions import Coalesce
 from .forms import (
     AdminProductCatalogForm,
+    _join_product_unit,
+    _split_product_unit,
     JobApplicationForm,
     JobOpeningForm,
     MarketplaceLayoutSettingsForm,
     SiteBrandingSettingsForm,
+    SiteThemeSettingsForm,
     CustomerSignupForm,
     OrderForm,
     ProductCategoryForm,
@@ -63,6 +72,7 @@ from .forms import (
     SharedRiderGroupCreateForm,
     SharedRiderShopRequestForm,
     StorefrontProductEditForm,
+    PublicRiderApplicationForm,
     ShopDeliveryTaxSettingsForm,
     ShopForm,
     ShopStaffPaymentSettingsForm,
@@ -71,14 +81,20 @@ from .models import (
     AdminProductCatalog,
     ClientProfile,
     ClientDeliveryAddress,
+    CheckoutAttempt,
     CustomerProductFeedback,
     FavoriteProduct,
     FavoriteShop,
     MarketplaceLayoutSettings,
     SiteBrandingSettings,
+    SiteThemeRevision,
+    SiteThemeSettings,
     LegalAcceptance,
     Order,
     OrderVoiceInstruction,
+    PublicRiderApplication,
+    PublicRiderWallet,
+    PublicRiderWalletTransaction,
     OrderItem,
     Product,
     ProductCategory,
@@ -98,6 +114,12 @@ from .models import (
     UserActivity,
     StockMovement,
     ShopProductForecast,
+    ShopVendor,
+    VendorPurchase,
+    VendorPurchaseItem,
+    VendorPurchasePayment,
+    VendorPurchaseReturn,
+    VendorPurchaseReturnItem,
     DeliverySharingSettings,
     SharedRiderGroup,
     SharedRiderGroupShop,
@@ -108,6 +130,7 @@ from .models import (
     ShopStorefrontSettings,
     RiderCashLedgerEntry,
     CODBalancePayment,
+    CODPaymentApprovalRequest,
     SiteWallet,
     SiteWalletTransaction,
     ShopPayout,
@@ -116,7 +139,24 @@ from .models import (
     get_product_category_choices,
     generate_otp_code,
 )
-from .utils import distance_km_between_points, shop_delivers_to_location
+from .utils import (
+    distance_km_between_points,
+    normalize_pincodes,
+    shop_delivers_to_location,
+)
+from .live_updates import queue_order_update
+from .public_riders import (
+    public_rider_service_enabled,
+    sync_public_rider_shop_memberships,
+)
+from .road_routing import local_road_route_distance_km
+from .public_rider_dispatch import (
+    PUBLIC_RIDER_OFFER_COOLDOWN_SECONDS,
+    advance_public_rider_offer,
+    eligible_public_riders,
+    validate_work_area,
+    uses_public_rider_network,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +165,7 @@ PORTAL_LABELS = {
     "B2B_CUSTOMER": "B2B customer",
     "SHOP_OWNER": "Shop owner",
     "SHOP_STAFF": "Shop staff",
+    "RIDER": "Public rider",
     "ADMIN": "Admin",
 }
 
@@ -287,6 +328,140 @@ def _cart_quantity(cart, product_shop_id, *, is_bulk_order=False):
         return 0
 
 
+_UNASSIGNED_CART_ADDRESS = "unassigned"
+
+
+def _address_scoped_cart(request, client=None):
+    if client is None and request.user.is_authenticated:
+        client = ClientProfile.objects.filter(user=request.user).first()
+
+    addresses = (
+        client.delivery_addresses.filter(is_active=True).order_by("-is_default", "id")
+        if client
+        else ClientDeliveryAddress.objects.none()
+    )
+    requested_address_id = request.session.get("cart_delivery_address_id")
+    address = (
+        addresses.filter(pk=int(requested_address_id)).first()
+        if str(requested_address_id or "").isdigit()
+        else None
+    )
+    if address is None:
+        address = addresses.filter(is_default=True).first() or addresses.first()
+    address_key = str(address.pk) if address else _UNASSIGNED_CART_ADDRESS
+
+    carts = request.session.get("carts_by_delivery_address")
+    if not isinstance(carts, dict):
+        carts = {}
+    legacy_cart = request.session.get("cart", {})
+    if not isinstance(legacy_cart, dict):
+        legacy_cart = {}
+
+    if (
+        address_key in carts
+        and request.session.get("cart_delivery_address_id") == address_key
+        and legacy_cart != carts[address_key]
+    ):
+        carts[address_key] = legacy_cart
+
+    if address_key not in carts:
+        if _UNASSIGNED_CART_ADDRESS in carts and address_key != _UNASSIGNED_CART_ADDRESS:
+            carts[address_key] = carts.pop(_UNASSIGNED_CART_ADDRESS)
+        elif not carts:
+            carts[address_key] = legacy_cart
+        else:
+            carts[address_key] = {}
+
+    cart = carts[address_key]
+    if not isinstance(cart, dict):
+        cart = {}
+        carts[address_key] = cart
+
+    if (
+        request.session.get("carts_by_delivery_address") != carts
+        or request.session.get("cart_delivery_address_id") != address_key
+        or request.session.get("cart") != cart
+    ):
+        request.session["carts_by_delivery_address"] = carts
+        request.session["cart_delivery_address_id"] = address_key
+        request.session["cart"] = cart
+        request.session.modified = True
+    return cart, address
+
+
+def _save_address_scoped_cart(request, cart):
+    _, address = _address_scoped_cart(request)
+    address_key = str(address.pk) if address else _UNASSIGNED_CART_ADDRESS
+    carts = request.session.get("carts_by_delivery_address", {})
+    if not isinstance(carts, dict):
+        carts = {}
+    carts[address_key] = cart
+    request.session["carts_by_delivery_address"] = carts
+    request.session["cart_delivery_address_id"] = address_key
+    request.session["cart"] = cart
+    request.session.modified = True
+
+
+def _switch_address_scoped_cart(request, address):
+    address_key = str(address.pk)
+    carts = request.session.get("carts_by_delivery_address", {})
+    if not isinstance(carts, dict) or not carts:
+        legacy_cart = request.session.get("cart", {})
+        if not isinstance(legacy_cart, dict):
+            legacy_cart = {}
+        carts = {}
+        if legacy_cart:
+            carts[address_key] = legacy_cart
+    else:
+        _address_scoped_cart(request)
+        carts = request.session.get("carts_by_delivery_address", {})
+        if not isinstance(carts, dict):
+            carts = {}
+    cart = carts.setdefault(address_key, {})
+    if not isinstance(cart, dict):
+        cart = {}
+        carts[address_key] = cart
+    request.session["carts_by_delivery_address"] = carts
+    request.session["cart_delivery_address_id"] = address_key
+    request.session["cart"] = cart
+    request.session.modified = True
+
+
+def _zero_unavailable_address_cart_items(request, address):
+    _address_scoped_cart(request)
+    address_key = str(address.pk)
+    carts = request.session.get("carts_by_delivery_address", {})
+    if not isinstance(carts, dict):
+        carts = {}
+    cart = carts.get(address_key, {})
+    if not isinstance(cart, dict):
+        cart = {}
+
+    assignment_ids = {
+        parsed[0]
+        for key in cart
+        if (parsed := _parse_cart_line_key(key)) is not None
+    }
+    assignments = ProductShop.objects.select_related("shop").filter(
+        pk__in=assignment_ids,
+    )
+    unavailable_assignment_ids = {
+        assignment.pk
+        for assignment in assignments
+        if not _shop_can_deliver_to_address(assignment.shop, address)
+    }
+    for key in list(cart):
+        parsed = _parse_cart_line_key(key)
+        if parsed and parsed[0] in unavailable_assignment_ids:
+            cart[key] = 0
+
+    carts[address_key] = cart
+    request.session["carts_by_delivery_address"] = carts
+    if request.session.get("cart_delivery_address_id") == address_key:
+        request.session["cart"] = cart
+    request.session.modified = True
+
+
 def _parse_numeric_unit(unit):
     unit = (unit or "").strip()
     match = re.fullmatch(r"(\d+(?:\.\d+)?)(\s*)(\D.*)", unit)
@@ -385,7 +560,7 @@ def _shop_order_estimated_load(shop_order):
 
     if not items:
         item_count = shop_order.product_count
-        estimated_weight = max(
+        estimated_weight = shop_order.total_weight_kg or max(
             Decimal(item_count) * Decimal("0.50"),
             shop_order.total_amount / Decimal("1000"),
         )
@@ -441,6 +616,80 @@ def _quantity_unit_calculation(quantity, unit):
     if amount is None:
         return total_unit
     return f"{quantity} × {unit} = {total_unit}"
+
+
+def _json_stock_quantity(quantity):
+    quantity = Decimal(quantity)
+    if quantity == quantity.to_integral_value():
+        return int(quantity)
+    return float(quantity)
+
+
+def _inventory_unit_factor(unit_text):
+    normalized = re.sub(r"[\s.]", "", (unit_text or "").casefold())
+    factors = {
+        "mg": ("mass", Decimal("0.001")),
+        "milligram": ("mass", Decimal("0.001")),
+        "milligrams": ("mass", Decimal("0.001")),
+        "g": ("mass", Decimal("1")),
+        "gm": ("mass", Decimal("1")),
+        "gms": ("mass", Decimal("1")),
+        "gram": ("mass", Decimal("1")),
+        "grams": ("mass", Decimal("1")),
+        "kg": ("mass", Decimal("1000")),
+        "kgs": ("mass", Decimal("1000")),
+        "kilo": ("mass", Decimal("1000")),
+        "kilos": ("mass", Decimal("1000")),
+        "kilogram": ("mass", Decimal("1000")),
+        "kilograms": ("mass", Decimal("1000")),
+        "lb": ("mass", Decimal("453.59237")),
+        "lbs": ("mass", Decimal("453.59237")),
+        "pound": ("mass", Decimal("453.59237")),
+        "pounds": ("mass", Decimal("453.59237")),
+        "oz": ("mass", Decimal("28.349523125")),
+        "ounce": ("mass", Decimal("28.349523125")),
+        "ounces": ("mass", Decimal("28.349523125")),
+        "l": ("volume", Decimal("1000")),
+        "lt": ("volume", Decimal("1000")),
+        "liter": ("volume", Decimal("1000")),
+        "litre": ("volume", Decimal("1000")),
+        "liters": ("volume", Decimal("1000")),
+        "litres": ("volume", Decimal("1000")),
+        "ml": ("volume", Decimal("1")),
+        "milliliter": ("volume", Decimal("1")),
+        "millilitre": ("volume", Decimal("1")),
+        "m": ("length", Decimal("1000")),
+        "meter": ("length", Decimal("1000")),
+        "metre": ("length", Decimal("1000")),
+        "cm": ("length", Decimal("10")),
+        "mm": ("length", Decimal("1")),
+        "pc": ("count", Decimal("1")),
+        "pcs": ("count", Decimal("1")),
+        "piece": ("count", Decimal("1")),
+        "pieces": ("count", Decimal("1")),
+        "each": ("count", Decimal("1")),
+        "ea": ("count", Decimal("1")),
+        "unit": ("count", Decimal("1")),
+        "units": ("count", Decimal("1")),
+    }
+    return factors.get(normalized, (f"custom:{normalized}", Decimal("1")))
+
+
+def _converted_purchase_quantity(quantity, purchase_value, purchase_unit, inventory_value, inventory_unit):
+    purchase_dimension, purchase_factor = _inventory_unit_factor(purchase_unit)
+    inventory_dimension, inventory_factor = _inventory_unit_factor(inventory_unit)
+    if purchase_dimension != inventory_dimension:
+        raise ValueError(
+            f"Purchase unit {purchase_unit!r} cannot be converted to inventory unit "
+            f"{inventory_unit!r}."
+        )
+    converted = (
+        Decimal(quantity)
+        * purchase_value
+        * purchase_factor
+        / (inventory_value * inventory_factor)
+    )
+    return converted.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
 
 
 def _build_gst_breakdown(
@@ -666,6 +915,48 @@ def _checkout_order_instruction_draft(request, shop_ids):
     return draft
 
 
+def _track_checkout_attempt(request, items):
+    checkout_key = request.session.get("checkout_attempt_key")
+    if not isinstance(checkout_key, str) or not re.fullmatch(r"[0-9a-f]{32}", checkout_key):
+        checkout_key = uuid.uuid4().hex
+        request.session["checkout_attempt_key"] = checkout_key
+
+    grouped_items = defaultdict(list)
+    totals_by_shop = defaultdict(lambda: Decimal("0.00"))
+    shops_by_id = {}
+    for item in items:
+        assignment = item["assignment"]
+        shop = assignment.shop
+        shops_by_id[shop.pk] = shop
+        grouped_items[shop.pk].append({
+            "product_name": assignment.product.product_name,
+            "quantity": item["quantity"],
+            "unit": item["unit"],
+            "line_total": str(item["total"]),
+            "image_url": assignment.display_image_url,
+            "image_urls": assignment.display_image_urls,
+            "product_shop_id": assignment.pk,
+        })
+        totals_by_shop[shop.pk] += item["total"]
+
+    CheckoutAttempt.objects.filter(
+        customer=request.user,
+        checkout_key=checkout_key,
+    ).exclude(shop_id__in=shops_by_id).delete()
+    for shop_id, shop in shops_by_id.items():
+        CheckoutAttempt.objects.update_or_create(
+            customer=request.user,
+            checkout_key=checkout_key,
+            shop=shop,
+            defaults={
+                "cart_items": grouped_items[shop_id],
+                "total_amount": totals_by_shop[shop_id],
+                "order": None,
+            },
+        )
+    request.session.modified = True
+
+
 def _save_checkout_order_instruction(request, checkout_shops):
     draft_id = request.session.get("order_voice_instruction_draft_id")
     draft = None
@@ -856,15 +1147,43 @@ class PortalLoginView(LoginView):
     def form_valid(self, form):
         user = form.get_user()
         portal = (self.request.POST.get("login_as") or "CUSTOMER").upper()
-        if portal not in {"CUSTOMER", "B2B_CUSTOMER", "SHOP_OWNER", "SHOP_STAFF", "ADMIN"}:
+        if portal not in {"CUSTOMER", "B2B_CUSTOMER", "SHOP_OWNER", "SHOP_STAFF", "RIDER", "ADMIN"}:
             form.add_error(None, "Choose one of the available workspaces.")
             return self.form_invalid(form)
+        if portal == "RIDER":
+            application = PublicRiderApplication.objects.filter(
+                user=user,
+                status=PublicRiderApplication.STATUS_APPROVED,
+            ).first()
+            if not application:
+                if ShopStaff.objects.filter(
+                    user=user,
+                    is_active=True,
+                    role="RIDER",
+                    is_public_rider=False,
+                ).exists():
+                    form.add_error(
+                        None,
+                        "Shop riders must sign in using the Shop staff workspace.",
+                    )
+                else:
+                    form.add_error(
+                        None,
+                        "Your public rider application must be approved before you can sign in here.",
+                    )
+                return self.form_invalid(form)
+            if not user.is_active:
+                form.add_error(None, "This account is inactive.")
+                return self.form_invalid(form)
+            self.request.session["active_portal"] = "RIDER"
+            return super().form_valid(form)
         if portal == "ADMIN" and not user.is_superuser:
             form.add_error(None, "Administrator access is only available to administrators.")
             return self.form_invalid(form)
         if portal == "SHOP_STAFF" and not ShopStaff.objects.filter(
             user=user,
             is_active=True,
+            is_public_rider=False,
         ).exists():
             form.add_error(None, "This account has no active shop staff assignment.")
             return self.form_invalid(form)
@@ -878,6 +1197,8 @@ class PortalLoginView(LoginView):
             and self.request.session.get("active_portal") == "ADMIN"
         ):
             return redirect("admin_catalog_dashboard").url
+        if self.request.session.get("active_portal") == "RIDER":
+            return redirect("rider_dashboard").url
         if self.request.GET.get("next") or self.request.POST.get("next"):
             return redirect_url
         portal = self.request.session.get("active_portal", "CUSTOMER")
@@ -1008,11 +1329,12 @@ def _shop_storefront_context(request, shop):
         item for item in assignments
         if item.stock_for_customer(is_b2b=is_b2b) > 0
     ]
-    cart = request.session.get("cart", {})
-    if not isinstance(cart, dict):
-        cart = {}
+    cart = _address_scoped_cart(request)[0] if request.user.is_authenticated else {}
     for item in assignments:
         item.storefront_stock = item.stock_for_customer(is_b2b=is_b2b)
+        item.storefront_retail_stock = item.stock
+        item.storefront_b2b_stock = item.b2b_stock
+        item.storefront_total_stock = item.stock + item.b2b_stock
         item.storefront_price = item.effective_price_for_customer(is_b2b=is_b2b)
         item.storefront_unit = item.unit_for_customer(is_b2b=is_b2b)
         item.storefront_bulk_price = item.effective_bulk_price_for_customer(is_b2b=is_b2b)
@@ -1088,19 +1410,31 @@ def home(request):
     if storefront_slug:
         return public_shop_storefront(request, storefront_slug)
     if request.user.is_authenticated:
+        if request.session.get("active_portal") == "RIDER":
+            return redirect("rider_dashboard")
         active_staff = ShopStaff.objects.filter(
             user=request.user,
             is_active=True,
+            is_public_rider=False,
         ).select_related("shop").first()
         active_shops = Shop.objects.filter(owner=request.user)
     else:
         active_staff = None
         active_shops = Shop.objects.none()
-    return render(request, 'seller/home.html', {
+    is_theme_preview = (
+        request.GET.get("theme_preview") == "1"
+        and request.user.is_authenticated
+        and request.user.is_superuser
+    )
+    response = render(request, 'seller/home.html', {
         "active_staff": active_staff,
         "active_shops": active_shops,
         "active_portal": request.session.get("active_portal", "CUSTOMER"),
+        "theme_preview": is_theme_preview,
     })
+    if is_theme_preview:
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    return response
 
 
 def public_information_page(request, page_slug):
@@ -1237,6 +1571,160 @@ def admin_catalog_dashboard(request):
         "search": search,
         "shops": shops,
         "shop_search": shop_search,
+    })
+
+
+@login_required
+def admin_site_theme_builder(request):
+    _require_superuser(request)
+    theme_settings, _ = SiteThemeSettings.objects.get_or_create(pk=1)
+    form = SiteThemeSettingsForm(instance=theme_settings)
+    if theme_settings.theme_revision_retention_days:
+        SiteThemeRevision.objects.filter(
+            theme_settings=theme_settings,
+            created_at__lt=timezone.now() - timedelta(
+                days=theme_settings.theme_revision_retention_days,
+            ),
+        ).delete()
+    if request.method == "POST":
+        restoring_revision = None
+        if "delete_theme_revision" in request.POST:
+            deleted_count, _ = SiteThemeRevision.objects.filter(
+                theme_settings=theme_settings,
+                pk=request.POST.get("delete_theme_revision"),
+            ).delete()
+            if deleted_count:
+                messages.success(request, "Theme history record deleted.")
+            else:
+                messages.error(request, "That theme history record no longer exists.")
+            return redirect("admin_site_theme_builder")
+        if "restore_theme_revision" in request.POST:
+            restoring_revision = get_object_or_404(
+                SiteThemeRevision,
+                pk=request.POST.get("restore_theme_revision"),
+                theme_settings=theme_settings,
+            )
+            form_data = restoring_revision.snapshot
+            if not isinstance(form_data, dict):
+                form_data = {}
+            defaults = SiteThemeSettings()
+            form_data = {
+                field_name: form_data.get(
+                    field_name,
+                    getattr(defaults, field_name),
+                )
+                for field_name in SiteThemeSettingsForm.Meta.fields
+            }
+            form = SiteThemeSettingsForm(
+                form_data,
+                instance=theme_settings,
+            )
+        else:
+            form_data = request.POST.copy()
+            if "theme_revision_retention_days" not in form_data:
+                form_data["theme_revision_retention_days"] = str(
+                    theme_settings.theme_revision_retention_days,
+                )
+            if "mobile_navigation_fields_present" not in form_data:
+                form_data["mobile_topbar_scroll_hide_enabled"] = (
+                    "on"
+                    if theme_settings.mobile_topbar_scroll_hide_enabled
+                    else ""
+                )
+                form_data["mobile_bottombar_scroll_hide_enabled"] = (
+                    "on"
+                    if theme_settings.mobile_bottombar_scroll_hide_enabled
+                    else ""
+                )
+            if "mobile_app_desktop_view_fields_present" not in form_data:
+                form_data["mobile_app_desktop_view_enabled"] = (
+                    "on" if theme_settings.mobile_app_desktop_view_enabled else ""
+                )
+            homepage_fields = (
+                "homepage_hero_badge",
+                "homepage_hero_title",
+                "homepage_hero_text",
+                "homepage_primary_cta",
+                "homepage_secondary_cta",
+                "homepage_feature_1_title",
+                "homepage_feature_1_text",
+                "homepage_feature_2_title",
+                "homepage_feature_2_text",
+                "homepage_feature_3_title",
+                "homepage_feature_3_text",
+                "homepage_section_order",
+            )
+            for field_name in homepage_fields:
+                if field_name not in form_data:
+                    form_data[field_name] = getattr(theme_settings, field_name)
+            if "homepage_content_fields_present" not in form_data:
+                form_data["homepage_hero_enabled"] = (
+                    "on" if theme_settings.homepage_hero_enabled else ""
+                )
+                form_data["homepage_features_enabled"] = (
+                    "on" if theme_settings.homepage_features_enabled else ""
+                )
+            marketplace_fields = [
+                field_name
+                for field_name in SiteThemeSettingsForm.Meta.fields
+                if field_name.startswith("marketplace_")
+            ]
+            if "marketplace_content_fields_present" not in form_data:
+                for field_name in marketplace_fields:
+                    if field_name not in form_data:
+                        value = getattr(theme_settings, field_name)
+                        if field_name == "marketplace_featured_product_ids":
+                            form_data.setlist(field_name, [
+                                str(product_id) for product_id in (value or [])
+                            ])
+                        else:
+                            form_data[field_name] = value
+                for field_name in (
+                    "marketplace_hero_enabled",
+                    "marketplace_nearby_shops_enabled",
+                    "marketplace_category_nav_enabled",
+                    "marketplace_products_enabled",
+                ):
+                    form_data[field_name] = (
+                        "on" if getattr(theme_settings, field_name) else ""
+                    )
+            form = SiteThemeSettingsForm(
+                form_data,
+                instance=theme_settings,
+            )
+
+        if form.is_valid():
+            with transaction.atomic():
+                saved_theme = form.save()
+                snapshot = {
+                    field_name: getattr(saved_theme, field_name)
+                    for field_name in SiteThemeSettingsForm.Meta.fields
+                }
+                SiteThemeRevision.objects.create(
+                    theme_settings=saved_theme,
+                    snapshot=snapshot,
+                    action="RESTORE" if restoring_revision else "SAVE",
+                    created_by=request.user,
+                    restored_from=restoring_revision,
+                )
+                if saved_theme.theme_revision_retention_days:
+                    SiteThemeRevision.objects.filter(
+                        theme_settings=saved_theme,
+                        created_at__lt=timezone.now() - timedelta(
+                            days=saved_theme.theme_revision_retention_days,
+                        ),
+                    ).delete()
+            if restoring_revision:
+                messages.success(request, "Selected theme revision restored.")
+            else:
+                messages.success(request, "Site-wide theme settings saved.")
+            return redirect("admin_site_theme_builder")
+    return render(request, "seller/admin_site_theme_builder.html", {
+        "form": form,
+        "marketplace_category_choices": form.marketplace_category_choices,
+        "theme_revisions": SiteThemeRevision.objects.filter(
+            theme_settings=theme_settings,
+        ).select_related("created_by", "restored_from")[:50],
     })
 
 
@@ -1606,10 +2094,13 @@ def admin_catalog_product_toggle(request, pk):
 def dashboard(request):
     if request.session.get("active_portal") == "B2B_CUSTOMER":
         return redirect("marketplace")
+    if request.session.get("active_portal") == "RIDER":
+        return redirect("rider_dashboard")
 
     staff_membership = ShopStaff.objects.filter(
         user=request.user,
         is_active=True,
+        is_public_rider=False,
     ).select_related("shop").first()
 
     active_portal = request.session.get("active_portal")
@@ -1991,12 +2482,60 @@ def signup(request):
         ],
     })
 
+
+@login_required
+def public_rider_apply(request):
+    if not ClientProfile.objects.filter(user=request.user).exists():
+        messages.info(request, "Create a customer account before applying to become a public rider.")
+        return redirect("signup")
+
+    application = PublicRiderApplication.objects.filter(user=request.user).first()
+    if application and application.status == PublicRiderApplication.STATUS_APPROVED:
+        return render(
+            request,
+            "seller/public_rider_application.html",
+            {"application": application, "form": None},
+        )
+    if application and application.status == PublicRiderApplication.STATUS_PENDING:
+        return render(
+            request,
+            "seller/public_rider_application.html",
+            {"application": application, "form": None},
+        )
+
+    form = PublicRiderApplicationForm(
+        request.POST or None,
+        request.FILES or None,
+        instance=application,
+    )
+    if request.method == "POST" and form.is_valid():
+        application = form.save(commit=False)
+        application.user = request.user
+        application.status = PublicRiderApplication.STATUS_PENDING
+        application.reviewed_by = None
+        application.reviewed_at = None
+        application.review_notes = ""
+        application.save()
+        messages.success(
+            request,
+            "Your public rider application was submitted for admin review.",
+        )
+        return redirect("public_rider_apply")
+
+    return render(
+        request,
+        "seller/public_rider_application.html",
+        {"application": application, "form": form},
+    )
+
+
 @login_required
 def order_list(request):
     is_shop_owner = Shop.objects.filter(owner=request.user).exists()
     is_shop_staff = ShopStaff.objects.filter(
         user=request.user,
         is_active=True,
+        is_public_rider=False,
     ).exists()
     if request.session.get("active_portal") not in {
         "CUSTOMER",
@@ -2069,9 +2608,7 @@ def customer_reorder(request, order_id):
         Order.objects.filter(user=request.user.username),
         order_id=order_id,
     )
-    cart = request.session.get("cart", {})
-    if not isinstance(cart, dict):
-        cart = {}
+    cart = _address_scoped_cart(request)[0]
 
     is_b2b = _is_b2b_customer(request)
     unavailable = []
@@ -2143,8 +2680,7 @@ def customer_reorder(request, order_id):
             )
 
     if added_count:
-        request.session["cart"] = cart
-        request.session.modified = True
+        _save_address_scoped_cart(request, cart)
         messages.success(
             request,
             f"Added {added_count} available item(s) to your cart. Review the cart before checkout.",
@@ -3380,16 +3916,28 @@ def shop_add(request):
 
         form = ShopForm(
             request.POST,
+            request.FILES,
             require_legal_acceptance=not Shop.objects.filter(owner=request.user).exists(),
         )
 
+        pickup_locations = None
         if form.is_valid():
+            try:
+                pickup_locations = _parse_shop_pickup_locations(
+                    request.POST.get("pickup_locations_json", "[]"),
+                    max_locations=_delivery_sharing_settings().max_additional_pickup_locations,
+                )
+            except ValueError as error:
+                form.add_error(None, str(error))
+
+        if form.is_valid() and pickup_locations is not None:
 
             shop = form.save(
                 commit=False
             )
 
             shop.owner = request.user
+            shop.pickup_locations = pickup_locations
 
             try:
 
@@ -3403,6 +3951,11 @@ def shop_add(request):
             except json.JSONDecodeError:
 
                 shop.location = None
+            if isinstance(shop.location, dict):
+                shop.location["address"] = request.POST.get(
+                    "primary_pickup_address",
+                    "",
+                ).strip()[:500]
 
             try:
 
@@ -3476,6 +4029,11 @@ def shop_add(request):
         ],
 
         "location_json": "null",
+        "primary_pickup_address": "",
+        "pickup_locations_data": [],
+        "max_additional_pickup_locations": (
+            _delivery_sharing_settings().max_additional_pickup_locations
+        ),
 
         "delivery_area_json": "[]",
 
@@ -3514,98 +4072,116 @@ def shop_edit(request, pk):
 
         form = ShopForm(
             request.POST,
+            request.FILES,
             instance=shop
         )
 
         if form.is_valid():
 
-            shop = form.save(commit=False)
+            try:
+                pickup_locations = _parse_shop_pickup_locations(
+                    request.POST.get("pickup_locations_json", "[]"),
+                    max_locations=_delivery_sharing_settings().max_additional_pickup_locations,
+                )
+            except ValueError as error:
+                form.add_error(None, str(error))
+                pickup_locations = None
 
-            location_json = request.POST.get(
-                "location_json",
-                ""
-            )
+            if pickup_locations is not None:
+                shop = form.save(commit=False)
+                shop.pickup_locations = pickup_locations
 
-            if location_json:
+                location_json = request.POST.get(
+                    "location_json",
+                    ""
+                )
 
-                try:
-                    shop.location = json.loads(
-                        location_json
-                    )
+                if location_json:
 
-                except json.JSONDecodeError:
+                    try:
+                        shop.location = json.loads(
+                            location_json
+                        )
+
+                    except json.JSONDecodeError:
+
+                        shop.location = None
+
+                else:
 
                     shop.location = None
 
-            else:
+                if isinstance(shop.location, dict):
+                    shop.location["address"] = request.POST.get(
+                        "primary_pickup_address",
+                        "",
+                    ).strip()[:500]
 
-                shop.location = None
+                area_json = request.POST.get(
+                    "delivery_area_json",
+                    ""
+                )
 
-            area_json = request.POST.get(
-                "delivery_area_json",
-                ""
-            )
+                if area_json:
 
-            if area_json:
+                    try:
+                        shop.delivery_area = json.loads(
+                            area_json
+                        )
 
-                try:
-                    shop.delivery_area = json.loads(
-                        area_json
-                    )
+                    except json.JSONDecodeError:
 
-                except json.JSONDecodeError:
+                        shop.delivery_area = []
+
+                else:
 
                     shop.delivery_area = []
 
-            else:
+                pincode_json = request.POST.get(
+                    "delivery_pincode_json",
+                    ""
+                )
 
-                shop.delivery_area = []
+                if pincode_json:
 
-            pincode_json = request.POST.get(
-                "delivery_pincode_json",
-                ""
-            )
+                    try:
+                        shop.delivery_pincode = json.loads(
+                            pincode_json
+                        )
 
-            if pincode_json:
+                    except json.JSONDecodeError:
 
-                try:
-                    shop.delivery_pincode = json.loads(
-                        pincode_json
-                    )
+                        shop.delivery_pincode = []
 
-                except json.JSONDecodeError:
+                else:
 
                     shop.delivery_pincode = []
 
-            else:
+                break_json = request.POST.get(
+                    "break_time_json",
+                    ""
+                )
 
-                shop.delivery_pincode = []
+                if break_json:
 
-            break_json = request.POST.get(
-                "break_time_json",
-                ""
-            )
+                    try:
+                        shop.shop_break_time_list = json.loads(
+                            break_json
+                        )
 
-            if break_json:
+                    except json.JSONDecodeError:
 
-                try:
-                    shop.shop_break_time_list = json.loads(
-                        break_json
-                    )
+                        shop.shop_break_time_list = []
 
-                except json.JSONDecodeError:
+                else:
 
                     shop.shop_break_time_list = []
 
-            else:
+                shop.save()
 
-                shop.shop_break_time_list = []
-
-            shop.save()
-
-            return redirect(
-                "shop_list"
-            )
+                return redirect(
+                    "shop_list"
+                )
 
     else:
 
@@ -3625,6 +4201,15 @@ def shop_edit(request, pk):
             json.dumps(
                 shop.location or None
             ),
+        "primary_pickup_address": (
+            (shop.location or {}).get("address", "")
+            if isinstance(shop.location, dict)
+            else ""
+        ),
+        "pickup_locations_data": shop.pickup_locations or [],
+        "max_additional_pickup_locations": (
+            _delivery_sharing_settings().max_additional_pickup_locations
+        ),
 
         "delivery_area_json":
             json.dumps(
@@ -4205,6 +4790,7 @@ def shop_staff_edit(request, shop_id, staff_id):
             "STAFF": "MANAGER",
             "PACKER": "PACKER",
             "MANAGER": "MANAGER",
+            "PURCHASE_MANAGER": "PURCHASE_MANAGER",
             "SUPERVISOR": "MANAGER",
             "DELIVERY": "DELIVERY",
             "RIDER": "RIDER",
@@ -4310,7 +4896,8 @@ def staff_dashboard(request):
         .select_related("shop")
         .filter(
             user=request.user,
-            is_active=True
+            is_active=True,
+            is_public_rider=False,
         )
     )
 
@@ -4363,9 +4950,1218 @@ def staff_dashboard(request):
     )
 
 
+@login_required
+@transaction.atomic
+def purchase_manager_add_product(request, shop_id):
+    shop = get_object_or_404(Shop, pk=shop_id)
+    is_owner = shop.owner_id == request.user.pk
+    staff = ShopStaff.objects.filter(
+            user=request.user,
+            shop=shop,
+            role="PURCHASE_MANAGER",
+            is_active=True,
+            is_public_rider=False,
+        ).first()
+    if not is_owner and not staff:
+        return HttpResponseForbidden("Only the shop owner or an active purchase manager can access purchasing.")
+
+    form = ProductForm(
+        request.POST or None,
+        request.FILES or None,
+        user=shop.owner,
+        allow_custom_product_name=True,
+    )
+    if request.method == "POST" and form.is_valid():
+        data = form.cleaned_data
+        if ProductShop.objects.filter(
+            shop=shop,
+            product__product_name__iexact=data["product_name"],
+            product__product_category=data["product_category"],
+        ).exists():
+            form.add_error("product_name", "This product is already added to the shop.")
+        else:
+            product = form.save(commit=False)
+            product.created_by = shop.owner
+            product.save()
+            assignment = ProductShop(
+                product=product,
+                shop=shop,
+                price=product.price,
+                pricing_mode="AUTO",
+            )
+            assignment.full_clean()
+            assignment.save()
+            messages.success(
+                request,
+                f"{product.product_name} added to the shop. Record a purchase to receive stock.",
+            )
+            return redirect(f"{reverse('purchase_manager_dashboard', kwargs={'shop_id': shop.pk})}?tab=purchase")
+
+    return render(
+        request,
+        "seller/product_form.html",
+        {
+            "shop": shop,
+            "purchase_manager_shop": shop,
+            "form": form,
+            "assignment_forms": [],
+            "form_title": f"Add product to {shop.name}",
+            "form_action": "create",
+        },
+    )
+
+
+@login_required
+@transaction.atomic
+def purchase_manager_dashboard(request, shop_id):
+    shop = get_object_or_404(Shop, pk=shop_id)
+    is_owner = shop.owner_id == request.user.pk
+    staff = ShopStaff.objects.filter(
+            user=request.user,
+            shop=shop,
+            role="PURCHASE_MANAGER",
+            is_active=True,
+            is_public_rider=False,
+        ).first()
+    if not is_owner and not staff:
+        return HttpResponseForbidden("Only the shop owner or an active purchase manager can access purchasing.")
+
+    if request.method == "POST":
+        action = request.POST.get("action")
+        try:
+            if action == "add_vendor":
+                name = request.POST.get("name", "").strip()
+                if not name:
+                    raise ValueError("Enter a vendor name.")
+                if ShopVendor.objects.filter(shop=shop, name__iexact=name).exists():
+                    raise ValueError("A vendor with that name already exists for this shop.")
+                ShopVendor.objects.create(
+                    shop=shop,
+                    name=name,
+                    contact_name=request.POST.get("contact_name", "").strip(),
+                    phone=request.POST.get("phone", "").strip(),
+                    email=request.POST.get("email", "").strip(),
+                    tax_id=request.POST.get("tax_id", "").strip(),
+                    address=request.POST.get("address", "").strip(),
+                )
+                messages.success(request, f"Vendor {name} added.")
+            elif action == "create_purchase":
+                vendor = get_object_or_404(
+                    ShopVendor,
+                    pk=request.POST.get("vendor_id"),
+                    shop=shop,
+                    is_active=True,
+                )
+                purchase_date = date.fromisoformat(request.POST.get("purchase_date", ""))
+                due_date_value = request.POST.get("due_date", "").strip()
+                due_date = date.fromisoformat(due_date_value) if due_date_value else None
+                product_ids = request.POST.getlist("product_shop_id")
+                stock_types = request.POST.getlist("stock_type")
+                quantities = request.POST.getlist("quantity")
+                wastage_quantities = request.POST.getlist("wastage_quantity")
+                purchase_unit_values = request.POST.getlist("purchase_unit_value")
+                purchase_unit_texts = request.POST.getlist("purchase_unit_text")
+                unit_costs = request.POST.getlist("unit_cost")
+                gst_rates = request.POST.getlist("gst_rate")
+                if not wastage_quantities:
+                    wastage_quantities = ["0"] * len(product_ids)
+                if not purchase_unit_values:
+                    purchase_unit_values = [""] * len(product_ids)
+                if not purchase_unit_texts:
+                    purchase_unit_texts = [""] * len(product_ids)
+                if not gst_rates:
+                    gst_rates = ["0"] * len(product_ids)
+                if not product_ids or not (
+                    len(product_ids)
+                    == len(stock_types)
+                    == len(quantities)
+                    == len(wastage_quantities)
+                    == len(purchase_unit_values)
+                    == len(purchase_unit_texts)
+                    == len(unit_costs)
+                    == len(gst_rates)
+                ):
+                    raise ValueError("Add at least one complete purchase line.")
+                lines = []
+                locked_assignments = {}
+                subtotal_amount = Decimal("0.00")
+                gst_amount = Decimal("0.00")
+                for (
+                    product_id,
+                    stock_type,
+                    quantity_value,
+                    wastage_value,
+                    purchase_unit_value,
+                    purchase_unit_text,
+                    unit_cost_value,
+                    gst_rate_value,
+                ) in zip(
+                    product_ids,
+                    stock_types,
+                    quantities,
+                    wastage_quantities,
+                    purchase_unit_values,
+                    purchase_unit_texts,
+                    unit_costs,
+                    gst_rates,
+                ):
+                    assignment = locked_assignments.get(product_id)
+                    if assignment is None:
+                        assignment = ProductShop.objects.select_for_update().select_related(
+                            "product"
+                        ).get(pk=product_id, shop=shop)
+                        locked_assignments[product_id] = assignment
+                    try:
+                        purchased_quantity = int(quantity_value)
+                        wastage_quantity = Decimal(wastage_value or "0")
+                    except (TypeError, ValueError, InvalidOperation):
+                        raise ValueError("Enter valid purchase and wastage quantities.")
+                    unit_cost = Decimal(unit_cost_value)
+                    gst_rate = Decimal(gst_rate_value or "0")
+                    if stock_type not in {"RETAIL", "B2B"}:
+                        raise ValueError("Choose retail or B2B stock for every line.")
+                    inventory_unit = (
+                        assignment.common_b2b_unit or assignment.product.unit
+                        if stock_type == "B2B"
+                        else assignment.product.unit
+                    )
+                    inventory_value, inventory_unit_text = _split_product_unit(
+                        inventory_unit
+                    )
+                    if inventory_value is None:
+                        inventory_value = Decimal("1")
+                    elif inventory_value <= 0:
+                        raise ValueError("Inventory unit values must be greater than zero.")
+                    inventory_unit_text = inventory_unit_text or inventory_unit or "unit"
+                    try:
+                        purchase_unit_value = Decimal(
+                            purchase_unit_value or inventory_value
+                        )
+                    except (TypeError, InvalidOperation):
+                        raise ValueError("Enter a valid purchase unit value.")
+                    purchase_unit_text = (
+                        purchase_unit_text.strip() or inventory_unit_text
+                    )
+                    if (
+                        not purchase_unit_value.is_finite()
+                        or purchase_unit_value <= 0
+                        or purchase_unit_value > Decimal("999999.9999")
+                        or purchase_unit_value
+                        != purchase_unit_value.quantize(Decimal("0.0001"))
+                        or len(purchase_unit_text) > 30
+                    ):
+                        raise ValueError(
+                            "Purchase unit value must be positive with up to 4 decimal places."
+                        )
+                    if (
+                        purchased_quantity <= 0
+                        or purchased_quantity > 2147483647
+                        or not wastage_quantity.is_finite()
+                        or wastage_quantity < 0
+                        or wastage_quantity != wastage_quantity.quantize(Decimal("0.0001"))
+                    ):
+                        raise ValueError(
+                            "Purchased quantity must be positive and wastage must use up to 4 decimal places."
+                        )
+                    purchased_stock_quantity = _converted_purchase_quantity(
+                        purchased_quantity,
+                        purchase_unit_value,
+                        purchase_unit_text,
+                        inventory_value,
+                        inventory_unit_text,
+                    )
+                    if purchased_stock_quantity > Decimal("9999999999.9999"):
+                        raise ValueError("The converted purchase quantity is too large.")
+                    if wastage_quantity > purchased_stock_quantity:
+                        raise ValueError("Wastage cannot exceed the converted purchase quantity.")
+                    received_quantity = purchased_stock_quantity - wastage_quantity
+                    if (
+                        not unit_cost.is_finite()
+                        or unit_cost < 0
+                        or unit_cost > Decimal("99999999.99")
+                        or unit_cost != unit_cost.quantize(Decimal("0.01"))
+                    ):
+                        raise ValueError("Enter valid supplier costs with up to 2 decimal places.")
+                    if (
+                        not gst_rate.is_finite()
+                        or gst_rate < 0
+                        or gst_rate > 100
+                        or gst_rate != gst_rate.quantize(Decimal("0.01"))
+                    ):
+                        raise ValueError("GST rate must be between 0 and 100 with up to 2 decimal places.")
+                    line_total = (unit_cost * purchased_quantity).quantize(Decimal("0.01"))
+                    line_gst_amount = (line_total * gst_rate / Decimal("100")).quantize(
+                        Decimal("0.01"),
+                        rounding=ROUND_HALF_UP,
+                    )
+                    subtotal_amount += line_total
+                    gst_amount += line_gst_amount
+                    lines.append(
+                        (
+                            assignment,
+                            stock_type,
+                            purchased_quantity,
+                            purchase_unit_value,
+                            purchase_unit_text,
+                            inventory_value,
+                            inventory_unit_text,
+                            purchased_stock_quantity,
+                            received_quantity,
+                            wastage_quantity,
+                            unit_cost,
+                            line_total,
+                            gst_rate,
+                            line_gst_amount,
+                        )
+                    )
+                subtotal_amount = subtotal_amount.quantize(Decimal("0.01"))
+                gst_amount = gst_amount.quantize(Decimal("0.01"))
+                delivery_expense = Decimal(
+                    request.POST.get("delivery_expense", "0") or "0"
+                )
+                delivery_gst_rate = Decimal(
+                    request.POST.get("delivery_gst_rate", "0") or "0"
+                )
+                if (
+                    not delivery_expense.is_finite()
+                    or delivery_expense < 0
+                    or delivery_expense > Decimal("999999999.99")
+                    or delivery_expense != delivery_expense.quantize(Decimal("0.01"))
+                ):
+                    raise ValueError("Enter a valid delivery expense with up to 2 decimal places.")
+                if (
+                    not delivery_gst_rate.is_finite()
+                    or delivery_gst_rate < 0
+                    or delivery_gst_rate > 100
+                    or delivery_gst_rate != delivery_gst_rate.quantize(Decimal("0.01"))
+                ):
+                    raise ValueError("Delivery GST rate must be between 0 and 100.")
+                delivery_gst_amount = (
+                    delivery_expense * delivery_gst_rate / Decimal("100")
+                ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                gst_amount += delivery_gst_amount
+                total_amount = (
+                    subtotal_amount + gst_amount + delivery_expense
+                ).quantize(Decimal("0.01"))
+                if total_amount > Decimal("999999999999.99"):
+                    raise ValueError("The purchase invoice total is too large.")
+                initial_payment = Decimal(request.POST.get("initial_payment", "0") or "0")
+                if (
+                    not initial_payment.is_finite()
+                    or initial_payment < 0
+                    or initial_payment > total_amount
+                    or initial_payment != initial_payment.quantize(Decimal("0.01"))
+                ):
+                    raise ValueError("Initial payment must be between zero and the invoice total.")
+                payment_method = request.POST.get("payment_method", "BANK")
+                if payment_method not in dict(VendorPurchasePayment.METHOD_CHOICES):
+                    raise ValueError("Choose a valid payment method.")
+                cost_method = request.POST.get("cost_method", "AVERAGE")
+                if cost_method not in dict(VendorPurchase.COST_METHOD_CHOICES):
+                    raise ValueError("Choose average cost or latest purchase cost.")
+
+                purchase = VendorPurchase.objects.create(
+                    shop=shop,
+                    vendor=vendor,
+                    invoice_number=request.POST.get("invoice_number", "").strip(),
+                    purchase_date=purchase_date,
+                    due_date=due_date,
+                    cost_method=cost_method,
+                    total_amount=total_amount,
+                    subtotal_amount=subtotal_amount,
+                    gst_amount=gst_amount,
+                    delivery_expense=delivery_expense,
+                    delivery_gst_rate=delivery_gst_rate,
+                    delivery_gst_amount=delivery_gst_amount,
+                    notes=request.POST.get("notes", "").strip(),
+                    created_by=request.user,
+                )
+                receipt_totals = {}
+                assignment_updates = {}
+                for (
+                    assignment,
+                    stock_type,
+                    purchased_quantity,
+                    purchase_unit_value,
+                    purchase_unit_text,
+                    inventory_value,
+                    inventory_unit_text,
+                    purchased_stock_quantity,
+                    received_quantity,
+                    wastage_quantity,
+                    unit_cost,
+                    line_total,
+                    gst_rate,
+                    line_gst_amount,
+                ) in lines:
+                    VendorPurchaseItem.objects.create(
+                        purchase=purchase,
+                        product_shop=assignment,
+                        stock_type=stock_type,
+                        quantity=received_quantity,
+                        purchased_quantity=purchased_quantity,
+                        wastage_quantity=wastage_quantity,
+                        purchase_unit_value=purchase_unit_value,
+                        purchase_unit_text=purchase_unit_text,
+                        inventory_unit_value=inventory_value,
+                        inventory_unit_text=inventory_unit_text,
+                        unit_cost=unit_cost,
+                        line_total=line_total,
+                        gst_rate=gst_rate,
+                        gst_amount=line_gst_amount,
+                    )
+                    key = (assignment.pk, stock_type)
+                    if key not in receipt_totals:
+                        receipt_totals[key] = {
+                            "assignment": assignment,
+                            "quantity": Decimal("0"),
+                            "cost_total": Decimal("0.00"),
+                        }
+                    receipt_totals[key]["quantity"] += received_quantity
+                    receipt_totals[key]["cost_total"] += line_total
+                    if purchased_stock_quantity:
+                        StockMovement.objects.create(
+                            product_shop=assignment,
+                            movement_type="IMPORT",
+                            quantity=purchased_stock_quantity,
+                            reference=f"Vendor purchase {purchase.invoice_number or purchase.pk} ({stock_type})",
+                            created_by=request.user,
+                        )
+                    if wastage_quantity:
+                        StockMovement.objects.create(
+                            product_shop=assignment,
+                            movement_type="ADJUSTMENT",
+                            quantity=-wastage_quantity,
+                            reference=f"Purchase wastage {purchase.invoice_number or purchase.pk} ({stock_type})",
+                            created_by=request.user,
+                        )
+
+                for (_assignment_id, stock_type), receipt in receipt_totals.items():
+                    assignment = receipt["assignment"]
+                    quantity = receipt["quantity"]
+                    if quantity == 0:
+                        continue
+                    stock_field = "stock" if stock_type == "RETAIL" else "b2b_stock"
+                    cost_field = "purchase_price" if stock_type == "RETAIL" else "b2b_purchase_price"
+                    old_stock = getattr(assignment, stock_field)
+                    new_stock = old_stock + quantity
+                    if new_stock > Decimal("9999999999.9999"):
+                        raise ValueError("A resulting stock total exceeds the allowed limit.")
+                    allocated_delivery = (
+                        delivery_expense * receipt["cost_total"] / subtotal_amount
+                        if subtotal_amount
+                        else Decimal("0.00")
+                    )
+                    landed_cost = receipt["cost_total"] + allocated_delivery
+                    effective_cost = (landed_cost / quantity).quantize(
+                        Decimal("0.01"),
+                        rounding=ROUND_HALF_UP,
+                    )
+                    old_cost = getattr(assignment, cost_field)
+                    if cost_method == "AVERAGE" and old_stock and old_cost is not None:
+                        effective_cost = (
+                            old_cost * old_stock + landed_cost
+                        ) / new_stock
+                        effective_cost = effective_cost.quantize(
+                            Decimal("0.01"),
+                            rounding=ROUND_HALF_UP,
+                        )
+                    setattr(assignment, stock_field, new_stock)
+                    setattr(assignment, cost_field, effective_cost)
+                    fields = assignment_updates.setdefault(
+                        assignment.pk,
+                        {"assignment": assignment, "fields": set()},
+                    )["fields"]
+                    fields.update((stock_field, cost_field))
+
+                for receipt in assignment_updates.values():
+                    assignment = receipt["assignment"]
+                    update_fields = receipt["fields"]
+                    if assignment.pricing_mode == "AUTO":
+                        assignment.recalculate_prices_from_purchase_cost()
+                        update_fields.update(
+                            ("price", "bulk_price", "b2b_price", "b2b_bulk_price")
+                        )
+                    if assignment.product.expiry_management_enabled:
+                        assignment.stocked_at = timezone.now()
+                        update_fields.add("stocked_at")
+                        if assignment.product.shelf_life_days:
+                            assignment.expires_at = assignment.stocked_at + timedelta(
+                                days=assignment.product.shelf_life_days
+                            )
+                            update_fields.add("expires_at")
+                    assignment.full_clean()
+                    assignment.save(update_fields=sorted(update_fields))
+
+                if initial_payment:
+                    VendorPurchasePayment.objects.create(
+                        purchase=purchase,
+                        amount=initial_payment,
+                        payment_method=payment_method,
+                        reference=request.POST.get("payment_reference", "").strip(),
+                        created_by=request.user,
+                    )
+                messages.success(request, f"Purchase invoice {purchase.invoice_number or purchase.pk} recorded.")
+            elif action == "record_payment":
+                purchase = get_object_or_404(
+                    VendorPurchase.objects.select_for_update(),
+                    pk=request.POST.get("purchase_id"),
+                    shop=shop,
+                )
+                amount = Decimal(request.POST.get("amount", "").strip())
+                if (
+                    not amount.is_finite()
+                    or amount <= 0
+                    or amount != amount.quantize(Decimal("0.01"))
+                    or amount > purchase.balance_due
+                ):
+                    raise ValueError("Payment must be greater than zero and cannot exceed the outstanding balance.")
+                method = request.POST.get("payment_method", "BANK")
+                if method not in dict(VendorPurchasePayment.METHOD_CHOICES):
+                    raise ValueError("Choose a valid payment method.")
+                VendorPurchasePayment.objects.create(
+                    purchase=purchase,
+                    amount=amount,
+                    payment_method=method,
+                    reference=request.POST.get("reference", "").strip(),
+                    created_by=request.user,
+                )
+                messages.success(request, "Vendor payment recorded.")
+            elif action == "return_purchase":
+                purchase = get_object_or_404(
+                    VendorPurchase.objects.select_for_update(),
+                    pk=request.POST.get("purchase_id"),
+                    shop=shop,
+                )
+                purchase_items = list(
+                    VendorPurchaseItem.objects.select_for_update()
+                    .filter(purchase=purchase)
+                    .select_related("product_shop__product")
+                )
+                return_item_ids = request.POST.getlist("return_item_id")
+                return_quantities = request.POST.getlist("return_quantity")
+                if not return_item_ids or len(return_item_ids) != len(return_quantities):
+                    raise ValueError("Choose at least one purchase item and return quantity.")
+
+                return_lines = []
+                return_subtotal = Decimal("0.00")
+                return_gst = Decimal("0.00")
+                for item_id, quantity_value in zip(return_item_ids, return_quantities):
+                    if not quantity_value.strip():
+                        continue
+                    item = next(
+                        (line for line in purchase_items if str(line.pk) == item_id),
+                        None,
+                    )
+                    if item is None:
+                        raise ValueError("A returned item does not belong to this invoice.")
+                    try:
+                        quantity = Decimal(quantity_value)
+                    except (TypeError, InvalidOperation):
+                        raise ValueError("Enter a valid return quantity.")
+                    if (
+                        not quantity.is_finite()
+                        or quantity != quantity.quantize(Decimal("0.0001"))
+                    ):
+                        raise ValueError(
+                            "Return quantities must use up to 4 decimal places."
+                        )
+                    previously_returned = item.returns.aggregate(
+                        total=Sum("quantity"),
+                    )["total"] or Decimal("0")
+                    remaining_quantity = item.quantity - previously_returned
+                    if quantity <= 0 or quantity > remaining_quantity:
+                        raise ValueError(
+                            f"Return quantity for {item.product_shop.product.product_name} "
+                            f"must be greater than zero and no more than {remaining_quantity}."
+                        )
+                    previous_subtotal = item.returns.aggregate(
+                        total=Sum("subtotal_amount"),
+                    )["total"] or Decimal("0.00")
+                    previous_gst = item.returns.aggregate(
+                        total=Sum("gst_amount"),
+                    )["total"] or Decimal("0.00")
+                    line_subtotal_remaining = item.line_total - previous_subtotal
+                    line_gst_remaining = item.gst_amount - previous_gst
+                    subtotal = (
+                        line_subtotal_remaining
+                        if quantity == remaining_quantity
+                        else line_subtotal_remaining * quantity / remaining_quantity
+                    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                    gst = (
+                        line_gst_remaining
+                        if quantity == remaining_quantity
+                        else line_gst_remaining * quantity / remaining_quantity
+                    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                    assignment = ProductShop.objects.select_for_update().get(
+                        pk=item.product_shop_id,
+                        shop=shop,
+                    )
+                    stock_field = "stock" if item.stock_type == "RETAIL" else "b2b_stock"
+                    if getattr(assignment, stock_field) < quantity:
+                        raise ValueError(
+                            f"Not enough {item.get_stock_type_display()} stock to return "
+                            f"{item.product_shop.product.product_name}."
+                        )
+                    return_lines.append(
+                        (item, assignment, stock_field, quantity, subtotal, gst)
+                    )
+                    return_subtotal += subtotal
+                    return_gst += gst
+                if not return_lines:
+                    raise ValueError("Enter a return quantity for at least one invoice item.")
+
+                return_subtotal = return_subtotal.quantize(Decimal("0.01"))
+                return_gst = return_gst.quantize(Decimal("0.01"))
+                purchase_return = VendorPurchaseReturn.objects.create(
+                    purchase=purchase,
+                    subtotal_amount=return_subtotal,
+                    gst_amount=return_gst,
+                    total_amount=return_subtotal + return_gst,
+                    reason=request.POST.get("return_reason", "").strip()[:240],
+                    created_by=request.user,
+                )
+                for item, assignment, stock_field, quantity, subtotal, gst in return_lines:
+                    VendorPurchaseReturnItem.objects.create(
+                        purchase_return=purchase_return,
+                        purchase_item=item,
+                        quantity=quantity,
+                        subtotal_amount=subtotal,
+                        gst_amount=gst,
+                    )
+                    setattr(assignment, stock_field, getattr(assignment, stock_field) - quantity)
+                    assignment.save(update_fields=[stock_field])
+                    StockMovement.objects.create(
+                        product_shop=assignment,
+                        movement_type="ADJUSTMENT",
+                        quantity=-quantity,
+                        reference=f"Vendor return {purchase.invoice_number or purchase.pk}",
+                        created_by=request.user,
+                    )
+                messages.success(
+                    request,
+                    f"Purchase return recorded. Vendor credit ₹{purchase_return.total_amount:.2f}.",
+                )
+            elif action == "add_stock":
+                assignment = ProductShop.objects.select_for_update().select_related(
+                    "product",
+                ).get(
+                    pk=request.POST.get("product_shop_id"),
+                    shop=shop,
+                )
+                stock_type = request.POST.get("stock_type", "RETAIL")
+                if stock_type not in {"RETAIL", "B2B"}:
+                    raise ValueError("Choose retail or B2B stock.")
+                try:
+                    quantity = Decimal(request.POST.get("quantity", ""))
+                except (TypeError, InvalidOperation):
+                    raise ValueError("Enter a valid stock quantity.")
+                if (
+                    not quantity.is_finite()
+                    or quantity <= 0
+                    or quantity != quantity.quantize(Decimal("0.0001"))
+                ):
+                    raise ValueError("Stock quantity must be greater than zero.")
+                stock_field = "stock" if stock_type == "RETAIL" else "b2b_stock"
+                new_stock = getattr(assignment, stock_field) + quantity
+                if new_stock > Decimal("9999999999.9999"):
+                    raise ValueError("The resulting stock total exceeds the allowed limit.")
+                setattr(assignment, stock_field, new_stock)
+                update_fields = [stock_field]
+                if assignment.product.expiry_management_enabled:
+                    assignment.stocked_at = timezone.now()
+                    update_fields.append("stocked_at")
+                    if assignment.product.shelf_life_days:
+                        assignment.expires_at = assignment.stocked_at + timedelta(
+                            days=assignment.product.shelf_life_days,
+                        )
+                        update_fields.append("expires_at")
+                assignment.save(update_fields=update_fields)
+                StockMovement.objects.create(
+                    product_shop=assignment,
+                    movement_type="IMPORT",
+                    quantity=quantity,
+                    reference=f"Manual stock addition ({stock_type})",
+                    created_by=request.user,
+                )
+                messages.success(
+                    request,
+                    f"Added {quantity} units to {stock_type} stock for "
+                    f"{assignment.product.product_name}.",
+                )
+            elif action == "save_pricing":
+                assignment = ProductShop.objects.select_for_update().select_related(
+                    "product"
+                ).get(pk=request.POST.get("product_shop_id"), shop=shop)
+                pricing_mode = request.POST.get("pricing_mode", "AUTO")
+                if pricing_mode not in {"AUTO", "MANUAL"}:
+                    raise ValueError("Choose margin-based or manual pricing.")
+                assignment.pricing_mode = pricing_mode
+                product_unit_changed = False
+                product_unit_fields = (
+                    ("retail_unit_value", "retail_unit_text", "product"),
+                    ("bulk_unit_value", "bulk_unit_text", "bulk_unit"),
+                    ("b2b_unit_value", "retail_unit_text", "b2b_unit"),
+                    ("b2b_bulk_unit_value", "b2b_bulk_unit_text", "b2b_bulk_unit"),
+                )
+                for value_field, text_field, target in product_unit_fields:
+                    if value_field not in request.POST and text_field not in request.POST:
+                        continue
+                    raw_value = request.POST.get(value_field, "").strip()
+                    unit_value = None
+                    if raw_value:
+                        try:
+                            unit_value = Decimal(raw_value)
+                        except InvalidOperation:
+                            raise ValueError("Enter valid product unit values.")
+                        if (
+                            not unit_value.is_finite()
+                            or unit_value <= 0
+                            or unit_value > Decimal("999999.9999")
+                            or unit_value != unit_value.quantize(Decimal("0.0001"))
+                        ):
+                            raise ValueError(
+                                "Product unit values must be positive with up to 4 decimal places."
+                            )
+                    unit_text = request.POST.get(text_field, "").strip()
+                    if unit_value is not None and not unit_text:
+                        raise ValueError(
+                            "Enter unit text when setting a product unit value."
+                        )
+                    combined_unit = _join_product_unit(unit_value, unit_text)
+                    if len(combined_unit) > 40:
+                        raise ValueError("Combined product units must be 40 characters or fewer.")
+                    if target == "product":
+                        assignment.product.unit = combined_unit
+                        product_unit_changed = True
+                    else:
+                        setattr(assignment, target, combined_unit)
+                cost_fields = ("purchase_price", "b2b_purchase_price")
+                for field_name in cost_fields:
+                    if field_name not in request.POST:
+                        continue
+                    raw_value = request.POST.get(field_name, "").strip()
+                    if not raw_value:
+                        setattr(assignment, field_name, None)
+                        continue
+                    value = Decimal(raw_value)
+                    if (
+                        not value.is_finite()
+                        or value < 0
+                        or value > Decimal("99999999.99")
+                        or value != value.quantize(Decimal("0.01"))
+                    ):
+                        raise ValueError("Purchase costs must be non-negative and have up to 2 decimal places.")
+                    setattr(assignment, field_name, value)
+                pricing_fields = (
+                    "retail_margin_percent",
+                    "retail_margin_fixed",
+                    "bulk_margin_percent",
+                    "bulk_margin_fixed",
+                    "b2b_margin_percent",
+                    "b2b_margin_fixed",
+                    "b2b_bulk_margin_percent",
+                    "b2b_bulk_margin_fixed",
+                )
+                for field_name in pricing_fields:
+                    value = Decimal(request.POST.get(field_name, "0").strip() or "0")
+                    maximum = Decimal("99999.99") if field_name.endswith("_percent") else Decimal("99999999.99")
+                    if not value.is_finite() or value < 0 or value > maximum or value != value.quantize(Decimal("0.01")):
+                        raise ValueError("Enter non-negative margins with up to 2 decimal places.")
+                    setattr(assignment, field_name, value)
+                manual_price_fields = (
+                    "price",
+                    "bulk_price",
+                    "b2b_price",
+                    "b2b_bulk_price",
+                )
+                if pricing_mode == "MANUAL":
+                    for field_name in manual_price_fields:
+                        raw_value = request.POST.get(field_name, "").strip()
+                        if not raw_value:
+                            if field_name == "price":
+                                raise ValueError("Enter a manual retail price.")
+                            setattr(assignment, field_name, None)
+                            continue
+                        value = Decimal(raw_value)
+                        if (
+                            not value.is_finite()
+                            or value < 0
+                            or value > Decimal("99999999.99")
+                            or value != value.quantize(Decimal("0.01"))
+                        ):
+                            raise ValueError("Manual prices must be non-negative and have up to 2 decimal places.")
+                        setattr(assignment, field_name, value)
+                else:
+                    assignment.recalculate_prices_from_purchase_cost()
+                assignment.full_clean()
+                if product_unit_changed:
+                    assignment.product.full_clean()
+                    assignment.product.save(update_fields=["unit"])
+                assignment.save(update_fields=[
+                    "pricing_mode",
+                    *cost_fields,
+                    *pricing_fields,
+                    *manual_price_fields,
+                    "bulk_unit",
+                    "b2b_unit",
+                    "b2b_bulk_unit",
+                ])
+                price_message = (
+                    "Manual sale prices saved"
+                    if pricing_mode == "MANUAL"
+                    else "Margin-based sale prices updated"
+                )
+                messages.success(request, f"{price_message} for {assignment.product.product_name}.")
+            else:
+                raise ValueError("Choose a valid purchasing action.")
+        except (InvalidOperation, TypeError, ValueError, ValidationError) as exc:
+            transaction.set_rollback(True)
+            message = exc.message if isinstance(exc, ValidationError) else str(exc)
+            messages.error(request, message or "Enter valid purchase information.")
+        except ShopVendor.DoesNotExist:
+            transaction.set_rollback(True)
+            messages.error(request, "Select a vendor belonging to this shop.")
+        except ProductShop.DoesNotExist:
+            transaction.set_rollback(True)
+            messages.error(request, "Select a product belonging to this shop.")
+        redirect_url = reverse("purchase_manager_dashboard", kwargs={"shop_id": shop.pk})
+        requested_tab = request.POST.get("tab", "")
+        if requested_tab in {"overview", "purchase", "history", "products", "reports"}:
+            return redirect(f"{redirect_url}?tab={requested_tab}")
+        return redirect(redirect_url)
+
+    search_query = request.GET.get("q", "").strip()
+    stock_filter = request.GET.get("stock", "all")
+    assignments = list(
+        ProductShop.objects.select_related("product").filter(shop=shop).order_by(
+            "product__product_name", "pk"
+        )
+    )
+    forecasts = {
+        forecast.product_shop_id: forecast
+        for forecast in ShopProductForecast.objects.filter(
+            product_shop_id__in=[assignment.pk for assignment in assignments]
+        )
+    }
+    purchase_items = VendorPurchaseItem.objects.filter(
+        product_shop_id__in=[assignment.pk for assignment in assignments]
+    ).select_related("purchase__vendor").order_by("-purchase__purchase_date", "-pk")
+    recent_by_assignment = defaultdict(list)
+    for item in purchase_items:
+        if len(recent_by_assignment[item.product_shop_id]) < 3:
+            recent_by_assignment[item.product_shop_id].append(item)
+    shortage_count = 0
+    for assignment in assignments:
+        assignment.pricing_image_url = assignment.display_image_url
+        unit = assignment.product.unit
+        for key, raw_unit in (
+            ("retail", unit),
+            ("bulk", assignment.bulk_unit or unit),
+            ("b2b", assignment.b2b_unit or unit),
+            ("b2b_bulk", assignment.b2b_bulk_unit or assignment.b2b_unit or unit),
+        ):
+            unit_value, unit_text = _split_product_unit(raw_unit)
+            setattr(assignment, f"{key}_unit_value", unit_value or Decimal("1"))
+            setattr(assignment, f"{key}_unit_text", unit_text or raw_unit or "unit")
+        assignment.b2b_unit_text = assignment.retail_unit_text
+        assignment.retail_stock_display = _quantity_unit_calculation(assignment.stock, unit)
+        assignment.b2b_stock_display = _quantity_unit_calculation(
+            assignment.b2b_stock,
+            assignment.common_b2b_unit or unit,
+        )
+        forecast = forecasts.get(assignment.pk)
+        assignment.recommended_restock = (
+            max(0, math.ceil(forecast.recommended_stock - assignment.stock))
+            if forecast else 0
+        )
+        assignment.is_shortage = bool(forecast and assignment.recommended_restock)
+        shortage_count += int(assignment.is_shortage)
+        assignment.recent_purchase_items = recent_by_assignment[assignment.pk]
+    all_assignments = list(assignments)
+    shortage_assignments = [
+        assignment for assignment in all_assignments if assignment.is_shortage
+    ]
+    vendors = list(ShopVendor.objects.filter(shop=shop).order_by("name"))
+    selected_vendor = request.GET.get("vendor", "").strip()
+    all_purchases = list(
+        VendorPurchase.objects.filter(shop=shop)
+        .select_related("vendor")
+        .prefetch_related(
+            "items__product_shop__product",
+            "items__returns",
+            "payments",
+            "returns__items__purchase_item__product_shop__product",
+        )
+        .order_by("-purchase_date", "-pk")
+    )
+    vendor_totals = defaultdict(
+        lambda: {
+            "purchased": Decimal("0.00"),
+            "paid": Decimal("0.00"),
+            "credited": Decimal("0.00"),
+        }
+    )
+    payment_records = []
+    monthly_reports = {}
+    selected_report_month = request.GET.get(
+        "report_month",
+        timezone.localdate().strftime("%Y-%m"),
+    ).strip()
+    if selected_report_month:
+        try:
+            selected_report_month = date.fromisoformat(
+                f"{selected_report_month}-01"
+            ).strftime("%Y-%m")
+        except ValueError:
+            selected_report_month = timezone.localdate().strftime("%Y-%m")
+    for purchase in all_purchases:
+        paid = sum((payment.amount for payment in purchase.payments.all()), Decimal("0.00"))
+        credited = sum(
+            (purchase_return.total_amount for purchase_return in purchase.returns.all()),
+            Decimal("0.00"),
+        )
+        purchase.amount_paid_display = paid
+        purchase.credited_amount_display = credited
+        purchase.balance_due_display = max(
+            Decimal("0.00"),
+            purchase.total_amount - paid - credited,
+        )
+        purchase.payment_status_display = (
+            "PAID"
+            if paid + credited >= purchase.total_amount
+            else "PARTIAL"
+            if paid or credited
+            else "UNPAID"
+        )
+        purchase.has_returnable_items = False
+        for item in purchase.items.all():
+            item.returnable_quantity = max(
+                0,
+                item.quantity - sum(returned.quantity for returned in item.returns.all()),
+            )
+            purchase.has_returnable_items = (
+                purchase.has_returnable_items or item.returnable_quantity > 0
+            )
+        vendor_totals[purchase.vendor_id]["purchased"] += purchase.total_amount
+        vendor_totals[purchase.vendor_id]["paid"] += paid
+        vendor_totals[purchase.vendor_id]["credited"] += credited
+        month_key = purchase.purchase_date.strftime("%Y-%m")
+        report = monthly_reports.setdefault(
+            month_key,
+            {
+                "month": month_key,
+                "invoice_count": 0,
+                "subtotal": Decimal("0.00"),
+                "gst": Decimal("0.00"),
+                "delivery": Decimal("0.00"),
+                "total": Decimal("0.00"),
+                "paid": Decimal("0.00"),
+                "outstanding": Decimal("0.00"),
+                "returns": Decimal("0.00"),
+            },
+        )
+        report["invoice_count"] += 1
+        report["subtotal"] += purchase.subtotal_amount
+        report["gst"] += purchase.gst_amount
+        report["delivery"] += purchase.delivery_expense
+        report["total"] += purchase.total_amount
+        report["paid"] += paid
+        report["outstanding"] += purchase.balance_due_display
+        for payment in purchase.payments.all():
+            payment_records.append(
+                {
+                    "vendor": purchase.vendor,
+                    "purchase": purchase,
+                    "payment": payment,
+                }
+            )
+        for purchase_return in purchase.returns.all():
+            return_month = purchase_return.returned_at.strftime("%Y-%m")
+            return_report = monthly_reports.setdefault(
+                return_month,
+                {
+                    "month": return_month,
+                    "invoice_count": 0,
+                    "subtotal": Decimal("0.00"),
+                    "gst": Decimal("0.00"),
+                    "delivery": Decimal("0.00"),
+                    "total": Decimal("0.00"),
+                    "paid": Decimal("0.00"),
+                    "outstanding": Decimal("0.00"),
+                    "returns": Decimal("0.00"),
+                },
+            )
+            return_report["returns"] += purchase_return.total_amount
+            return_report["subtotal"] -= purchase_return.subtotal_amount
+            return_report["gst"] -= purchase_return.gst_amount
+            return_report["total"] -= purchase_return.total_amount
+    monthly_report_rows = sorted(
+        monthly_reports.values(),
+        key=lambda report: report["month"],
+        reverse=True,
+    )
+    if request.GET.get("report_format") == "csv":
+        response = HttpResponse(content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = (
+            f'attachment; filename="purchase-report-{selected_report_month}.csv"'
+        )
+        writer = csv.writer(response)
+        writer.writerow(
+            [
+                "Month",
+                "Invoices",
+                "Taxable purchases",
+                "Input GST",
+                "Delivery expense",
+                "Invoice total",
+                "Paid",
+                "Outstanding",
+                "Vendor credits / returns",
+            ]
+        )
+        for report in monthly_report_rows:
+            if selected_report_month and report["month"] != selected_report_month:
+                continue
+            writer.writerow(
+                [
+                    report["month"],
+                    report["invoice_count"],
+                    report["subtotal"],
+                    report["gst"],
+                    report["delivery"],
+                    report["total"],
+                    report["paid"],
+                    report["outstanding"],
+                    report["returns"],
+                ]
+            )
+        return response
+    report_purchases = [
+        purchase
+        for purchase in all_purchases
+        if not selected_report_month
+        or purchase.purchase_date.strftime("%Y-%m") == selected_report_month
+    ]
+    gst_by_rate = defaultdict(
+        lambda: {"taxable": Decimal("0.00"), "gst": Decimal("0.00")}
+    )
+    for purchase in report_purchases:
+        for item in purchase.items.all():
+            rate_row = gst_by_rate[item.gst_rate]
+            rate_row["taxable"] += item.line_total
+            rate_row["gst"] += item.gst_amount
+        if purchase.delivery_expense:
+            delivery_row = gst_by_rate[purchase.delivery_gst_rate]
+            delivery_row["taxable"] += purchase.delivery_expense
+            delivery_row["gst"] += purchase.delivery_gst_amount
+    purchase_returns = VendorPurchaseReturn.objects.filter(
+        purchase__shop=shop,
+    ).prefetch_related("items__purchase_item")
+    for purchase_return in purchase_returns:
+        if (
+            selected_report_month
+            and purchase_return.returned_at.strftime("%Y-%m") != selected_report_month
+        ):
+            continue
+        for return_item in purchase_return.items.all():
+            rate_row = gst_by_rate[return_item.purchase_item.gst_rate]
+            rate_row["taxable"] -= return_item.subtotal_amount
+            rate_row["gst"] -= return_item.gst_amount
+    gst_rate_rows = [
+        {"rate": rate, **totals}
+        for rate, totals in sorted(gst_by_rate.items())
+    ]
+    payment_records.sort(key=lambda entry: entry["payment"].paid_at, reverse=True)
+    payment_vendor_totals = defaultdict(
+        lambda: {"amount": Decimal("0.00"), "count": 0}
+    )
+    for entry in payment_records:
+        if (
+            selected_report_month
+            and entry["payment"].paid_at.strftime("%Y-%m") != selected_report_month
+        ):
+            continue
+        vendor_total = payment_vendor_totals[entry["vendor"].pk]
+        vendor_total["amount"] += entry["payment"].amount
+        vendor_total["count"] += 1
+    purchases = all_purchases
+    if selected_vendor.isdigit():
+        purchases = [purchase for purchase in purchases if purchase.vendor_id == int(selected_vendor)]
+    for vendor in vendors:
+        vendor.purchased_total = vendor_totals[vendor.pk]["purchased"]
+        vendor.paid_total = vendor_totals[vendor.pk]["paid"]
+        vendor.credited_total = vendor_totals[vendor.pk]["credited"]
+        vendor.balance_due_total = max(
+            Decimal("0.00"),
+            vendor.purchased_total - vendor.paid_total - vendor.credited_total,
+        )
+        vendor.selected_month_payment_total = payment_vendor_totals[vendor.pk]["amount"]
+        vendor.selected_month_payment_count = payment_vendor_totals[vendor.pk]["count"]
+    if search_query:
+        needle = search_query.casefold()
+        assignments = [
+            assignment for assignment in assignments
+            if needle in assignment.product.product_name.casefold()
+        ]
+    if stock_filter == "shortage":
+        assignments = [assignment for assignment in assignments if assignment.is_shortage]
+    elif stock_filter == "out":
+        assignments = [assignment for assignment in assignments if assignment.stock == 0]
+    return render(
+        request,
+        "seller/purchase_manager_dashboard.html",
+        {
+            "shop": shop,
+            "staff": staff,
+            "assignments": assignments,
+            "all_assignments": all_assignments,
+            "shortage_assignments": shortage_assignments,
+            "is_shop_owner_access": is_owner,
+            "vendors": vendors,
+            "purchases": purchases,
+            "purchase_count": len(all_purchases),
+            "monthly_reports": monthly_report_rows,
+            "report_purchases": report_purchases,
+            "gst_rate_rows": gst_rate_rows,
+            "payment_records": payment_records,
+            "selected_report_month": selected_report_month,
+            "shortage_count": shortage_count,
+            "search_query": search_query,
+            "stock_filter": stock_filter,
+            "selected_vendor": selected_vendor,
+            "payment_methods": VendorPurchasePayment.METHOD_CHOICES,
+            "cost_methods": VendorPurchase.COST_METHOD_CHOICES,
+            "today": timezone.localdate(),
+            "active_tab": (
+                request.GET.get("tab")
+                if request.GET.get("tab") in {"overview", "purchase", "history", "products", "reports"}
+                else "overview"
+            ),
+        },
+    )
+
+
 def job_openings(request):
-    openings = JobOpening.objects.filter(is_active=True).select_related("shop").order_by("-created_at")
-    return render(request, "seller/job_openings.html", {"openings": openings})
+    openings = list(
+        JobOpening.objects.filter(is_active=True)
+        .select_related("shop")
+        .order_by("-created_at")
+    )
+    search_query = request.GET.get("q", "").strip()
+    if search_query:
+        openings = [
+            opening
+            for opening in openings
+            if any(
+                search_query.casefold() in (value or "").casefold()
+                for value in (
+                    opening.title,
+                    opening.role,
+                    opening.employment_type,
+                    opening.location,
+                    opening.shop.name,
+                    opening.description,
+                )
+            )
+        ]
+    all_openings = openings
+
+    radius_km = 1.25
+    location_filter_errors = []
+    requested_radius_value = request.GET.get("radius_km")
+    try:
+        requested_radius = float(request.GET.get("radius_km", radius_km))
+        if math.isfinite(requested_radius) and 0.1 <= requested_radius <= 100:
+            radius_km = requested_radius
+        elif requested_radius_value is not None:
+            location_filter_errors.append(
+                "The selected radius is invalid. Using the default 1.25 km radius."
+            )
+    except (TypeError, ValueError):
+        if requested_radius_value is not None:
+            location_filter_errors.append(
+                "The selected radius is invalid. Using the default 1.25 km radius."
+            )
+
+    selected_location = None
+    requested_latitude = request.GET.get("lat")
+    requested_longitude = request.GET.get("lng")
+    if requested_latitude is not None or requested_longitude is not None:
+        try:
+            latitude = float(requested_latitude)
+            longitude = float(requested_longitude)
+            if (
+                math.isfinite(latitude)
+                and math.isfinite(longitude)
+                and -90 <= latitude <= 90
+                and -180 <= longitude <= 180
+            ):
+                selected_location = {"lat": latitude, "lng": longitude}
+            else:
+                location_filter_errors.append(
+                    "The selected location is invalid. Choose a point on the map and try again."
+                )
+        except (TypeError, ValueError):
+            location_filter_errors.append(
+                "The selected location is invalid. Choose a point on the map and try again."
+            )
+
+    requested_job_tab = request.GET.get("tab")
+    job_tab = requested_job_tab if requested_job_tab in {"all", "nearby"} else (
+        "nearby" if selected_location else "all"
+    )
+
+    map_openings = []
+    for opening in all_openings:
+        coordinates = _get_shop_coordinates(opening.shop)
+        if coordinates:
+            map_openings.append(
+                {
+                    "lat": coordinates["lat"],
+                    "lng": coordinates["lng"],
+                    "shop": opening.shop.name,
+                    "title": opening.title,
+                }
+            )
+
+    nearby_openings = []
+    if selected_location:
+        earth_radius_km = 6371.0088
+        center_latitude = math.radians(selected_location["lat"])
+        center_longitude = math.radians(selected_location["lng"])
+        for opening in all_openings:
+            coordinates = _get_shop_coordinates(opening.shop)
+            if not coordinates:
+                continue
+            latitude_delta = math.radians(coordinates["lat"]) - center_latitude
+            longitude_delta = math.radians(coordinates["lng"]) - center_longitude
+            haversine = (
+                math.sin(latitude_delta / 2) ** 2
+                + math.cos(center_latitude)
+                * math.cos(math.radians(coordinates["lat"]))
+                * math.sin(longitude_delta / 2) ** 2
+            )
+            distance_km = 2 * earth_radius_km * math.asin(
+                math.sqrt(min(1, haversine))
+            )
+            if distance_km <= radius_km:
+                nearby_openings.append(opening)
+    openings = nearby_openings if job_tab == "nearby" else all_openings
+
+    return render(
+        request,
+        "seller/job_openings.html",
+        {
+            "openings": openings,
+            "job_tab": job_tab,
+            "search_query": search_query,
+            "radius_km": radius_km,
+            "selected_location": selected_location,
+            "map_openings": map_openings,
+            "location_filter_errors": location_filter_errors,
+        },
+    )
 
 
 @login_required
@@ -4576,7 +6372,14 @@ def packer_dashboard(request):
             "assigned_packer__user",
         )
         .prefetch_related(
-            "order_items"
+            Prefetch(
+                "order_items",
+                queryset=OrderItem.objects.select_related(
+                    "product",
+                    "product_shop__product",
+                    "product_shop__shop",
+                ),
+            )
         )
     )
 
@@ -4604,7 +6407,14 @@ def packer_dashboard(request):
             "shop",
         )
         .prefetch_related(
-            "order_items",
+            Prefetch(
+                "order_items",
+                queryset=OrderItem.objects.select_related(
+                    "product",
+                    "product_shop__product",
+                    "product_shop__shop",
+                ),
+            ),
             "status_history",
         )
         .distinct()
@@ -4620,7 +6430,7 @@ def packer_dashboard(request):
     if current_view not in order_views:
         current_view = "available"
 
-    selected_orders = order_views[current_view].order_by("-created_at")
+    selected_orders = order_views[current_view].order_by("created_at", "pk")
     customer_usernames = list(
         selected_orders.values_list("order__user", flat=True).distinct()
     )
@@ -4783,6 +6593,306 @@ def _get_shop_coordinates(shop):
     return {"lat": latitude, "lng": longitude}
 
 
+def _parse_shop_pickup_locations(raw_value, *, max_locations):
+    try:
+        locations = json.loads(raw_value or "[]")
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ValueError("Pickup locations must be valid JSON.") from error
+    if not isinstance(locations, list):
+        raise ValueError("Pickup locations must be provided as a list.")
+    if len(locations) > max_locations:
+        raise ValueError(
+            f"Your shop may configure up to {max_locations} additional pickup locations."
+        )
+
+    normalized = []
+    for index, location in enumerate(locations, start=1):
+        if not isinstance(location, dict):
+            raise ValueError(f"Pickup location {index} is invalid.")
+        name = str(location.get("name", "")).strip()[:120]
+        address = str(location.get("address", "")).strip()[:500]
+        try:
+            latitude = float(location.get("lat"))
+            longitude = float(location.get("lng"))
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"Pickup location {index} needs valid latitude and longitude."
+            ) from error
+        if (
+            not name
+            or not math.isfinite(latitude)
+            or not math.isfinite(longitude)
+            or not -90 <= latitude <= 90
+            or not -180 <= longitude <= 180
+        ):
+            raise ValueError(
+                f"Pickup location {index} needs a name and valid map coordinates."
+            )
+        normalized.append({
+            "name": name,
+            "address": address,
+            "lat": latitude,
+            "lng": longitude,
+        })
+    return normalized
+
+
+def _shop_pickup_locations(shop):
+    locations = []
+    primary = _get_shop_coordinates(shop)
+    if primary:
+        locations.append({
+            "name": shop.name,
+            "address": (
+                str(shop.location.get("address", "")).strip()
+                if isinstance(shop.location, dict)
+                else ""
+            ),
+            **primary,
+        })
+    for location in shop.pickup_locations or []:
+        if not isinstance(location, dict):
+            continue
+        coordinates = _valid_route_coordinates(location) and {
+            "lat": float(location["lat"]),
+            "lng": float(location["lng"]),
+        }
+        if coordinates:
+            locations.append({
+                "name": str(location.get("name", "")).strip() or shop.name,
+                "address": str(location.get("address", "")).strip(),
+                **coordinates,
+            })
+    return locations
+
+
+def _select_shop_pickup_location(shop, order):
+    locations = _shop_pickup_locations(shop)
+    if not locations:
+        return {}
+    delivery = _get_order_delivery_coordinates(order)
+    if not delivery:
+        return locations[0]
+
+    def distance_to_delivery(location):
+        distance = distance_km_between_points(
+            location["lat"],
+            location["lng"],
+            delivery["lat"],
+            delivery["lng"],
+        )
+        return distance if distance is not None else float("inf")
+
+    return min(locations, key=distance_to_delivery)
+
+
+def _get_shop_order_pickup_location(shop_order):
+    pickup = shop_order.pickup_location
+    if isinstance(pickup, dict) and _valid_route_coordinates(pickup):
+        return pickup
+    coordinates = _get_shop_coordinates(shop_order.shop)
+    if not coordinates:
+        return {}
+    return {
+        "name": shop_order.shop.name,
+        "address": (
+            str(shop_order.shop.location.get("address", "")).strip()
+            if isinstance(shop_order.shop.location, dict)
+            else ""
+        ),
+        **coordinates,
+    }
+
+
+def _public_rider_route_estimate(shop_order, rider_location, pay_settings):
+    pickup = _get_shop_order_pickup_location(shop_order)
+    delivery = _get_order_delivery_coordinates(shop_order.order)
+    rider_coordinates = rider_location if _valid_route_coordinates(rider_location) else None
+    legacy_road_network_name = getattr(
+        pay_settings.road_network_geojson,
+        "name",
+        "",
+    )
+    road_network_names = tuple(
+        name
+        for name in (
+            legacy_road_network_name,
+            *pay_settings.road_network_files.values_list(
+                "geojson_file",
+                flat=True,
+            ),
+        )
+        if name
+    )
+    pickup_to_delivery = None
+    rider_to_pickup = None
+    straight_line_rider_to_pickup = None
+    straight_line_pickup_to_delivery = None
+    unavailable_reason = ""
+    if not road_network_names:
+        unavailable_reason = (
+            "An administrator must upload local GeoJSON road coverage."
+        )
+    elif not pickup:
+        unavailable_reason = "The selected shop pickup point is missing or invalid."
+    elif not delivery:
+        unavailable_reason = (
+            "The order delivery coordinates are missing or invalid."
+        )
+    else:
+        pickup_to_delivery_km = local_road_route_distance_km(
+            road_network_names,
+            pickup,
+            delivery,
+        )
+        if pickup_to_delivery_km is None:
+            unavailable_reason = (
+                "No connected road route covers the selected pickup point and delivery "
+                "locations. Check the uploaded road coverage and coordinates."
+            )
+        else:
+            pickup_to_delivery = Decimal(str(pickup_to_delivery_km)).quantize(
+                Decimal("0.001"),
+                rounding=ROUND_HALF_UP,
+            )
+            if not rider_coordinates:
+                unavailable_reason = (
+                    "Allow location access or update your rider location to "
+                    "calculate the full distance and pay."
+                )
+            else:
+                rider_to_pickup_km = local_road_route_distance_km(
+                    road_network_names,
+                    rider_coordinates,
+                    pickup,
+                )
+                if rider_to_pickup_km is None:
+                    unavailable_reason = (
+                        "No connected road route covers your location and "
+                        "the pickup point. Check your location and road coverage."
+                    )
+                else:
+                    rider_to_pickup = Decimal(
+                        str(rider_to_pickup_km),
+                    ).quantize(
+                        Decimal("0.001"),
+                        rounding=ROUND_HALF_UP,
+                    )
+    road_total_distance = (
+        rider_to_pickup + pickup_to_delivery
+        if rider_to_pickup is not None and pickup_to_delivery is not None
+        else None
+    )
+    straight_line_total_distance = None
+    if (
+        road_total_distance is None
+        and rider_coordinates
+        and pickup
+        and delivery
+    ):
+        straight_line_rider_to_pickup = Decimal(str(
+            distance_km_between_points(
+                rider_coordinates["lat"],
+                rider_coordinates["lng"],
+                pickup["lat"],
+                pickup["lng"],
+            ),
+        )).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+        straight_line_pickup_to_delivery = Decimal(str(
+            distance_km_between_points(
+                pickup["lat"],
+                pickup["lng"],
+                delivery["lat"],
+                delivery["lng"],
+            ),
+        )).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+        straight_line_total_distance = (
+            (straight_line_rider_to_pickup + straight_line_pickup_to_delivery)
+            * Decimal("1.7")
+        ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+    distance_calculation_method = (
+        "road" if road_total_distance is not None
+        else "straight_line_fallback"
+        if straight_line_total_distance is not None
+        else "unavailable"
+    )
+    estimated_pay_distance = (
+        road_total_distance
+        if road_total_distance is not None
+        else straight_line_total_distance
+    )
+    estimated_pay = (
+        (
+            pay_settings.shared_rider_base_pay
+            + estimated_pay_distance * pay_settings.shared_rider_rate_per_km
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if estimated_pay_distance is not None
+        else None
+    )
+    load_estimate = _shop_order_estimated_load(shop_order)
+    return {
+        "rider_location": rider_coordinates,
+        "rider_to_pickup_km": rider_to_pickup,
+        "pickup_to_delivery_km": pickup_to_delivery,
+        "total_distance_km": (
+            road_total_distance.quantize(
+                Decimal("0.001"),
+                rounding=ROUND_HALF_UP,
+            )
+            if road_total_distance is not None
+            else None
+        ),
+        "straight_line_rider_to_pickup_km": straight_line_rider_to_pickup,
+        "straight_line_pickup_to_delivery_km": straight_line_pickup_to_delivery,
+        "estimated_pay_distance_km": estimated_pay_distance,
+        "distance_calculation_method": distance_calculation_method,
+        "base_fare": pay_settings.shared_rider_base_pay,
+        "rate_per_km": pay_settings.shared_rider_rate_per_km,
+        "estimated_pay": estimated_pay,
+        "item_count": load_estimate["item_count"],
+        "weight_kg": load_estimate["weight_kg"],
+        "volume_cubic_ft": load_estimate["volume_cubic_ft"],
+        "calculated_at": timezone.now().isoformat(),
+        "unavailable_reason": unavailable_reason,
+        "needs_rider_location": (
+            pickup is not None and delivery is not None and rider_coordinates is None
+        ),
+    }
+
+
+def _public_rider_acceptance_location(request, rider_membership):
+    now_timestamp = timezone.now().timestamp()
+    try:
+        posted_location = {
+            "lat": float(request.POST.get("rider_latitude", "")),
+            "lng": float(request.POST.get("rider_longitude", "")),
+            "observed_at": float(request.POST.get("rider_location_observed_at", "")),
+        }
+    except (TypeError, ValueError):
+        posted_location = None
+    if (
+        posted_location
+        and _valid_route_coordinates(posted_location)
+        and 0 <= now_timestamp - posted_location["observed_at"] <= 120
+    ):
+        return posted_location
+
+    stored_location = rider_membership.last_location
+    if not isinstance(stored_location, dict) or not _valid_route_coordinates(stored_location):
+        return None
+    try:
+        observed_at = float(stored_location.get("observed_at"))
+    except (TypeError, ValueError):
+        return None
+    if not 0 <= now_timestamp - observed_at <= 600:
+        return None
+    return {
+        "lat": float(stored_location["lat"]),
+        "lng": float(stored_location["lng"]),
+        "observed_at": observed_at,
+    }
+
+
 def _nearby_shared_rider_shops(rider_shop):
     configured_radius = DeliverySharingSettings.objects.filter(
         pk=1,
@@ -4833,37 +6943,70 @@ def _shared_rider_group_shop_ids(rider):
     )
 
 
-def _get_rider_pickup_navigation_stops(rider):
+def _get_rider_pickup_navigation_stops(rider, rider_user=None):
+    orders = ShopOrder.objects.filter(
+        status__in=["READY", "RIDER_ASSIGNED"],
+        delivery_completed_at__isnull=True,
+    )
+    orders = orders.filter(
+        assigned_rider__user=rider_user,
+    ) if rider_user else orders.filter(
+        assigned_rider=rider,
+    )
     orders = (
-        ShopOrder.objects.filter(
-            assigned_rider=rider,
-            status__in=["READY", "RIDER_ASSIGNED"],
-            delivery_completed_at__isnull=True,
-        )
+        orders
         .select_related("shop")
         .order_by("shop__name", "created_at", "id")
     )
-    stops_by_shop = {}
+    stops_by_location = {}
     for shop_order in orders:
-        coordinates = _get_shop_coordinates(shop_order.shop)
+        pickup_location = _get_shop_order_pickup_location(shop_order)
+        coordinates = (
+            {"lat": pickup_location["lat"], "lng": pickup_location["lng"]}
+            if pickup_location
+            else None
+        )
         if not coordinates:
             continue
+        stop_key = (
+            shop_order.shop_id,
+            round(coordinates["lat"], 6),
+            round(coordinates["lng"], 6),
+        )
         order_number = shop_order.shop_order_number or shop_order.order.order_id
-        if shop_order.shop_id not in stops_by_shop:
-            stops_by_shop[shop_order.shop_id] = {
+        if stop_key not in stops_by_location:
+            stops_by_location[stop_key] = {
                 "shop_name": shop_order.shop.name,
+                "pickup_location_name": pickup_location.get(
+                    "name",
+                    shop_order.shop.name,
+                ),
+                "pickup_address": pickup_location.get("address", ""),
                 "order_count": 1,
                 "order_numbers": [order_number],
                 **coordinates,
             }
             continue
-        stops_by_shop[shop_order.shop_id]["order_count"] += 1
-        stops_by_shop[shop_order.shop_id]["order_numbers"].append(order_number)
-    return list(stops_by_shop.values())
+        stops_by_location[stop_key]["order_count"] += 1
+        stops_by_location[stop_key]["order_numbers"].append(order_number)
+    return list(stops_by_location.values())
 
 
 RIDER_PICKUP_OTP_VALIDITY_SECONDS = 300
 RIDER_PICKUP_OTP_MAX_ATTEMPTS = 5
+RIDER_PICKUP_QR_PREFIX = "SH-TASK:VERIFY_RIDER_PICKUP:"
+LEGACY_RIDER_PICKUP_QR_PREFIX = "SH-PICKUP:"
+
+
+def _rider_pickup_otp_from_qr_value(value):
+    value = (value or "").strip()
+    for prefix in (
+        RIDER_PICKUP_QR_PREFIX,
+        LEGACY_RIDER_PICKUP_QR_PREFIX,
+    ):
+        if value.startswith(prefix):
+            return value.removeprefix(prefix)
+    return value
 SHARED_RIDER_ASSIGNMENT_RADIUS_KM = 0.35
 SHARED_RIDER_OFFER_DELAY = timedelta(minutes=1)
 
@@ -5057,6 +7200,30 @@ def _rider_can_accept_shop_orders(
     )
 
 
+def _rider_membership_for_order(user, shop_order):
+    assigned_rider = shop_order.assigned_rider
+    if (
+        assigned_rider
+        and assigned_rider.user_id == user.pk
+        and assigned_rider.is_active
+        and assigned_rider.role == "RIDER"
+    ):
+        return assigned_rider
+    return ShopStaff.objects.filter(
+        user=user,
+        shop=shop_order.shop,
+        is_active=True,
+        role="RIDER",
+    ).first()
+
+
+def _approved_public_rider(user):
+    return PublicRiderApplication.objects.filter(
+        user=user,
+        status=PublicRiderApplication.STATUS_APPROVED,
+    ).first()
+
+
 def _qr_code_data_uri(value, box_size=3):
     qr_code = qrcode.QRCode(
         version=None,
@@ -5090,61 +7257,265 @@ def _upi_payment_qr_data_uri(upi_id, payee_name, amount, order_reference):
     return _qr_code_data_uri(payment_uri, box_size=5)
 
 
+def _next_cod_upi_qr_amount(shop, settlement_amount):
+    cent = Decimal("0.01")
+    amount = Decimal(settlement_amount).quantize(cent)
+    minimum_amount = max(cent, amount - Decimal("1.00"))
+    active_amounts = set(
+        CODPaymentApprovalRequest.objects.filter(
+            shop=shop,
+            status__in=CODPaymentApprovalRequest.ACTIVE_STATUSES,
+        ).values_list("qr_amount", flat=True)
+    )
+    while amount >= minimum_amount:
+        if amount not in active_amounts:
+            return amount
+        amount -= cent
+    return None
+
+
+def _can_review_cod_payment(user, shop):
+    return bool(
+        user.is_superuser
+        or shop.owner_id == user.pk
+        or ShopStaff.objects.filter(
+            shop=shop,
+            user=user,
+            is_active=True,
+        ).filter(
+            Q(role="MANAGER")
+            | Q(role="ORDER", can_view_orders=True)
+        ).exists()
+    )
+
+
+def _notify_cod_payment_reviewers(payment_request):
+    shop = payment_request.shop
+    reviewer_user_ids = set(
+        ShopStaff.objects.filter(
+            shop=shop,
+            is_active=True,
+        ).filter(
+            Q(role="MANAGER")
+            | Q(role="ORDER", can_view_orders=True)
+        ).values_list("user_id", flat=True)
+    )
+    if shop.owner_id:
+        reviewer_user_ids.add(shop.owner_id)
+    order_reference = (
+        payment_request.shop_order.shop_order_number
+        or payment_request.shop_order.order.order_id
+    )
+    for user_id in reviewer_user_ids:
+        Notification.objects.create(
+            user_id=user_id,
+            title="COD UPI payment needs approval",
+            message=(
+                f"Rider reported a ₹{payment_request.qr_amount:.2f} UPI payment "
+                f"for order {order_reference}. Review it against the "
+                f"₹{payment_request.settlement_amount:.2f} COD balance."
+            ),
+            notification_type="ORDER",
+            related_url=reverse(
+                "shop_order_detail",
+                kwargs={"shop_order_id": payment_request.shop_order_id},
+            ),
+        )
+
+
+def _notify_cod_payment_rider(payment_request, title, message):
+    view = (
+        "completed"
+        if payment_request.status == "APPROVED"
+        else "active"
+    )
+    Notification.objects.create(
+        user=payment_request.rider.user,
+        title=title,
+        message=message,
+        notification_type="ORDER",
+        related_url=reverse(
+            "rider_dashboard",
+        ) + f"?view={view}#order-{payment_request.shop_order_id}",
+    )
+
+
+def _public_rider_earnings_summary(public_rider, period):
+    valid_periods = {"today", "yesterday", "weekly", "monthly", "yearly"}
+    period_key = period if period in valid_periods else "today"
+    now = timezone.now()
+    local_now = timezone.localtime(now)
+    if period_key == "today":
+        start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        bucket_size = timedelta(hours=4)
+        bucket_count = 6
+        label_lambda = lambda idx: f"{(idx * 4):02d}:00"
+    elif period_key == "yesterday":
+        start = (local_now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        bucket_size = timedelta(hours=4)
+        bucket_count = 6
+        label_lambda = lambda idx: f"{(idx * 4):02d}:00"
+    elif period_key == "weekly":
+        start = local_now - timedelta(days=6)
+        start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = local_now + timedelta(days=1)
+        bucket_size = timedelta(days=1)
+        bucket_count = 7
+        label_lambda = lambda idx: (start + timedelta(days=idx)).strftime("%a")
+    elif period_key == "monthly":
+        start = local_now - timedelta(days=29)
+        start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = local_now + timedelta(days=1)
+        bucket_size = timedelta(days=5)
+        bucket_count = 6
+        label_lambda = lambda idx: (start + timedelta(days=idx * 5)).strftime("%d %b")
+    else:
+        start = local_now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        end = start.replace(year=start.year + 1)
+        bucket_size = timedelta(days=30)
+        bucket_count = 12
+        label_lambda = lambda idx: (start.replace(month=(start.month + idx - 1) % 12 + 1, year=start.year + ((start.month + idx - 1) // 12))).strftime("%b")
+
+    base_transactions = PublicRiderWalletTransaction.objects.filter(
+        wallet__rider=public_rider,
+        transaction_type=PublicRiderWalletTransaction.DELIVERY_FARE,
+    )
+    if period_key in {"today", "yesterday"}:
+        filtered_queryset = base_transactions.filter(created_at__gte=start, created_at__lt=end)
+    elif period_key == "weekly":
+        filtered_queryset = base_transactions.filter(created_at__date__gte=start.date(), created_at__date__lte=local_now.date())
+    elif period_key == "monthly":
+        filtered_queryset = base_transactions.filter(created_at__date__gte=start.date(), created_at__date__lte=local_now.date())
+    else:
+        filtered_queryset = base_transactions.filter(created_at__gte=start, created_at__lt=end)
+
+    total = filtered_queryset.aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+    completed_orders = filtered_queryset.values("shop_order_id").distinct().count()
+    average = (total / Decimal(completed_orders)) if completed_orders else Decimal("0.00")
+    chart_points = []
+    max_value = Decimal("0.00")
+    for idx in range(bucket_count):
+        if period_key in {"today", "yesterday"}:
+            bucket_start = start + timedelta(hours=idx * 4)
+            bucket_end = bucket_start + bucket_size
+            label = label_lambda(idx)
+        elif period_key == "weekly":
+            bucket_start = start + timedelta(days=idx)
+            bucket_end = bucket_start + bucket_size
+            label = label_lambda(idx)
+        elif period_key == "monthly":
+            bucket_start = start + timedelta(days=idx * 5)
+            bucket_end = min(bucket_start + bucket_size, end)
+            label = label_lambda(idx)
+        else:
+            month_number = ((start.month - 1 + idx) % 12) + 1
+            year_number = start.year + ((start.month - 1 + idx) // 12)
+            bucket_start = local_now.replace(year=year_number, month=month_number, day=1, hour=0, minute=0, second=0, microsecond=0)
+            bucket_end = bucket_start.replace(year=bucket_start.year + (1 if bucket_start.month == 12 else 0), month=(bucket_start.month % 12) + 1, day=1)
+            label = label_lambda(idx)
+        bucket_total = filtered_queryset.filter(
+            created_at__gte=bucket_start,
+            created_at__lt=bucket_end,
+        ).aggregate(total=Sum("amount"))["total"] or Decimal("0.00")
+        if bucket_total > max_value:
+            max_value = bucket_total
+        chart_points.append({
+            "label": label,
+            "value": bucket_total,
+        })
+
+    if max_value > Decimal("0.00"):
+        for point in chart_points:
+            height = (float(point["value"]) / float(max_value)) * 100 if max_value else 0
+            point["height_percent"] = round(height, 2)
+    else:
+        for point in chart_points:
+            point["height_percent"] = 0
+
+    best_day = None
+    if period_key in {"today", "yesterday"}:
+        best_day = max(chart_points, key=lambda item: item["value"], default={"label": "n/a", "value": Decimal("0.00")})
+    else:
+        best_day = max(chart_points, key=lambda item: item["value"], default={"label": "n/a", "value": Decimal("0.00")})
+
+    return {
+        "period": period_key,
+        "period_label": {
+            "today": "Today",
+            "yesterday": "Yesterday",
+            "weekly": "This week",
+            "monthly": "This month",
+            "yearly": "This year",
+        }[period_key],
+        "total": total,
+        "orders": completed_orders,
+        "average": average,
+        "wallet_balance": public_rider.earnings_wallet.balance if hasattr(public_rider, "earnings_wallet") else Decimal("0.00"),
+        "best_day": best_day,
+        "chart": chart_points,
+    }
+
+
 @login_required
-def rider_dashboard(request):
-
-    staff = ShopStaff.objects.filter(
-        user=request.user,
-        is_active=True,
-        role="RIDER"
-    ).select_related(
-        "shop"
-    ).first()
-
-    if not staff:
-        raise PermissionDenied
-
-    selected_view = request.GET.get("view", "available")
-    performance_view = selected_view == "performance"
-    completed_view = selected_view == "completed"
-    active_view = selected_view == "active"
-    available_view = not (
-        performance_view or completed_view or active_view
+def _rider_available_order_ids(
+    staff,
+    public_rider,
+    user,
+    rider_load_weight,
+    rider_load_volume,
+    *,
+    dispatch_public_offers=False,
+):
+    if public_rider and not public_rider_service_enabled():
+        return []
+    group_shop_ids = (
+        set()
+        if public_rider
+        else set(_shared_rider_group_shop_ids(staff))
     )
-    assigned_orders = ShopOrder.objects.filter(assigned_rider=staff)
-    active_load_orders = list(
-        assigned_orders.filter(
-            status__in=["READY", "RIDER_ASSIGNED", "PICKED_UP", "OUT_FOR_DELIVERY"],
-            delivery_completed_at__isnull=True,
-        ).exclude(
-            status__in=["DELIVERED", "COMPLETED", "CANCELLED"],
-        ).prefetch_related("order_items")
+    last_accepted_shop = (
+        None if public_rider else _rider_last_accepted_shop(staff)
     )
-    active_loads = [
-        _shop_order_estimated_load(row)
-        for row in active_load_orders
-    ]
-    rider_load_weight = sum(
-        (load["weight_kg"] for load in active_loads),
-        Decimal("0.00"),
-    )
-    rider_load_volume = sum(
-        (load["volume_cubic_ft"] for load in active_loads),
-        Decimal("0.00"),
-    )
-    group_shop_ids = set(_shared_rider_group_shop_ids(staff))
-    last_accepted_shop = _rider_last_accepted_shop(staff)
     shared_rider_radius_km = _shared_rider_assignment_radius_km()
     ready_candidates = (
         ShopOrder.objects.filter(
+            shop__public_rider_network_enabled=True,
+        ).filter(
+            Q(public_rider_network_requested=True)
+            | Q(shop__rider_delivery_preference="PUBLIC"),
+        ).filter(
+            status="READY",
+            assigned_rider__isnull=True,
+            delivery_completed_at__isnull=True,
+            public_rider_fallback_to_staff=False,
+        )
+        if public_rider
+        else ShopOrder.objects.filter(
             Q(shop_id=staff.shop_id)
             | Q(shop__share_riders_with_nearby_shops=True)
             | Q(shop_id__in=group_shop_ids),
+        ).filter(
+            Q(
+                shop__rider_delivery_preference="STAFF",
+                public_rider_network_requested=False,
+            )
+            | Q(public_rider_fallback_to_staff=True),
+        ).filter(
             status="READY",
             assigned_rider__isnull=True,
             delivery_completed_at__isnull=True,
         )
     )
+    if public_rider:
+        if dispatch_public_offers:
+            for candidate_id in ready_candidates.values_list("pk", flat=True):
+                advance_public_rider_offer(candidate_id)
+        ready_candidates = ready_candidates.filter(
+            public_rider_offer_user=user,
+            public_rider_offer_expires_at__gt=timezone.now(),
+        )
     ready_candidates = list(
         ready_candidates
         .select_related("shop")
@@ -5166,7 +7537,7 @@ def rider_dashboard(request):
     next_shared_order_available_in = None
     for candidate in ready_candidates:
         is_home_shop_order = candidate.shop_id == staff.shop_id
-        if not _rider_can_accept_shop_orders(
+        if not public_rider and not _rider_can_accept_shop_orders(
             staff,
             candidate.shop,
             origin_shop=last_accepted_shop,
@@ -5175,7 +7546,7 @@ def rider_dashboard(request):
             customer_order=candidate.order,
         ):
             continue
-        if not is_home_shop_order:
+        if not public_rider and not is_home_shop_order:
             available_at = _shop_order_ready_at(candidate) + SHARED_RIDER_OFFER_DELAY
             distance = _shop_distance_km(last_accepted_shop, candidate.shop)
             if distance is not None:
@@ -5192,20 +7563,190 @@ def rider_dashboard(request):
                     next_shared_order_available_in = seconds_until_available
                 continue
         candidate_load = _shop_order_estimated_load(candidate)
-        if not _rider_load_fits_capacity(
+        if not public_rider and not _rider_load_fits_capacity(
             staff,
             rider_load_weight + candidate_load["weight_kg"],
             rider_load_volume + candidate_load["volume_cubic_ft"],
         ):
             continue
         available_order_ids.append(candidate.pk)
+    return (
+        available_order_ids,
+        shared_shop_distances,
+        next_shared_order_available_in,
+    )
+
+
+def rider_dashboard(request):
+
+    public_rider = None
+    public_rider_last_location = None
+    if request.session.get("active_portal") == "RIDER":
+        public_rider = PublicRiderApplication.objects.select_for_update().filter(
+            user=request.user,
+            status=PublicRiderApplication.STATUS_APPROVED,
+        ).first()
+        if not public_rider:
+            raise PermissionDenied
+        sync_public_rider_shop_memberships(public_rider)
+        public_rider_last_location = _recent_public_rider_location(request.user)
+
+    rider_memberships = ShopStaff.objects.filter(
+        user=request.user,
+        is_active=True,
+        role="RIDER",
+    ).select_related("shop")
+    if not public_rider:
+        rider_memberships = rider_memberships.filter(is_public_rider=False)
+    staff = rider_memberships.order_by("shop_id", "pk").first()
+
+    if not staff and not public_rider:
+        raise PermissionDenied
+    if not staff:
+        public_rider_wallet = PublicRiderWallet.objects.filter(
+            rider=public_rider,
+        ).first()
+        selected_view = request.GET.get("view", "available")
+        earnings_view = selected_view == "earnings"
+        earnings_period = request.GET.get("period", "today")
+        public_rider_earnings_summary = _public_rider_earnings_summary(
+            public_rider,
+            earnings_period,
+        ) if public_rider else None
+        return render(
+            request,
+            "seller/public_rider_dashboard.html",
+            {
+                "public_rider": public_rider,
+                "public_rider_last_location": public_rider_last_location,
+                "public_rider_wallet": public_rider_wallet,
+                "public_rider_wallet_transactions": (
+                    public_rider_wallet.transactions.select_related(
+                        "shop_order",
+                        "shop_order__order",
+                        "shop_order__shop",
+                    )[:10]
+                    if public_rider_wallet
+                    else []
+                ),
+                "public_rider_earnings_summary": public_rider_earnings_summary,
+                "earnings_view": earnings_view,
+                "earnings_period": earnings_period,
+                "selected_view": selected_view,
+                "no_network_shops": True,
+            },
+        )
+
+    public_rider_wallet = (
+        PublicRiderWallet.objects.filter(rider=public_rider).first()
+        if public_rider
+        else None
+    )
+    public_rider_wallet_transactions = (
+        public_rider_wallet.transactions.select_related(
+            "shop_order",
+            "shop_order__order",
+            "shop_order__shop",
+        )[:10]
+        if public_rider_wallet
+        else []
+    )
+
+    selected_view = request.GET.get("view", "available")
+    performance_view = selected_view == "performance"
+    completed_view = selected_view == "completed"
+    active_view = selected_view == "active"
+    verified_view = selected_view == "verified"
+    handover_view = selected_view == "handover"
+    earnings_view = selected_view == "earnings"
+    earnings_period = request.GET.get("period", "today")
+    public_rider_earnings_summary = None
+    if public_rider:
+        public_rider_earnings_summary = _public_rider_earnings_summary(
+            public_rider,
+            earnings_period,
+        )
+    available_view = not (
+        performance_view
+        or completed_view
+        or active_view
+        or verified_view
+        or handover_view
+        or earnings_view
+    )
+    rider_orders = ShopOrder.objects.filter(
+        Q(assigned_rider__user=request.user)
+        | Q(
+            rider_accepted_at__isnull=False,
+            order__assigned_rider=request.user.username,
+        )
+    ) if public_rider else ShopOrder.objects.filter(
+        Q(assigned_rider=staff)
+        | Q(
+            rider_accepted_at__isnull=False,
+            order__assigned_rider=staff.user.username,
+        )
+    )
+    assigned_orders = rider_orders
+    active_load_orders = list(
+        assigned_orders.filter(
+            status__in=["READY", "RIDER_ASSIGNED", "PICKED_UP", "OUT_FOR_DELIVERY"],
+            delivery_completed_at__isnull=True,
+        ).exclude(
+            status__in=["DELIVERED", "COMPLETED", "CANCELLED"],
+        ).prefetch_related("order_items")
+    )
+    active_loads = [
+        _shop_order_estimated_load(row)
+        for row in active_load_orders
+    ]
+    rider_load_weight = sum(
+        (load["weight_kg"] for load in active_loads),
+        Decimal("0.00"),
+    )
+    rider_load_volume = sum(
+        (load["volume_cubic_ft"] for load in active_loads),
+        Decimal("0.00"),
+    )
+    group_shop_ids = (
+        set()
+        if public_rider
+        else set(_shared_rider_group_shop_ids(staff))
+    )
+    shared_rider_radius_km = _shared_rider_assignment_radius_km()
+    (
+        available_order_ids,
+        shared_shop_distances,
+        next_shared_order_available_in,
+    ) = _rider_available_order_ids(
+        staff,
+        public_rider,
+        request.user,
+        rider_load_weight,
+        rider_load_volume,
+        dispatch_public_offers=True,
+    )
     available_orders = ShopOrder.objects.filter(pk__in=available_order_ids)
-    if performance_view:
+    if performance_view or handover_view or earnings_view:
         orders = ShopOrder.objects.none()
     elif completed_view:
         orders = assigned_orders.filter(
             Q(delivery_completed_at__isnull=False)
             | Q(status__in=["DELIVERED", "COMPLETED", "RETURNED"])
+        )
+    elif verified_view:
+        orders = (
+            assigned_orders
+            .annotate(
+                pickup_verified_at=Max(
+                    "status_history__created_at",
+                    filter=Q(
+                        status_history__status="PICKED_UP",
+                        status_history__remark__icontains="verified rider",
+                    ),
+                ),
+            )
+            .filter(pickup_verified_at__isnull=False)
         )
     elif active_view:
         orders = (
@@ -5251,27 +7792,39 @@ def rider_dashboard(request):
                 to_attr="rider_cod_collections",
             ),
         )
-        .order_by("-created_at")
+        .order_by(
+            *(
+                ("-pickup_verified_at", "-pk")
+                if verified_view
+                else ("-created_at",)
+            )
+        )
     )
+    if verified_view:
+        orders = orders[:50]
     rider_instruction_by_order_id = {
         instruction.shop_order_id: instruction
         for instruction in OrderVoiceInstruction.objects.filter(
-            shop_order_id__in=orders.filter(
-                assigned_rider=staff,
-            ).values("pk"),
+            shop_order_id__in=orders.values("pk"),
             recipient=OrderVoiceInstruction.RECIPIENT_RIDER,
         )
     }
     pending_return_items = (
         OrderItem.objects
         .filter(
-            shop_order__assigned_rider=staff,
             returned_quantity__gt=F("returned_received_quantity"),
+        )
+        .filter(
+            Q(shop_order__assigned_rider__user=request.user)
+            if public_rider
+            else Q(shop_order__assigned_rider=staff)
         )
         .select_related("shop_order", "shop_order__order", "product_shop")
         .order_by("-shop_order__delivery_completed_at", "id")
     )
-    rider_cash_entries = RiderCashLedgerEntry.objects.filter(rider=staff)
+    rider_cash_entries = RiderCashLedgerEntry.objects.filter(
+        rider__user=request.user,
+    ) if public_rider else RiderCashLedgerEntry.objects.filter(rider=staff)
     cash_30_day_start = timezone.now() - timedelta(days=30)
     rider_cash_totals = rider_cash_entries.aggregate(
         collected=Sum(
@@ -5377,16 +7930,69 @@ def rider_dashboard(request):
             outstanding_cash_collections.append(collection)
     pending_cash_collections = outstanding_cash_collections
 
-    rider_profile = getattr(
-        request.user,
-        "shop_staff",
-        None
-    )
-
     # Get OTP requirement safely
     verify_need = staff.shop.require_customer_otp_verification
 
+    cod_approval_by_order_id = {}
+    for payment_request in (
+        CODPaymentApprovalRequest.objects.filter(
+            shop_order_id__in=orders.values("pk"),
+        )
+        .select_related("rider__user", "reviewed_by")
+        .order_by("-created_at", "-pk")
+    ):
+        cod_approval_by_order_id.setdefault(
+            payment_request.shop_order_id,
+            payment_request,
+        )
+
+    public_rider_pay_settings = (
+        _delivery_sharing_settings() if public_rider else None
+    )
     for order_obj in orders:
+        current_rider_membership = (
+            order_obj.assigned_rider
+            if (
+                public_rider
+                and order_obj.assigned_rider_id
+                and order_obj.assigned_rider.user_id == request.user.id
+            )
+            else staff
+        )
+        order_obj.is_assigned_to_current_rider = bool(
+            (
+                order_obj.assigned_rider_id == staff.pk
+                if not public_rider
+                else (
+                    order_obj.assigned_rider_id
+                    and order_obj.assigned_rider.user_id == request.user.id
+                )
+            )
+            or (
+                order_obj.rider_accepted_at
+                and order_obj.order.assigned_rider == request.user.username
+            )
+        )
+        order_obj.public_rider_route_display = None
+        if public_rider:
+            saved_route_estimate = order_obj.public_rider_route_estimate
+            if (
+                order_obj.is_assigned_to_current_rider
+                and isinstance(saved_route_estimate, dict)
+                and saved_route_estimate
+            ):
+                order_obj.public_rider_route_display = saved_route_estimate
+            elif available_view:
+                order_obj.public_rider_route_display = (
+                    _public_rider_route_estimate(
+                        order_obj,
+                        staff.last_location,
+                        public_rider_pay_settings,
+                    )
+                )
+        order_obj.cod_payment_approval = cod_approval_by_order_id.get(
+            order_obj.pk,
+        )
         order_obj.rider_voice_instruction = rider_instruction_by_order_id.get(
             order_obj.pk,
         )
@@ -5408,7 +8014,7 @@ def rider_dashboard(request):
             else order_obj.updated_at
         )
         order_obj.rider_cancel_available = bool(
-            order_obj.assigned_rider_id == staff.pk
+            order_obj.is_assigned_to_current_rider
             and order_obj.status in {"READY", "RIDER_ASSIGNED"}
         )
         for item in order_obj.order_items.all():
@@ -5417,6 +8023,15 @@ def rider_dashboard(request):
                 item.quantity,
                 unit,
             )
+            if item.is_approximate_weight:
+                item.weight_display_unit = _weight_display_unit(unit)
+                item.estimated_weight_calculation = item.quantity_unit_calculation
+                item.rider_weight_value = (
+                    item.final_weight
+                    if item.final_weight is not None
+                    else item.estimated_weight
+                )
+                item.rider_weight_is_final = item.final_weight is not None
 
         customer_profile = (
             ClientProfile.objects
@@ -5449,37 +8064,48 @@ def rider_dashboard(request):
             ),
             Decimal("0.00"),
         )
+        payment_request = order_obj.cod_payment_approval
+        order_obj.customer_shop_upi_collected = (
+            payment_request.qr_amount
+            if payment_request and payment_request.status == "APPROVED"
+            else Decimal("0.00")
+        )
         order_obj.customer_cod_collected = (
             order_obj.customer_cash_collected
             + order_obj.customer_personal_upi_collected
+            + order_obj.customer_shop_upi_collected
         )
         order_obj.cod_due_amount = max(
             Decimal("0.00"),
             order_obj.order.payment_amount,
         )
         if (
-            order_obj.assigned_rider_id == staff.pk
+            order_obj.is_assigned_to_current_rider
             and order_obj.status == "OUT_FOR_DELIVERY"
             and order_obj.order.payment_type.upper() == "COD"
         ):
             order_reference = (
                 order_obj.shop_order_number or order_obj.order.order_id
             )
-            order_obj.shop_cod_upi_qr = _upi_payment_qr_data_uri(
-                order_obj.shop.upi_id,
-                order_obj.shop.name,
-                order_obj.cod_due_amount,
-                order_reference,
-            )
             order_obj.staff_cod_upi_qr = _upi_payment_qr_data_uri(
-                staff.upi_id,
-                staff.user.get_full_name() or staff.user.username,
+                current_rider_membership.upi_id,
+                current_rider_membership.user.get_full_name()
+                or current_rider_membership.user.username,
                 order_obj.cod_due_amount,
                 order_reference,
             )
         else:
-            order_obj.shop_cod_upi_qr = ""
             order_obj.staff_cod_upi_qr = ""
+        order_obj.shop_cod_upi_qr = (
+            _upi_payment_qr_data_uri(
+                payment_request.upi_id,
+                order_obj.shop.name,
+                payment_request.qr_amount,
+                order_obj.shop_order_number or order_obj.order.order_id,
+            )
+            if payment_request and payment_request.status == "QR_READY"
+            else ""
+        )
         order_obj.customer_wallet_transactions = []
         order_obj.customer_wallet_credits = Decimal("0.00")
         order_obj.customer_wallet_debits = Decimal("0.00")
@@ -5521,10 +8147,11 @@ def rider_dashboard(request):
         )
 
         order_obj.rider_otp = (
-            rider_profile.verification_otp
-            if rider_profile
+            current_rider_membership.verification_otp
+            if current_rider_membership
             else "----"
         )
+        order_obj.verify_need = order_obj.shop.require_customer_otp_verification
 
         order_obj.payment_status = (
             order_obj.order.payment_status
@@ -5534,35 +8161,46 @@ def rider_dashboard(request):
         order_obj.delivery_coordinates = _get_order_delivery_coordinates(
             order_obj.order
         )
-        order_obj.pickup_coordinates = _get_shop_coordinates(order_obj.shop)
+        order_obj.pickup_location_data = _get_shop_order_pickup_location(order_obj)
+        order_obj.pickup_coordinates = (
+            {
+                "lat": order_obj.pickup_location_data["lat"],
+                "lng": order_obj.pickup_location_data["lng"],
+            }
+            if order_obj.pickup_location_data
+            else None
+        )
         order_obj.nearest_order_coordinates = (
             order_obj.delivery_coordinates
             if order_obj.status == "OUT_FOR_DELIVERY" and order_obj.delivery_coordinates
-            else _get_shop_coordinates(order_obj.shop)
+            else order_obj.pickup_coordinates
         )
-        order_obj.is_shared_shop_delivery = order_obj.shop_id != staff.shop_id
+        order_obj.is_shared_shop_delivery = (
+            not public_rider and order_obj.shop_id != staff.shop_id
+        )
         order_obj.is_group_shared_delivery = order_obj.shop_id in group_shop_ids
         order_obj.shared_shop_distance_km = shared_shop_distances.get(
             order_obj.shop_id,
         )
         order_obj.can_share_live_location = (
-            order_obj.assigned_rider_id == staff.id
+            order_obj.is_assigned_to_current_rider
             and order_obj.status == "OUT_FOR_DELIVERY"
         )
         order_obj.pickup_otp = (
             _ensure_rider_pickup_otp(order_obj)
             if (
-                order_obj.assigned_rider_id == staff.id
+                order_obj.is_assigned_to_current_rider
                 and order_obj.status == "RIDER_ASSIGNED"
             )
             else ""
         )
         order_obj.pickup_qr_data_uri = (
-            _qr_code_data_uri(f"SH-PICKUP:{order_obj.pickup_otp}")
+            _qr_code_data_uri(
+                f"{RIDER_PICKUP_QR_PREFIX}{order_obj.pickup_otp}"
+            )
             if order_obj.pickup_otp
             else ""
         )
-
     order_ids = {order_obj.order_id for order_obj in orders}
     billing_orders = {}
     if order_ids:
@@ -5604,7 +8242,11 @@ def rider_dashboard(request):
                 order_obj.customer_payment_share = payment_share
                 order_obj.platform_charge_share = platform_share
 
-    route_targets = _get_rider_route_delivery_targets(staff, staff.shop)
+    route_targets = (
+        {}
+        if public_rider
+        else _get_rider_route_delivery_targets(staff, staff.shop)
+    )
     for order_obj in orders:
         order_obj.delivery_estimated_arrival = route_targets.get(order_obj.id)
 
@@ -5645,23 +8287,65 @@ def rider_dashboard(request):
                     **coordinates,
                 })
 
-    pickup_navigation_stops = _get_rider_pickup_navigation_stops(staff)
-    pickup_pending_count = ShopOrder.objects.filter(
-        assigned_rider=staff,
+    pickup_navigation_stops = _get_rider_pickup_navigation_stops(
+        staff,
+        rider_user=request.user if public_rider else None,
+    )
+    pickup_pending_count = rider_orders.filter(
         status__in=["READY", "RIDER_ASSIGNED"],
         delivery_completed_at__isnull=True,
     ).count()
-    pickup_ready_count = ShopOrder.objects.filter(
-        assigned_rider=staff,
+    pickup_ready_count = rider_orders.filter(
         status="PICKED_UP",
         delivery_completed_at__isnull=True,
     ).count()
+    public_rider_batch_expires_at = None
+    public_rider_base_fare = None
+    public_rider_rate_per_km = None
+    if public_rider:
+        public_rider_base_fare = public_rider_pay_settings.shared_rider_base_pay
+        public_rider_rate_per_km = (
+            public_rider_pay_settings.shared_rider_rate_per_km
+        )
+    if (
+        public_rider
+        and public_rider.public_rider_batch_accepting
+        and active_load_orders
+        and all(
+            active.status in {"READY", "RIDER_ASSIGNED"}
+            for active in active_load_orders
+        )
+    ):
+        if public_rider.public_rider_batch_started_at:
+            batch_expires_at = (
+                public_rider.public_rider_batch_started_at
+                + timedelta(minutes=5)
+            )
+            if batch_expires_at > timezone.now():
+                public_rider_batch_expires_at = batch_expires_at
 
     return render(
         request,
         "seller/rider_dashboard.html",
         {
             "staff": staff,
+            "public_rider": public_rider,
+            "public_rider_offer_cooldown_until": (
+                public_rider.public_rider_offer_cooldown_until
+                if public_rider
+                else None
+            ),
+            "public_rider_wallet": public_rider_wallet,
+            "public_rider_wallet_transactions": public_rider_wallet_transactions,
+            "public_rider_last_location": public_rider_last_location,
+            "is_public_rider": bool(public_rider),
+            "selected_view": selected_view,
+            "earnings_view": earnings_view,
+            "earnings_period": earnings_period,
+            "public_rider_earnings_summary": public_rider_earnings_summary,
+            "public_rider_batch_expires_at": public_rider_batch_expires_at,
+            "public_rider_base_fare": public_rider_base_fare,
+            "public_rider_rate_per_km": public_rider_rate_per_km,
             "orders": orders,
             "pending_return_items": pending_return_items,
             "cash_in_hand": cash_in_hand,
@@ -5671,12 +8355,26 @@ def rider_dashboard(request):
                 staff.max_load_weight_kg is not None
                 and staff.max_load_volume_cubic_ft is not None
             ),
+            "rider_load_over_capacity": (
+                staff.max_load_weight_kg is not None
+                and staff.max_load_volume_cubic_ft is not None
+                and (
+                    rider_load_weight > staff.max_load_weight_kg
+                    or rider_load_volume > staff.max_load_volume_cubic_ft
+                )
+            ),
             "rider_capacity_weight_kg": staff.max_load_weight_kg,
             "rider_capacity_volume_cubic_ft": staff.max_load_volume_cubic_ft,
             "staff_upi_cod_balance": (
-                ShopStaffWallet.objects.filter(staff=staff)
-                .values_list("balance", flat=True)
-                .first()
+                (
+                    ShopStaffWallet.objects.filter(
+                        staff__user=request.user,
+                    ).aggregate(total=Sum("balance"))["total"]
+                    if public_rider
+                    else ShopStaffWallet.objects.filter(staff=staff)
+                    .values_list("balance", flat=True)
+                    .first()
+                )
                 or Decimal("0.00")
             ),
             "cod_collected_30_days": (
@@ -5717,7 +8415,7 @@ def rider_dashboard(request):
             ),
             "efficiency": (
                 _staff_efficiency_card(staff.shop, "RIDER", staff)
-                if performance_view
+                if performance_view and not public_rider
                 else None
             ),
             "pending_cash_collections": pending_cash_collections,
@@ -5733,7 +8431,7 @@ def rider_dashboard(request):
             "pickup_ready_count": pickup_ready_count,
             "show_start_active_deliveries": active_view,
             "can_manage_shared_rider_groups": (
-                Shop.objects.filter(
+                not public_rider and (Shop.objects.filter(
                     owner=request.user,
                     allow_owner_create_shared_rider_groups=True,
                 ).exists()
@@ -5741,19 +8439,24 @@ def rider_dashboard(request):
                 or SharedRiderGroupShop.objects.filter(
                     shop__owner=request.user,
                 ).exists()
-            ),
+            )),
             "shared_group_count": SharedRiderGroupShop.objects.filter(
                 shop_id=staff.shop_id,
                 status=SharedRiderGroupShop.STATUS_APPROVED,
             ).values("group_id").distinct().count(),
             "verify_need": verify_need,
             "completed_view": completed_view,
+            "verified_view": verified_view,
             "active_view": active_view,
             "available_view": available_view,
+            "handover_view": handover_view,
             "performance_view": performance_view,
             "available_order_count": available_orders.count(),
-            "active_order_count": ShopOrder.objects.filter(
-                assigned_rider=staff,
+            "verified_order_count": min(
+                orders.count(),
+                50,
+            ) if verified_view else 0,
+            "active_order_count": rider_orders.filter(
                 status__in=[
                     "READY",
                     "RIDER_ASSIGNED",
@@ -5763,11 +8466,14 @@ def rider_dashboard(request):
                 delivery_completed_at__isnull=True,
             ).exclude(status__in=["DELIVERED", "COMPLETED"]).count(),
             "completed_order_count": ShopOrder.objects.filter(
-                assigned_rider=staff,
+                Q(assigned_rider__user=request.user)
+                if public_rider
+                else Q(assigned_rider=staff),
             ).filter(
                 Q(delivery_completed_at__isnull=False)
                 | Q(status__in=["DELIVERED", "COMPLETED", "RETURNED"])
             ).count(),
+            "handover_count": len(pending_cash_collections),
         }
     )
 
@@ -5784,7 +8490,8 @@ def shop_order_list(request):
 
     staff_shops = Shop.objects.filter(
         staff_members__user=user,
-        staff_members__is_active=True
+        staff_members__is_active=True,
+        staff_members__is_public_rider=False,
     )
 
     shops = (
@@ -5813,16 +8520,22 @@ def shop_order_list(request):
         .filter(shop__in=shops)
         .select_related(
             "order",
-            "shop"
+            "shop",
+            "assigned_rider__user__client_profile",
+            "assigned_packer__user",
         )
         .prefetch_related(
-            "order_items",
+            "order_items__product_shop",
             "status_history",
             "cash_ledger_entries",
         )
         .order_by("-created_at")
     )
 
+    selected_view = request.GET.get("view")
+    verified_view = selected_view == "verified"
+    handover_view = selected_view == "handover"
+    abandoned_view = selected_view == "abandoned"
     shop_id = request.GET.get("shop")
 
     if shop_id:
@@ -5830,12 +8543,65 @@ def shop_order_list(request):
             shop_id=shop_id
         )
 
-    status = request.GET.get("status")
+    delivery_settings = DeliverySharingSettings.objects.first()
+    abandoned_checkout_timeout_minutes = (
+        delivery_settings.abandoned_checkout_timeout_minutes
+        if delivery_settings
+        else 3
+    )
+    abandoned_attempts = CheckoutAttempt.objects.filter(
+        shop__in=shops,
+        order__isnull=True,
+        last_activity_at__lte=timezone.now() - timedelta(
+            minutes=abandoned_checkout_timeout_minutes,
+        ),
+    ).select_related(
+        "customer",
+        "customer__client_profile",
+        "shop",
+    ).order_by("-last_activity_at")
+    if shop_id:
+        abandoned_attempts = abandoned_attempts.filter(shop_id=shop_id)
+    abandoned_checkout_count = abandoned_attempts.count()
+    if abandoned_view:
+        abandoned_attempts = list(abandoned_attempts[:200])
+        assignments_by_id = {}
+        assignments_by_shop_and_name = {}
+        for assignment in ProductShop.objects.filter(
+            shop__in=shops,
+            is_active=True,
+            product__is_active=True,
+        ).select_related("product", "shop"):
+            assignments_by_id[assignment.pk] = assignment
+            assignments_by_shop_and_name[
+                (assignment.shop_id, assignment.product.product_name)
+            ] = assignment
 
-    if status:
-        shop_orders = shop_orders.filter(
-            status=status
-        )
+        for attempt in abandoned_attempts:
+            for item in attempt.cart_items:
+                product_shop_id = item.get("product_shop_id")
+                if isinstance(product_shop_id, str) and product_shop_id.isdigit():
+                    product_shop_id = int(product_shop_id)
+                assignment = assignments_by_id.get(product_shop_id)
+                if assignment is None:
+                    assignment = assignments_by_shop_and_name.get(
+                        (attempt.shop_id, item.get("product_name")),
+                    )
+                if assignment is None:
+                    item.setdefault(
+                        "image_urls",
+                        [item["image_url"]] if item.get("image_url") else [],
+                    )
+                    continue
+                item["image_urls"] = list(dict.fromkeys([
+                    *([item["image_url"]] if item.get("image_url") else []),
+                    *assignment.display_image_urls,
+                ]))
+                item["image_url"] = (
+                    item["image_urls"][0] if item["image_urls"] else ""
+                )
+
+    status = request.GET.get("status")
 
     order_date_value = request.GET.get("date", "").strip()
     if order_date_value:
@@ -5861,7 +8627,198 @@ def shop_order_list(request):
             | Q(shop_order_number__icontains=order_number),
         )
 
+    verified_orders = (
+        shop_orders
+        .annotate(
+            pickup_verified_at=Max(
+                "status_history__created_at",
+                filter=Q(
+                    status_history__status="PICKED_UP",
+                    status_history__remark__icontains="verified rider",
+                ),
+            ),
+        )
+        .filter(pickup_verified_at__isnull=False)
+        .order_by("-pickup_verified_at", "-pk")
+    )
+    order_status_tabs = []
+    if not verified_view and not handover_view and not abandoned_view:
+        status_tab_options = [
+            ("", "All"),
+            ("pending", "Pending"),
+            ("PLACED", "Placed"),
+            ("CONFIRMED", "Confirmed"),
+            ("PACKING", "Packing"),
+            ("READY", "Ready for Pickup"),
+            ("RIDER_ASSIGNED", "Accepted by Rider"),
+            ("PICKED_UP", "Picked Up"),
+            ("OUT_FOR_DELIVERY", "Out for Delivery"),
+            ("DELIVERED", "Delivered"),
+            ("RETURNED", "Returned"),
+            ("CANCELLED", "Cancelled"),
+        ]
+        status_counts = {
+            row["status"]: row["count"]
+            for row in shop_orders.order_by().values("status").annotate(
+                count=Count("pk", distinct=True),
+            )
+        }
+        for status_value, label in status_tab_options:
+            query_params = request.GET.copy()
+            if status_value:
+                query_params["status"] = status_value
+            else:
+                query_params.pop("status", None)
+            order_status_tabs.append({
+                "value": status_value,
+                "label": label,
+                "count": (
+                    sum(status_counts.values())
+                    if not status_value
+                    else status_counts.get(status_value, 0)
+                ),
+                "url": (
+                    f"{reverse('shop_order_list')}?{query_params.urlencode()}"
+                    if query_params
+                    else reverse("shop_order_list")
+                ),
+            })
+    verified_order_count = min(verified_orders.count(), 50)
+    if verified_view:
+        shop_orders = verified_orders[:50]
+    elif status:
+        shop_orders = shop_orders.filter(status=status)
+
+    legacy_rider_source = verified_orders if verified_view else shop_orders
+    legacy_rider_usernames = {
+        username
+        for username in legacy_rider_source.values_list(
+            "order__assigned_rider",
+            flat=True,
+        ).distinct()
+        if username
+    }
+    legacy_riders_by_username = {
+        rider.user.username: rider
+        for rider in ShopStaff.objects.filter(
+            role="RIDER",
+            user__username__in=legacy_rider_usernames,
+        ).select_related("user__client_profile")
+    }
+    legacy_rider_profiles_by_username = {
+        profile.user.username: profile
+        for profile in ClientProfile.objects.filter(
+            user__username__in=legacy_rider_usernames,
+        ).select_related("user")
+    }
+
+    cod_approval_by_shop_order_id = {}
+    for payment_request in (
+        CODPaymentApprovalRequest.objects.filter(
+            shop_order_id__in=shop_orders.values("pk"),
+            status="PENDING",
+        )
+        .select_related("rider__user")
+        .order_by("-created_at", "-pk")
+    ):
+        cod_approval_by_shop_order_id.setdefault(
+            payment_request.shop_order_id,
+            payment_request,
+        )
+
+    assignable_shop_ids = set(
+        Shop.objects.filter(owner=user).values_list("pk", flat=True)
+    )
+    assignable_shop_ids.update(
+        ShopStaff.objects.filter(
+            shop__in=shops,
+            user=user,
+            is_active=True,
+            can_assign_staff=True,
+        ).values_list("shop_id", flat=True)
+    )
+    assignment_staff_by_shop = defaultdict(lambda: {"RIDER": [], "PACKER": []})
+    for staff_member in (
+        ShopStaff.objects.filter(
+            shop__in=shops,
+            role__in=["RIDER", "PACKER"],
+            is_active=True,
+            is_public_rider=False,
+        )
+        .select_related("user")
+        .order_by("user__username")
+    ):
+        assignment_staff_by_shop[staff_member.shop_id][
+            staff_member.role
+        ].append(staff_member)
+
+    public_rider_enabled = public_rider_service_enabled()
     for shop_order in shop_orders:
+        shop_order.can_manage_assignments = (
+            shop_order.shop_id in assignable_shop_ids
+        )
+        shop_order.available_riders = assignment_staff_by_shop[
+            shop_order.shop_id
+        ]["RIDER"]
+        shop_order.available_packers = assignment_staff_by_shop[
+            shop_order.shop_id
+        ]["PACKER"]
+        shop_order.has_rider_assignment_options = bool(
+            shop_order.available_riders
+            or (
+                shop_order.status == "READY"
+                and public_rider_enabled
+                and shop_order.shop.public_rider_network_enabled
+            )
+            or (
+                public_rider_enabled
+                and shop_order.public_rider_network_requested
+            )
+        )
+        product_keys = set()
+        for item in shop_order.order_items.all():
+            if item.product_id:
+                product_keys.add(("product", item.product_id))
+            elif item.product_shop_id:
+                product_id = item.product_shop.product_id
+                product_keys.add(
+                    ("product", product_id)
+                    if product_id
+                    else ("product-shop", item.product_shop_id)
+                )
+            elif item.sku:
+                product_keys.add(("sku", item.sku.strip().casefold()))
+            else:
+                product_keys.add(("name", item.product_name.strip().casefold()))
+        shop_order.distinct_product_count = len(product_keys)
+        assigned_rider = (
+            shop_order.assigned_rider
+            or legacy_riders_by_username.get(shop_order.order.assigned_rider)
+        )
+        rider_profile = (
+            getattr(assigned_rider.user, "client_profile", None)
+            if assigned_rider
+            else legacy_rider_profiles_by_username.get(
+                shop_order.order.assigned_rider,
+            )
+        )
+        shop_order.rider_display_name = (
+            assigned_rider.user.get_full_name() or assigned_rider.user.username
+            if assigned_rider
+            else shop_order.order.assigned_rider
+        )
+        shop_order.rider_contact_display = (
+            (
+                assigned_rider.mobile_no
+                if assigned_rider and assigned_rider.mobile_no
+                else rider_profile.contact_no
+                if rider_profile and rider_profile.contact_no
+                else shop_order.order.rider_contact_no
+            )
+        )
+        shop_order.cod_payment_approval = cod_approval_by_shop_order_id.get(
+            shop_order.pk,
+        )
         cash_entries = list(shop_order.cash_ledger_entries.all())
         collection = next(
             (
@@ -5950,18 +8907,79 @@ def shop_order_list(request):
             "remaining_amount": remaining,
         })
 
+    rider_cod_handover_groups = list(grouped_handover_totals.values())
+    handover_action_count = sum(
+        group["order_count"]
+        for group in rider_cod_handover_groups
+        if group["can_confirm"]
+    )
+
     return render(
         request,
         "shop/shop_order_list.html",
         {
             "shops": shops,
             "shop_orders": shop_orders,
-            "rider_cod_handover_groups": list(grouped_handover_totals.values()),
+            "rider_cod_handover_groups": rider_cod_handover_groups,
             "order_date_filter": order_date_value,
             "order_number_filter": order_number,
+            "order_status_tabs": order_status_tabs,
+            "abandoned_view": abandoned_view,
+            "abandoned_attempts": abandoned_attempts,
+            "abandoned_checkout_count": abandoned_checkout_count,
+            "abandoned_checkout_timeout_minutes": abandoned_checkout_timeout_minutes,
+            "public_rider_service_enabled": public_rider_enabled,
+            "order_status_options": [
+                ("pending", "Pending"),
+                *OrderStatusHistory.STATUS_CHOICES,
+            ],
+            "selected_order_status": status,
             "can_verify_rider_pickup_otp": can_verify_rider_pickup_otp,
+            "verified_view": verified_view,
+            "verified_order_count": verified_order_count,
+            "handover_view": handover_view,
+            "handover_action_count": handover_action_count,
         }
     )
+
+
+@login_required
+def save_abandoned_checkout_remark(request, attempt_id):
+    if request.method != "POST":
+        return redirect("shop_order_list")
+    if request.session.get("active_portal") == "B2B_CUSTOMER":
+        return redirect("marketplace")
+
+    shops = Shop.objects.filter(owner=request.user) | Shop.objects.filter(
+        staff_members__user=request.user,
+        staff_members__is_active=True,
+        staff_members__is_public_rider=False,
+    )
+    attempt = get_object_or_404(
+        CheckoutAttempt.objects.select_related("shop"),
+        pk=attempt_id,
+        shop__in=shops,
+        order__isnull=True,
+    )
+    remark = request.POST.get("remark", "").strip()
+    if not remark:
+        messages.error(request, "Enter a remark before saving.")
+        return redirect(f"{reverse('shop_order_list')}?view=abandoned")
+    if len(remark) > 1000:
+        messages.error(request, "The remark must be 1000 characters or fewer.")
+        return redirect(f"{reverse('shop_order_list')}?view=abandoned")
+
+    attempt.shop_remark = remark
+    attempt.remark_updated_at = timezone.now()
+    attempt.remark_updated_by = request.user
+    attempt.save(update_fields=[
+        "shop_remark",
+        "remark_updated_at",
+        "remark_updated_by",
+    ])
+    messages.success(request, "Remark saved. The checkout remains in abandoned data.")
+    return redirect(f"{reverse('shop_order_list')}?view=abandoned")
+
 
 @login_required
 def shop_order_detail(request, shop_order_id):
@@ -5986,10 +9004,35 @@ def shop_order_detail(request, shop_order_id):
         id=shop_order_id,
     )
 
+    accepted_by_user = bool(
+        shop_order.rider_accepted_at
+        and shop_order.order.assigned_rider == request.user.username
+    )
+    public_rider_approved = PublicRiderApplication.objects.filter(
+        user=request.user,
+        status=PublicRiderApplication.STATUS_APPROVED,
+    ).exists()
+    active_shop_rider = ShopStaff.objects.filter(
+        shop=shop_order.shop,
+        user=request.user,
+        role="RIDER",
+        is_active=True,
+    ).exists()
     is_assigned_rider = bool(
-        shop_order.assigned_rider_id
-        and shop_order.assigned_rider.user_id == request.user.id
-        and shop_order.assigned_rider.is_active
+        (
+            shop_order.assigned_rider_id
+            and shop_order.assigned_rider.user_id == request.user.id
+            and shop_order.assigned_rider.role == "RIDER"
+            and shop_order.assigned_rider.is_active
+            and (
+                not shop_order.assigned_rider.is_public_rider
+                or public_rider_approved
+            )
+        )
+        or (
+            accepted_by_user
+            and (active_shop_rider or public_rider_approved)
+        )
     )
     if not user_can_access_shop(request.user, shop_order.shop) and not is_assigned_rider:
         raise PermissionDenied
@@ -6000,6 +9043,7 @@ def shop_order_detail(request, shop_order_id):
             shop=shop_order.shop,
             role="RIDER",
             is_active=True,
+            is_public_rider=False,
         )
         .select_related("user")
         .order_by("user__username")
@@ -6029,6 +9073,7 @@ def shop_order_detail(request, shop_order_id):
             shop_order.assigned_rider_id is None
             or shop_order.assigned_rider_id == current_rider.id
         )
+        and not shop_order.public_rider_network_requested
     )
 
     available_packers = (
@@ -6088,6 +9133,7 @@ def shop_order_detail(request, shop_order_id):
     approximate_items = []
     for item in shop_order.order_items.all():
         unit = item.unit or (item.product.unit if item.product_id else "")
+        item.price_unit = unit or "unit"
         item.quantity_unit = _quantity_unit_total(item.quantity, unit)
         item.quantity_unit_calculation = _quantity_unit_calculation(
             item.quantity,
@@ -6105,6 +9151,12 @@ def shop_order_detail(request, shop_order_id):
     cash_collection = shop_order.cash_ledger_entries.filter(
         entry_type="COLLECTION",
     ).select_related("rider__user", "created_by").first()
+    cod_payment_approval = (
+        shop_order.cod_payment_approval_requests
+        .select_related("rider__user", "reviewed_by")
+        .order_by("-created_at", "-pk")
+        .first()
+    )
     cash_handover = shop_order.cash_ledger_entries.filter(
         entry_type="HANDOVER",
     ).select_related("created_by").first()
@@ -6129,6 +9181,18 @@ def shop_order_detail(request, shop_order_id):
             is_active=True,
         ).exists()
     )
+    order_qr_data_uri = _qr_code_data_uri(
+        request.build_absolute_uri(
+            reverse(
+                "shop_order_detail",
+                kwargs={"shop_order_id": shop_order.id},
+            )
+        )
+    )
+    rider_order_is_accepted = bool(
+        shop_order.rider_accepted_at
+        and shop_order.order.assigned_rider
+    )
     can_collect_cod_balance = can_confirm_rider_cash
     can_confirm_rider_pickup = (
         request.user.is_superuser
@@ -6140,6 +9204,15 @@ def shop_order_detail(request, shop_order_id):
         ).filter(
             Q(role="MANAGER") | Q(can_change_order_status=True)
         ).exists()
+    )
+    show_rider_order_qr = bool(
+        shop_order.status in {
+            "READY",
+            "RIDER_ASSIGNED",
+            "PICKED_UP",
+            "OUT_FOR_DELIVERY",
+        }
+        and (shop_order.assigned_rider_id or rider_order_is_accepted)
     )
     customer_name = ClientProfile.objects.filter(
         user__username=shop_order.order.user,
@@ -6186,6 +9259,7 @@ def shop_order_detail(request, shop_order_id):
             "can_receive_returns": can_receive_returns,
             "has_pending_returns": has_pending_returns,
             "cash_collection": cash_collection,
+            "cod_payment_approval": cod_payment_approval,
             "cash_handover": cash_handover,
             "cash_handover_amount": cash_handover_amount,
             "cash_handover_remaining": cash_handover_remaining,
@@ -6217,6 +9291,10 @@ def shop_order_detail(request, shop_order_id):
             ),
             "cod_overpayment_refund": cod_overpayment_refund,
             "can_confirm_rider_cash": can_confirm_rider_cash,
+            "can_review_cod_payment": _can_review_cod_payment(
+                request.user,
+                shop_order.shop,
+            ),
             "cod_balance_payments": shop_order.cod_balance_payments.select_related(
                 "received_by",
             ),
@@ -6246,6 +9324,9 @@ def shop_order_detail(request, shop_order_id):
                 shop_order.shop,
             ),
             "can_confirm_rider_pickup": can_confirm_rider_pickup,
+            "order_qr_data_uri": order_qr_data_uri,
+            "show_rider_order_qr": show_rider_order_qr,
+            "rider_order_is_accepted": rider_order_is_accepted,
         }
     )
 
@@ -6278,7 +9359,7 @@ def confirm_rider_cod_handover_total(request, shop_id, rider_id):
     payment_method = (request.POST.get("payment_method") or "").strip().upper()
     if payment_method not in {"CASH", "STAFF_UPI"}:
         messages.error(request, "Select a valid COD handover type.")
-        return redirect("shop_order_list")
+        return redirect(f"{reverse('shop_order_list')}?view=handover")
 
     eligible_orders = list(
         ShopOrder.objects.select_for_update()
@@ -6331,7 +9412,7 @@ def confirm_rider_cod_handover_total(request, shop_id, rider_id):
         received_amount = Decimal(raw_amount)
     except (InvalidOperation, ValueError):
         messages.error(request, "Enter a valid total COD amount received.")
-        return redirect("shop_order_list")
+        return redirect(f"{reverse('shop_order_list')}?view=handover")
     if (
         not received_amount.is_finite()
         or received_amount <= 0
@@ -6342,7 +9423,7 @@ def confirm_rider_cod_handover_total(request, shop_id, rider_id):
             request,
             f"Enter an amount greater than ₹0.00 and no more than ₹{total_remaining:.2f}.",
         )
-        return redirect("shop_order_list")
+        return redirect(f"{reverse('shop_order_list')}?view=handover")
 
     staff_wallet = None
     if payment_method == "STAFF_UPI":
@@ -6354,7 +9435,7 @@ def confirm_rider_cod_handover_total(request, shop_id, rider_id):
                 request,
                 "The rider's personal-UPI balance is lower than this handover amount.",
             )
-            return redirect("shop_order_list")
+            return redirect(f"{reverse('shop_order_list')}?view=handover")
 
     amount_left = received_amount
     touched_orders = []
@@ -6405,7 +9486,7 @@ def confirm_rider_cod_handover_total(request, shop_id, rider_id):
             request,
             f"Full outstanding COD handover of ₹{received_amount:.2f} confirmed for this rider.",
         )
-    return redirect("shop_order_list")
+    return redirect(f"{reverse('shop_order_list')}?view=handover")
 
 
 @login_required
@@ -6415,17 +9496,18 @@ def edit_rider_cod_collection(request, shop_order_id):
         return HttpResponse("POST required.", status=405)
 
     shop_order = get_object_or_404(
-        ShopOrder.objects.select_for_update().select_related("order"),
+        ShopOrder.objects.select_for_update().select_related(
+            "order",
+            "assigned_rider__user",
+            "assigned_rider__shop",
+        ),
         pk=shop_order_id,
     )
-    rider = ShopStaff.objects.filter(
-        user=request.user,
-        is_active=True,
-        role="RIDER",
-    ).first()
+    rider = _rider_membership_for_order(request.user, shop_order)
     if (
         not rider
-        or shop_order.assigned_rider_id != rider.pk
+        or not shop_order.assigned_rider_id
+        or shop_order.assigned_rider.user_id != request.user.id
         or shop_order.status != "DELIVERED"
     ):
         raise PermissionDenied
@@ -6933,7 +10015,7 @@ def finalize_approximate_weights(request, shop_order_id):
     ]
     if not approximate_items:
         messages.error(request, "This order has no approximate-weight items.")
-        return redirect("shop_order_detail", shop_order_id=shop_order.id)
+        return _shop_order_assignment_redirect(request, shop_order)
 
     final_weights = {}
     for item in approximate_items:
@@ -6942,14 +10024,14 @@ def finalize_approximate_weights(request, shop_order_id):
             weight = Decimal(raw_weight)
         except (TypeError, ValueError, InvalidOperation):
             messages.error(request, f"Enter a valid final weight for {item.product_name}.")
-            return redirect("shop_order_detail", shop_order_id=shop_order.id)
+            return _shop_order_assignment_redirect(request, shop_order)
         if not weight.is_finite() or weight <= 0 or weight > Decimal("9999999.999"):
             messages.error(request, f"Final weight for {item.product_name} must be greater than zero.")
-            return redirect("shop_order_detail", shop_order_id=shop_order.id)
+            return _shop_order_assignment_redirect(request, shop_order)
         quantized_weight = weight.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
         if quantized_weight != weight:
             messages.error(request, f"Final weight for {item.product_name} can have at most 3 decimal places.")
-            return redirect("shop_order_detail", shop_order_id=shop_order.id)
+            return _shop_order_assignment_redirect(request, shop_order)
         final_weights[item.id] = quantized_weight
 
     for item in approximate_items:
@@ -7158,7 +10240,7 @@ def finalize_approximate_weights(request, shop_order_id):
         request,
         f"Final weights saved. Updated order total: ₹{revised_total:.2f}.",
     )
-    return redirect("shop_order_detail", shop_order_id=shop_order.id)
+    return _shop_order_assignment_redirect(request, shop_order)
 
 @login_required
 @transaction.atomic
@@ -7183,6 +10265,13 @@ def shop_order_status(request, shop_order_id):
         shop_order.shop
     ):
         raise PermissionDenied
+
+    if shop_order.status.upper() in {"DELIVERED", "CANCELLED"}:
+        messages.error(
+            request,
+            "Delivered or cancelled orders cannot have their status changed.",
+        )
+        return redirect("shop_order_detail", shop_order_id=shop_order_id)
 
     new_status = request.POST.get("status")
 
@@ -7227,7 +10316,7 @@ def shop_order_status(request, shop_order_id):
         )
         if not refund_ok:
             messages.error(request, refund_message)
-            return redirect("shop_order_detail", shop_order_id=shop_order.id)
+            return _shop_order_assignment_redirect(request, shop_order)
         shop_order.cancellation_source = "SHOP"
         update_fields.append("cancellation_source")
         _restock_cancelled_shop_order(shop_order, request.user)
@@ -7252,7 +10341,8 @@ def shop_order_status(request, shop_order_id):
     )
 
     if new_status == "READY" and old_status != "READY":
-        _notify_riders_order_ready(shop_order)
+        if not _route_ready_order_to_public_riders_if_no_staff(shop_order):
+            _notify_riders_order_ready(shop_order)
 
     messages.success(
         request,
@@ -7337,6 +10427,13 @@ def shop_order_status_update(
     )
 
     current_status = shop_order.status
+
+    if current_status.upper() in {"DELIVERED", "CANCELLED"}:
+        messages.error(
+            request,
+            "Delivered or cancelled orders cannot have their status changed.",
+        )
+        return redirect("shop_order_detail", shop_order_id=shop_order.id)
 
     if not is_owner:
 
@@ -7433,7 +10530,8 @@ def shop_order_status_update(
     )
 
     if new_status == "READY" and current_status != "READY":
-        _notify_riders_order_ready(shop_order)
+        if not _route_ready_order_to_public_riders_if_no_staff(shop_order):
+            _notify_riders_order_ready(shop_order)
 
     if new_status != "CANCELLED":
         shop_order.order.status = new_status
@@ -7490,11 +10588,68 @@ def _notify_riders_order_ready(shop_order):
         for user_id in rider_user_ids
     ])
 
+
+def _route_ready_order_to_public_riders_if_no_staff(shop_order):
+    if shop_order.assigned_rider_id or not public_rider_service_enabled():
+        return False
+
+    has_shop_rider = ShopStaff.objects.filter(
+            shop_id=shop_order.shop_id,
+            role="RIDER",
+            is_active=True,
+            is_public_rider=False,
+        ).exists()
+    if has_shop_rider:
+        return False
+
+    if (
+        not shop_order.shop.public_rider_network_enabled
+        or shop_order.shop.rider_delivery_preference != "PUBLIC"
+    ):
+        shop_order.shop.public_rider_network_enabled = True
+        shop_order.shop.rider_delivery_preference = "PUBLIC"
+        shop_order.shop.save(update_fields=[
+            "public_rider_network_enabled",
+            "rider_delivery_preference",
+            "updated_at",
+        ])
+
+    shop_order.public_rider_network_requested = True
+    shop_order.public_rider_fallback_to_staff = False
+    shop_order.public_rider_offer_user = None
+    shop_order.public_rider_offer_expires_at = None
+    shop_order.public_rider_offer_retry_at = None
+    shop_order.public_rider_offer_attempted_user_ids = []
+    shop_order.public_rider_offer_declined_until = {}
+    shop_order.save(update_fields=[
+        "public_rider_network_requested",
+        "public_rider_fallback_to_staff",
+        "public_rider_offer_user",
+        "public_rider_offer_expires_at",
+        "public_rider_offer_retry_at",
+        "public_rider_offer_attempted_user_ids",
+        "public_rider_offer_declined_until",
+        "updated_at",
+    ])
+    advance_public_rider_offer(shop_order.pk)
+    return True
+
+
+def _shop_order_assignment_redirect(request, shop_order):
+    next_url = (request.POST.get("next") or "").strip()
+    if next_url and url_has_allowed_host_and_scheme(
+        next_url,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        return redirect(next_url)
+    return redirect("shop_order_detail", shop_order_id=shop_order.id)
+
+
 @login_required
-def assign_packer(
-    request,
-    shop_order_id
-):
+def assign_packer(request, shop_order_id):
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
 
     shop_order = get_object_or_404(
         ShopOrder.objects.select_related(
@@ -7560,13 +10715,12 @@ def assign_packer(
         "Packer assigned successfully."
     )
 
-    return redirect(
-        "shop_order_detail",
-        shop_order_id=shop_order.id
-    )
+    return _shop_order_assignment_redirect(request, shop_order)
 
 @login_required
 def assign_rider(request, shop_order_id):
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
 
     shop_order = get_object_or_404(
         ShopOrder.objects.select_related("shop", "order"),
@@ -7588,9 +10742,74 @@ def assign_rider(request, shop_order_id):
 
     rider_id = request.POST.get("rider")
 
+    if rider_id == "PUBLIC":
+        if (
+            not public_rider_service_enabled()
+            or not shop.public_rider_network_enabled
+        ):
+            messages.error(
+                request,
+                "The public rider network is disabled by the site administrator or this shop.",
+            )
+            return _shop_order_assignment_redirect(request, shop_order)
+        if shop_order.status != "READY":
+            messages.error(
+                request,
+                "Only ready orders can be sent to the public rider network.",
+            )
+            return _shop_order_assignment_redirect(request, shop_order)
+
+        shop_order.assigned_rider = None
+        shop_order.rider_accepted_at = None
+        shop_order.public_rider_network_requested = True
+        shop_order.public_rider_fallback_to_staff = False
+        shop_order.public_rider_offer_user = None
+        shop_order.public_rider_offer_expires_at = None
+        shop_order.public_rider_offer_retry_at = None
+        shop_order.public_rider_offer_attempted_user_ids = []
+        shop_order.public_rider_offer_declined_until = {}
+        shop_order.public_rider_route_estimate = {}
+        shop_order.rider_identity_otp = ""
+        shop_order.rider_identity_otp_expires_at = None
+        shop_order.rider_identity_otp_attempts = 0
+        shop_order.rider_order_acknowledged = False
+        shop_order.rider_pickup_otp = ""
+        shop_order.rider_pickup_otp_expires_at = None
+        shop_order.rider_pickup_otp_attempts = 0
+        shop_order.save(update_fields=[
+            "assigned_rider",
+            "rider_accepted_at",
+            "public_rider_network_requested",
+            "public_rider_fallback_to_staff",
+            "public_rider_offer_user",
+            "public_rider_offer_expires_at",
+            "public_rider_offer_retry_at",
+            "public_rider_offer_attempted_user_ids",
+            "public_rider_offer_declined_until",
+            "public_rider_route_estimate",
+            "rider_identity_otp",
+            "rider_identity_otp_expires_at",
+            "rider_identity_otp_attempts",
+            "rider_order_acknowledged",
+            "rider_pickup_otp",
+            "rider_pickup_otp_expires_at",
+            "rider_pickup_otp_attempts",
+            "updated_at",
+        ])
+        if shop_order.order:
+            shop_order.order.assigned_rider = ""
+            shop_order.order.rider_contact_no = ""
+            shop_order.order.save(update_fields=[
+                "assigned_rider",
+                "rider_contact_no",
+                "updated_at",
+            ])
+        messages.success(request, "Order sent to the public rider network.")
+        return _shop_order_assignment_redirect(request, shop_order)
+
     if not rider_id:
         messages.error(request, "Please select a rider.")
-        return redirect("shop_order_detail", shop_order_id=shop_order.id)
+        return _shop_order_assignment_redirect(request, shop_order)
 
     rider = get_object_or_404(
         ShopStaff,
@@ -7598,16 +10817,41 @@ def assign_rider(request, shop_order_id):
         shop=shop,
         role="RIDER",
         is_active=True,
+        is_public_rider=False,
     )
 
     shop_order.assigned_rider = rider
     shop_order.rider_accepted_at = timezone.now()
+    shop_order.public_rider_network_requested = False
+    shop_order.public_rider_fallback_to_staff = False
+    shop_order.public_rider_offer_user = None
+    shop_order.public_rider_offer_expires_at = None
+    shop_order.public_rider_offer_retry_at = None
+    shop_order.public_rider_offer_attempted_user_ids = []
+    shop_order.public_rider_offer_declined_until = {}
+    shop_order.public_rider_route_estimate = {}
+    shop_order.rider_identity_otp = ""
+    shop_order.rider_identity_otp_expires_at = None
+    shop_order.rider_identity_otp_attempts = 0
+    shop_order.rider_order_acknowledged = False
     shop_order.rider_pickup_otp = ""
     shop_order.rider_pickup_otp_expires_at = None
     shop_order.rider_pickup_otp_attempts = 0
     shop_order.save(update_fields=[
         "assigned_rider",
         "rider_accepted_at",
+        "public_rider_network_requested",
+        "public_rider_fallback_to_staff",
+        "public_rider_offer_user",
+        "public_rider_offer_expires_at",
+        "public_rider_offer_retry_at",
+        "public_rider_offer_attempted_user_ids",
+        "public_rider_offer_declined_until",
+        "public_rider_route_estimate",
+        "rider_identity_otp",
+        "rider_identity_otp_expires_at",
+        "rider_identity_otp_attempts",
+        "rider_order_acknowledged",
         "rider_pickup_otp",
         "rider_pickup_otp_expires_at",
         "rider_pickup_otp_attempts",
@@ -7616,11 +10860,378 @@ def assign_rider(request, shop_order_id):
 
     if shop_order.order:
         shop_order.order.assigned_rider = rider.user.username
-        shop_order.order.save(update_fields=["assigned_rider", "updated_at"])
+        shop_order.order.rider_contact_no = rider.mobile_no
+        shop_order.order.save(update_fields=[
+            "assigned_rider",
+            "rider_contact_no",
+            "updated_at",
+        ])
 
     messages.success(request, "Rider assigned successfully.")
 
-    return redirect("shop_order_detail", shop_order_id=shop_order.id)
+    return _shop_order_assignment_redirect(request, shop_order)
+
+
+@login_required
+@transaction.atomic
+def cancel_rider_assignment(request, shop_order_id):
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
+    shop_order = get_object_or_404(
+        ShopOrder.objects.select_for_update().select_related(
+            "shop",
+            "order",
+            "assigned_rider",
+            "assigned_rider__user",
+        ),
+        pk=shop_order_id,
+    )
+    shop = shop_order.shop
+    if shop.owner_id != request.user.id and not ShopStaff.objects.filter(
+        shop=shop,
+        user=request.user,
+        is_active=True,
+        can_assign_staff=True,
+    ).exists():
+        return HttpResponseForbidden("You cannot cancel rider assignments.")
+    if not shop_order.assigned_rider_id:
+        messages.error(request, "There is no assigned rider to cancel.")
+        return redirect("shop_order_detail", shop_order_id=shop_order.pk)
+    if shop_order.status not in {"READY", "RIDER_ASSIGNED"}:
+        messages.error(
+            request,
+            "A rider assignment can only be cancelled before the parcel is picked up.",
+        )
+        return redirect("shop_order_detail", shop_order_id=shop_order.pk)
+
+    assigned_rider = shop_order.assigned_rider
+    was_public_rider = assigned_rider.is_public_rider
+    reason = (request.POST.get("reason") or "").strip()
+    cancellation_time = timezone.now()
+    declined_public_riders = {}
+    if was_public_rider:
+        cooldown_minutes = _delivery_sharing_settings().public_rider_decline_cooldown_minutes
+        declined_public_riders[str(assigned_rider.user_id)] = (
+            cancellation_time
+            + timedelta(minutes=float(cooldown_minutes))
+        ).timestamp()
+    shop_order.assigned_rider = None
+    shop_order.rider_accepted_at = None
+    shop_order.status = "READY"
+    shop_order.rider_pickup_otp = ""
+    shop_order.rider_pickup_otp_expires_at = None
+    shop_order.rider_pickup_otp_attempts = 0
+    shop_order.rider_last_location = {}
+    shop_order.public_rider_route_estimate = {}
+    shop_order.public_rider_offer_user = None
+    shop_order.public_rider_offer_expires_at = None
+    shop_order.public_rider_offer_retry_at = None
+    shop_order.public_rider_offer_attempted_user_ids = []
+    shop_order.public_rider_offer_declined_until = declined_public_riders
+    shop_order.public_rider_network_requested = was_public_rider
+    shop_order.public_rider_fallback_to_staff = bool(
+        not was_public_rider
+        and public_rider_service_enabled()
+        and shop.public_rider_network_enabled
+        and shop.rider_delivery_preference == "PUBLIC"
+    )
+    shop_order.save(update_fields=[
+        "assigned_rider",
+        "rider_accepted_at",
+        "status",
+        "rider_pickup_otp",
+        "rider_pickup_otp_expires_at",
+        "rider_pickup_otp_attempts",
+        "rider_last_location",
+        "public_rider_route_estimate",
+        "public_rider_offer_user",
+        "public_rider_offer_expires_at",
+        "public_rider_offer_retry_at",
+        "public_rider_offer_attempted_user_ids",
+        "public_rider_offer_declined_until",
+        "public_rider_network_requested",
+        "public_rider_fallback_to_staff",
+        "updated_at",
+    ])
+    OrderStatusHistory.objects.create(
+        shop_order=shop_order,
+        status="READY",
+        remark=(
+            f"{'Public' if was_public_rider else 'Shop'} rider assignment "
+            f"cancelled by {request.user.username}"
+            + (f": {reason}" if reason else ".")
+        ),
+    )
+    Notification.objects.create(
+        user=assigned_rider.user,
+        title="Delivery assignment cancelled",
+        message=(
+            f"Your assignment for order "
+            f"{shop_order.shop_order_number or shop_order.order.order_id} "
+            f"from {shop.name} was cancelled by the shop."
+        ),
+        notification_type="ORDER",
+        related_url=reverse("rider_dashboard"),
+    )
+
+    if shop_order.order:
+        other_assigned_rider = (
+            ShopOrder.objects.filter(
+                order=shop_order.order,
+                assigned_rider__isnull=False,
+            )
+            .select_related("assigned_rider__user")
+            .order_by("pk")
+            .first()
+        )
+        if other_assigned_rider:
+            shop_order.order.assigned_rider = (
+                other_assigned_rider.assigned_rider.user.username
+            )
+            shop_order.order.status = "RIDER_ASSIGNED"
+            shop_order.order.save(update_fields=[
+                "assigned_rider",
+                "status",
+                "updated_at",
+            ])
+        else:
+            other_statuses = list(
+                ShopOrder.objects.filter(order=shop_order.order)
+                .exclude(pk=shop_order.pk)
+                .values_list("status", flat=True)
+            )
+            if all(
+                status in {"PLACED", "CONFIRMED", "PACKING", "READY", "CANCELLED"}
+                for status in other_statuses
+            ):
+                shop_order.order.assigned_rider = ""
+                shop_order.order.status = "READY"
+                shop_order.order.save(update_fields=[
+                    "assigned_rider",
+                    "status",
+                    "updated_at",
+                ])
+
+    if was_public_rider:
+        advance_public_rider_offer(shop_order.pk)
+        message = (
+            "Public rider assignment cancelled. The order is back in the "
+            "public rider offer queue."
+        )
+    else:
+        message = (
+            "Shop rider assignment cancelled. The order is ready for "
+            "reassignment by the shop."
+        )
+    messages.success(request, message)
+    return redirect("shop_order_detail", shop_order_id=shop_order.pk)
+
+
+@login_required
+@transaction.atomic
+def save_public_rider_work_area(request):
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
+    if request.session.get("active_portal") != "RIDER":
+        raise PermissionDenied
+    application = PublicRiderApplication.objects.select_for_update().filter(
+        user=request.user,
+        status=PublicRiderApplication.STATUS_APPROVED,
+    ).first()
+    if not application:
+        raise PermissionDenied
+
+    work_areas = []
+    raw_work_areas = (request.POST.get("work_areas") or "").strip()
+    if raw_work_areas:
+        try:
+            parsed_work_areas = json.loads(raw_work_areas)
+        except json.JSONDecodeError:
+            parsed_work_areas = []
+        if isinstance(parsed_work_areas, list):
+            for value in parsed_work_areas:
+                try:
+                    work_areas.append(validate_work_area(value))
+                except ValueError as error:
+                    messages.error(request, str(error) or "Enter valid work areas.")
+                    return redirect("rider_dashboard")
+
+    raw_work_area = (request.POST.get("work_area") or "").strip()
+    if raw_work_area:
+        try:
+            work_area = validate_work_area(json.loads(raw_work_area))
+        except (json.JSONDecodeError, ValueError) as error:
+            messages.error(request, str(error) or "Enter a valid work area.")
+            return redirect("rider_dashboard")
+        if not work_areas:
+            work_areas = [work_area]
+        elif work_area not in work_areas:
+            work_areas.insert(0, work_area)
+        work_area = work_areas[0]
+    elif work_areas:
+        work_area = work_areas[0]
+    else:
+        work_area = {}
+    if work_areas:
+        application.work_areas = work_areas
+    else:
+        application.work_areas = []
+    application.work_area = work_area
+
+    home_area = {}
+    raw_home_area = (request.POST.get("home_area") or "").strip()
+    if raw_home_area:
+        try:
+            candidate_home_area = validate_work_area(json.loads(raw_home_area))
+        except (json.JSONDecodeError, ValueError) as error:
+            messages.error(request, str(error) or "Enter a valid home area.")
+            return redirect("rider_dashboard")
+        if candidate_home_area.get("type") != "circle":
+            messages.error(request, "Home area must be a circular radius around your home location.")
+            return redirect("rider_dashboard")
+        home_area = candidate_home_area
+    application.home_area = home_area
+
+    raw_return_home_enabled = request.POST.get("return_home_enabled")
+    return_home_enabled = str(raw_return_home_enabled).lower() in {
+        "on",
+        "true",
+        "1",
+        "yes",
+    }
+    if return_home_enabled and not home_area:
+        messages.error(
+            request,
+            "Set your home circle before enabling automatic homeward offers.",
+        )
+        return redirect("rider_dashboard")
+    return_home_after_minutes = request.POST.get(
+        "return_home_after_minutes",
+        "120",
+    ).strip()
+    try:
+        parsed_minutes = int(return_home_after_minutes)
+    except (TypeError, ValueError):
+        messages.error(request, "Enter a valid homeward offer duration.")
+        return redirect("rider_dashboard")
+    if not 5 <= parsed_minutes <= 1440:
+        messages.error(
+            request,
+            "Homeward offer duration must be between 5 and 1440 minutes.",
+        )
+        return redirect("rider_dashboard")
+    raw_start_time = request.POST.get("return_home_start_time", "13:00").strip()
+    try:
+        parsed_start_time = datetime.strptime(
+            raw_start_time,
+            "%H:%M",
+        ).time()
+    except (TypeError, ValueError):
+        messages.error(request, "Enter a valid homeward offer start time.")
+        return redirect("rider_dashboard")
+    application.return_home_enabled = return_home_enabled
+    application.return_home_after_minutes = parsed_minutes
+    application.return_home_start_time = parsed_start_time
+
+    application.save(update_fields=[
+        "work_area",
+        "work_areas",
+        "home_area",
+        "return_home_enabled",
+        "return_home_after_minutes",
+        "return_home_start_time",
+        "updated_at",
+    ])
+    messages.success(
+        request,
+        "Public rider work area and home return settings saved."
+        if work_area or home_area
+        else "Public rider work area cleared. You will not receive public offers until you draw a new area.",
+    )
+    return redirect("rider_dashboard")
+
+
+@login_required
+@transaction.atomic
+def set_public_rider_availability(request):
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
+    if request.session.get("active_portal") != "RIDER":
+        raise PermissionDenied
+    application = PublicRiderApplication.objects.select_for_update().filter(
+        user=request.user,
+        status=PublicRiderApplication.STATUS_APPROVED,
+    ).first()
+    if not application:
+        raise PermissionDenied
+
+    is_online = request.POST.get("is_online") == "true"
+    application.is_online = is_online
+    application.save(update_fields=["is_online", "updated_at"])
+
+    if not is_online:
+        pending_orders = list(
+            ShopOrder.objects.select_for_update()
+            .filter(
+                public_rider_offer_user=request.user,
+                public_rider_offer_expires_at__gt=timezone.now(),
+                status="READY",
+                assigned_rider__isnull=True,
+                delivery_completed_at__isnull=True,
+            )
+            .values_list("pk", flat=True)
+        )
+        for shop_order_id in pending_orders:
+            ShopOrder.objects.filter(
+                pk=shop_order_id,
+                public_rider_offer_user=request.user,
+            ).update(
+                public_rider_offer_user=None,
+                public_rider_offer_expires_at=None,
+                public_rider_offer_retry_at=None,
+                updated_at=timezone.now(),
+            )
+            advance_public_rider_offer(shop_order_id)
+
+    messages.success(
+        request,
+        "You are online and can receive new offers."
+        if is_online
+        else "You are offline. You will not receive new delivery offers; active deliveries are unchanged.",
+    )
+    selected_view = request.POST.get("view", "available")
+    if selected_view not in {
+        "available",
+        "active",
+        "verified",
+        "completed",
+        "performance",
+        "handover",
+    }:
+        selected_view = "available"
+    return redirect(f"{reverse('rider_dashboard')}?view={selected_view}")
+
+
+@login_required
+def stop_public_rider_batch_offers(request):
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
+    if request.session.get("active_portal") != "RIDER":
+        raise PermissionDenied
+    updated_applications = PublicRiderApplication.objects.filter(
+        user=request.user,
+        status=PublicRiderApplication.STATUS_APPROVED,
+    ).update(
+        public_rider_batch_accepting=False,
+        updated_at=timezone.now(),
+    )
+    if not updated_applications:
+        raise PermissionDenied
+    messages.success(
+        request,
+        "New delivery offers are paused while your active deliveries are unfinished.",
+    )
+    return redirect(f"{reverse('rider_dashboard')}?view=active")
 
 
 def _settle_order_wallet(order, received_amount=None):
@@ -7722,7 +11333,7 @@ def _record_shared_rider_delivery_payment(shop_order):
     if existing_payment:
         return existing_payment
 
-    shop_coordinates = _get_shop_coordinates(shop_order.shop)
+    shop_coordinates = _get_shop_order_pickup_location(shop_order)
     customer_coordinates = _get_order_delivery_coordinates(shop_order.order)
     if not shop_coordinates or not customer_coordinates:
         logger.error(
@@ -7809,6 +11420,87 @@ def _record_shared_rider_delivery_payment(shop_order):
 
 
 @transaction.atomic
+def _record_public_rider_delivery_fare(shop_order):
+    if (
+        not shop_order.assigned_rider_id
+        or not shop_order.assigned_rider.is_public_rider
+    ):
+        return None
+    existing_transaction = PublicRiderWalletTransaction.objects.filter(
+        shop_order=shop_order,
+        transaction_type=PublicRiderWalletTransaction.DELIVERY_FARE,
+    ).first()
+    if existing_transaction:
+        return existing_transaction
+
+    route_estimate = shop_order.public_rider_route_estimate
+    try:
+        fare = Decimal(str(route_estimate["estimated_pay"])).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+    except (AttributeError, KeyError, TypeError, InvalidOperation, ValueError):
+        logger.error(
+            "Cannot credit public rider fare for shop order %s: "
+            "accepted route estimate is missing or invalid.",
+            shop_order.pk,
+        )
+        return None
+    if not fare.is_finite() or fare < 0 or fare > Decimal("999999999999.99"):
+        logger.error(
+            "Cannot credit public rider fare for shop order %s: "
+            "estimated fare is outside the supported range.",
+            shop_order.pk,
+        )
+        return None
+
+    rider_application = PublicRiderApplication.objects.select_for_update().filter(
+        user_id=shop_order.assigned_rider.user_id,
+    ).first()
+    if not rider_application:
+        logger.error(
+            "Cannot credit public rider fare for shop order %s: "
+            "public rider application is missing.",
+            shop_order.pk,
+        )
+        return None
+
+    rider_wallet, _ = PublicRiderWallet.objects.select_for_update().get_or_create(
+        rider=rider_application,
+    )
+    paying_wallet, _ = ShopWallet.objects.select_for_update().get_or_create(
+        shop=shop_order.shop,
+    )
+    rider_wallet.balance += fare
+    rider_wallet.save(update_fields=["balance", "updated_at"])
+    paying_wallet.balance -= fare
+    paying_wallet.save(update_fields=["balance", "updated_at"])
+
+    PublicRiderWalletTransaction.objects.create(
+        wallet=rider_wallet,
+        shop_order=shop_order,
+        transaction_type=PublicRiderWalletTransaction.DELIVERY_FARE,
+        amount=fare,
+        balance_after=rider_wallet.balance,
+        description=(
+            f"Delivery fare for order {shop_order.order.order_id} "
+            f"from {shop_order.shop.name}."
+        ),
+    )
+    ShopWalletTransaction.objects.create(
+        wallet=paying_wallet,
+        transaction_type="RIDER_FEE",
+        amount=fare,
+        balance_after=paying_wallet.balance,
+        shop_order=shop_order,
+        description=(
+            f"Public rider fare for order {shop_order.order.order_id}."
+        ),
+    )
+    return PublicRiderWalletTransaction.objects.get(shop_order=shop_order)
+
+
+@transaction.atomic
 def _credit_shop_wallet_for_delivery(shop_order):
     shop_order = ShopOrder.objects.select_for_update().select_related("order", "shop").get(pk=shop_order.pk)
     if (
@@ -7821,7 +11513,10 @@ def _credit_shop_wallet_for_delivery(shop_order):
             "shop",
             "assigned_rider__shop",
         ).get(pk=shop_order.pk)
-        _record_shared_rider_delivery_payment(shop_order)
+        if shop_order.assigned_rider.is_public_rider:
+            _record_public_rider_delivery_fare(shop_order)
+        else:
+            _record_shared_rider_delivery_payment(shop_order)
     if (
         shop_order.status != "DELIVERED"
         or not shop_order.delivery_completed_at
@@ -8336,24 +12031,74 @@ def _process_delivery_returns(
     return cash_refund, wallet_refund
 
 
+def _finish_rider_delivery(
+    shop_order,
+    order,
+    rider,
+    *,
+    remark="",
+    rating=None,
+    latitude="",
+    longitude="",
+):
+    if latitude and longitude:
+        try:
+            shop_order.rider_last_location = {
+                "lat": float(latitude),
+                "lng": float(longitude),
+            }
+        except ValueError:
+            pass
+
+    shop_order.delivery_completed_at = timezone.now()
+    shop_order.delivery_remark = remark
+    shop_order.customer_rating = rating
+    shop_order.status = "DELIVERED"
+    shop_order.save(update_fields=[
+        "delivery_completed_at",
+        "delivery_remark",
+        "customer_rating",
+        "rider_last_location",
+        "status",
+        "updated_at",
+    ])
+    _credit_shop_wallet_for_delivery(shop_order)
+
+    if shop_order.order_id:
+        order.status = "DELIVERED"
+        order.save(update_fields=["status", "updated_at"])
+
+    OrderStatusHistory.objects.create(
+        shop_order=shop_order,
+        status="DELIVERED",
+        remark=(remark or "Delivery completed by rider."),
+    )
+    return SharedRiderDeliveryPayment.objects.filter(
+        shop_order=shop_order,
+    ).first()
+
+
 @login_required
 @transaction.atomic
 def complete_delivery(request, shop_order_id):
     if request.method != "POST":
         return redirect("rider_dashboard")
     shop_order = get_object_or_404(
-        ShopOrder.objects.select_for_update().select_related("shop", "order"),
+        ShopOrder.objects.select_for_update().select_related(
+            "shop",
+            "order",
+            "assigned_rider__user",
+        ),
         id=shop_order_id,
     )
     order = Order.objects.select_for_update().get(pk=shop_order.order_id)
-    rider = ShopStaff.objects.filter(
-        user=request.user,
-        is_active=True,
-        role="RIDER",
-    ).select_related("shop").first()
+    rider = _rider_membership_for_order(request.user, shop_order)
     if not rider:
         raise PermissionDenied
-    if shop_order.assigned_rider_id and shop_order.assigned_rider_id != rider.id:
+    if (
+        shop_order.assigned_rider_id
+        and shop_order.assigned_rider.user_id != request.user.id
+    ):
         messages.error(request, "This order is assigned to another rider.")
         return redirect("rider_dashboard")
     if (
@@ -8451,6 +12196,9 @@ def complete_delivery(request, shop_order_id):
     cod_payment_method = (
         request.POST.get("cod_payment_method") or "CASH"
     ).strip().upper()
+    prepare_shop_upi_payment = (
+        request.POST.get("prepare_shop_upi_payment") == "1"
+    )
     if order.payment_type.upper() == "COD" and cod_payment_method not in {
         "CASH",
         "SHOP_UPI",
@@ -8458,7 +12206,11 @@ def complete_delivery(request, shop_order_id):
     }:
         messages.error(request, "Select a valid COD payment method.")
         return redirect("rider_dashboard")
-    if order.payment_type.upper() == "COD" and received_amount is not None:
+    if (
+        order.payment_type.upper() == "COD"
+        and received_amount is not None
+        and cod_payment_method != "SHOP_UPI"
+    ):
         try:
             parsed_received_amount = Decimal(received_amount.strip())
         except (AttributeError, InvalidOperation, ValueError):
@@ -8476,6 +12228,44 @@ def complete_delivery(request, shop_order_id):
         if not shop_order.shop.upi_id:
             messages.error(request, "This shop has not configured a UPI ID.")
             return redirect("rider_dashboard")
+    if prepare_shop_upi_payment and (
+        order.payment_type.upper() != "COD"
+        or cod_payment_method != "SHOP_UPI"
+    ):
+        messages.error(request, "Select the shop UPI payment option to prepare its QR.")
+        return redirect("rider_dashboard")
+    active_cod_payment_request = (
+        CODPaymentApprovalRequest.objects.select_for_update()
+        .filter(
+            shop_order=shop_order,
+            status__in=CODPaymentApprovalRequest.ACTIVE_STATUSES,
+        )
+        .first()
+    )
+    if active_cod_payment_request:
+        messages.info(
+            request,
+            "This order already has a shop UPI QR or is waiting for shop approval.",
+        )
+        return redirect(
+            f"{reverse('rider_dashboard')}?view=active#order-{shop_order.pk}"
+        )
+    if (
+        order.payment_type.upper() == "COD"
+        and cod_payment_method == "SHOP_UPI"
+        and not prepare_shop_upi_payment
+    ):
+        messages.error(
+            request,
+            "Prepare the unique shop UPI QR and get shop approval before completing delivery.",
+        )
+        return redirect(
+            f"{reverse('rider_dashboard')}?view=active#order-{shop_order.pk}"
+        )
+    if prepare_shop_upi_payment and request.POST.get("return_to_shop") == "1":
+        messages.error(request, "A returned order cannot start a shop UPI payment.")
+        return redirect("rider_dashboard")
+
     if order.payment_type.upper() == "COD" and cod_payment_method == "STAFF_UPI":
         if (
             not shop_order.assigned_rider_id
@@ -8525,6 +12315,79 @@ def complete_delivery(request, shop_order_id):
             return redirect(
                 f"{reverse('rider_dashboard')}?view=active#order-{shop_order.id}"
             )
+    if prepare_shop_upi_payment:
+        original_cod_amount = order.payment_amount
+        try:
+            with transaction.atomic():
+                _process_delivery_returns(
+                    shop_order,
+                    order,
+                    shop_orders,
+                    order_items,
+                    request.POST,
+                )
+                settlement_amount = max(
+                    Decimal("0.00"),
+                    order.payment_amount,
+                )
+                return_quantities = {
+                    str(item.id): item.returned_quantity
+                    for item in shop_order_items
+                }
+                transaction.set_rollback(True)
+        except ValueError as error:
+            messages.error(request, str(error))
+            return redirect("rider_dashboard")
+
+        order.refresh_from_db()
+        for item in order_items:
+            item.refresh_from_db()
+        if settlement_amount <= 0:
+            messages.error(
+                request,
+                "There is no COD balance due after the returns. Complete delivery without a payment QR.",
+            )
+            return redirect(
+                f"{reverse('rider_dashboard')}?view=active#order-{shop_order.pk}"
+            )
+        locked_shop = Shop.objects.select_for_update().get(pk=shop_order.shop_id)
+        qr_amount = _next_cod_upi_qr_amount(locked_shop, settlement_amount)
+        if qr_amount is None:
+            messages.error(
+                request,
+                "No unique shop UPI amount is available within ₹1 of this balance. Ask shop staff to approve another pending payment first.",
+            )
+            return redirect(
+                f"{reverse('rider_dashboard')}?view=active#order-{shop_order.pk}"
+            )
+        rating_value = request.POST.get("rating")
+        try:
+            rating = int(rating_value) if rating_value else None
+        except (TypeError, ValueError):
+            rating = None
+        if rating is not None and not 1 <= rating <= 5:
+            rating = None
+        payment_request = CODPaymentApprovalRequest.objects.create(
+            shop_order=shop_order,
+            shop=locked_shop,
+            rider=rider,
+            qr_amount=qr_amount,
+            settlement_amount=settlement_amount,
+            original_cod_amount=original_cod_amount,
+            return_quantities=return_quantities,
+            upi_id=locked_shop.upi_id,
+            delivery_remark=request.POST.get("remark", "").strip(),
+            customer_rating=rating,
+        )
+        queue_order_update(shop_order)
+        messages.success(
+            request,
+            f"Shop UPI QR prepared for ₹{qr_amount:.2f}. After the customer pays, request shop approval. The order balance after returns is ₹{settlement_amount:.2f}.",
+        )
+        return redirect(
+            f"{reverse('rider_dashboard')}?view=active#order-{shop_order.pk}"
+        )
+
     try:
         _process_delivery_returns(
             shop_order,
@@ -8547,14 +12410,6 @@ def complete_delivery(request, shop_order_id):
     except (TypeError, ValueError):
         rating = None
 
-    lat = request.POST.get("latitude")
-    lng = request.POST.get("longitude")
-    if lat and lng:
-        try:
-            shop_order.rider_last_location = {"lat": float(lat), "lng": float(lng)}
-        except ValueError:
-            pass
-
     cod_cash_collected = _settle_order_wallet(order, received_amount)
     if order.payment_type.upper() == "COD":
         actual_cod_cash_received = (
@@ -8571,22 +12426,15 @@ def complete_delivery(request, shop_order_id):
         overpayment_refund = Decimal("0.00")
 
     if order.payment_type.upper() == "COD" and actual_cod_cash_received > 0:
-        if cod_payment_method != "SHOP_UPI":
-            RiderCashLedgerEntry.objects.create(
-                rider=rider,
-                shop=shop_order.shop,
-                shop_order=shop_order,
-                entry_type="COLLECTION",
-                amount=actual_cod_cash_received,
-                payment_method=cod_payment_method,
-                created_by=request.user,
-            )
-        if cod_payment_method == "SHOP_UPI":
-            CODBalancePayment.objects.create(
-                shop_order=shop_order,
-                amount=actual_cod_cash_received,
-                received_by=request.user,
-            )
+        RiderCashLedgerEntry.objects.create(
+            rider=rider,
+            shop=shop_order.shop,
+            shop_order=shop_order,
+            entry_type="COLLECTION",
+            amount=actual_cod_cash_received,
+            payment_method=cod_payment_method,
+            created_by=request.user,
+        )
         if cod_payment_method == "STAFF_UPI":
             staff_wallet, _ = ShopStaffWallet.objects.select_for_update().get_or_create(
                 staff=rider,
@@ -8632,21 +12480,15 @@ def complete_delivery(request, shop_order_id):
         )
         order.save(update_fields=["payment_status", "updated_at"])
 
-    shop_order.delivery_completed_at = timezone.now()
-    shop_order.delivery_remark = remark
-    shop_order.customer_rating = rating
-    shop_order.status = "DELIVERED"
-    shop_order.save(update_fields=["delivery_completed_at", "delivery_remark", "customer_rating", "rider_last_location", "status", "updated_at"])
-    _credit_shop_wallet_for_delivery(shop_order)
-    shared_rider_payment = SharedRiderDeliveryPayment.objects.filter(
-        shop_order=shop_order,
-    ).first()
-
-    if shop_order.order:
-        order.status = "DELIVERED"
-        order.save(update_fields=["status", "updated_at"])
-
-    OrderStatusHistory.objects.create(shop_order=shop_order, status="DELIVERED", remark=(remark or "Delivery completed by rider."))
+    shared_rider_payment = _finish_rider_delivery(
+        shop_order,
+        order,
+        rider,
+        remark=remark,
+        rating=rating,
+        latitude=request.POST.get("latitude"),
+        longitude=request.POST.get("longitude"),
+    )
 
     if shop_order.assigned_rider_id and shop_order.assigned_rider.shop_id != shop_order.shop_id:
         if shared_rider_payment:
@@ -8663,6 +12505,25 @@ def complete_delivery(request, shop_order_id):
                 "the shop or customer delivery coordinates are unavailable. "
                 "Ask the shop owner to correct the location and contact support.",
             )
+    elif shop_order.assigned_rider_id and shop_order.assigned_rider.is_public_rider:
+        public_rider_fare = PublicRiderWalletTransaction.objects.filter(
+            shop_order=shop_order,
+            transaction_type=PublicRiderWalletTransaction.DELIVERY_FARE,
+        ).first()
+        if public_rider_fare:
+            messages.success(
+                request,
+                "Delivery completed. "
+                f"₹{public_rider_fare.amount:.2f} rider fare was credited "
+                "to your public rider wallet.",
+            )
+        else:
+            messages.warning(
+                request,
+                "Delivery completed, but rider fare could not be credited "
+                "because this order has no valid saved acceptance estimate. "
+                "Contact the shop owner to review the order.",
+            )
     else:
         messages.success(request, "Delivery completed successfully.")
     return redirect(
@@ -8672,22 +12533,266 @@ def complete_delivery(request, shop_order_id):
 
 @login_required
 @transaction.atomic
+def request_cod_payment_approval(request, payment_request_id):
+    # existing function continues as before
+    
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
+
+    payment_request = get_object_or_404(
+        CODPaymentApprovalRequest.objects.select_for_update().select_related(
+            "shop_order",
+            "shop_order__order",
+            "shop",
+            "rider",
+            "rider__user",
+        ),
+        pk=payment_request_id,
+        rider__user=request.user,
+        rider__is_active=True,
+        rider__role="RIDER",
+    )
+    rider = payment_request.rider
+    shop_order = ShopOrder.objects.select_for_update().get(
+        pk=payment_request.shop_order_id,
+    )
+    if payment_request.status == "PENDING":
+        messages.info(request, "This payment has already been sent to the shop for approval.")
+    elif (
+        payment_request.status != "QR_READY"
+        or shop_order.status != "OUT_FOR_DELIVERY"
+        or shop_order.assigned_rider_id != rider.pk
+    ):
+        messages.error(request, "This shop UPI payment request is no longer active.")
+    else:
+        payment_request.status = "PENDING"
+        payment_request.save(update_fields=["status", "updated_at"])
+        queue_order_update(shop_order)
+        _notify_cod_payment_reviewers(payment_request)
+        messages.success(
+            request,
+            "Payment confirmation sent to the shop. Keep the order open until shop staff approves it.",
+        )
+    return redirect(
+        f"{reverse('rider_dashboard')}?view=active#order-{shop_order.pk}"
+    )
+
+
+@login_required
+@transaction.atomic
+def cancel_cod_payment_qr(request, payment_request_id):
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
+
+    payment_request = get_object_or_404(
+        CODPaymentApprovalRequest.objects.select_for_update().select_related("rider"),
+        pk=payment_request_id,
+        rider__user=request.user,
+        rider__is_active=True,
+        rider__role="RIDER",
+        status="QR_READY",
+    )
+    rider = payment_request.rider
+    shop_order = ShopOrder.objects.select_for_update().get(
+        pk=payment_request.shop_order_id,
+    )
+    if (
+        shop_order.status != "OUT_FOR_DELIVERY"
+        or shop_order.assigned_rider_id != rider.pk
+    ):
+        raise PermissionDenied
+    payment_request.status = "CANCELLED"
+    payment_request.save(update_fields=["status", "updated_at"])
+    queue_order_update(shop_order)
+    messages.success(request, "The unused shop UPI QR was cancelled.")
+    return redirect(
+        f"{reverse('rider_dashboard')}?view=active#order-{shop_order.pk}"
+    )
+
+
+def _review_cod_payment_request(request, payment_request_id, *, approve):
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
+
+    payment_request = get_object_or_404(
+        CODPaymentApprovalRequest.objects.select_for_update().select_related(
+            "shop",
+            "shop_order",
+            "shop_order__order",
+            "rider",
+            "rider__user",
+        ),
+        pk=payment_request_id,
+    )
+    if not _can_review_cod_payment(request.user, payment_request.shop):
+        raise PermissionDenied
+
+    shop_order = ShopOrder.objects.select_for_update().get(
+        pk=payment_request.shop_order_id,
+    )
+    order = Order.objects.select_for_update().get(pk=shop_order.order_id)
+    if payment_request.status != "PENDING":
+        messages.error(request, "This COD payment is no longer awaiting approval.")
+        return redirect("shop_order_detail", shop_order_id=shop_order.pk)
+
+    if not approve:
+        payment_request.status = "REJECTED"
+        payment_request.reviewed_by = request.user
+        payment_request.reviewed_at = timezone.now()
+        payment_request.save(update_fields=[
+            "status",
+            "reviewed_by",
+            "reviewed_at",
+            "updated_at",
+        ])
+        queue_order_update(shop_order)
+        _notify_cod_payment_rider(
+            payment_request,
+            "Shop rejected COD payment confirmation",
+            (
+                f"The shop did not approve the ₹{payment_request.qr_amount:.2f} "
+                f"UPI payment for order "
+                f"{shop_order.shop_order_number or order.order_id}. "
+                "Contact the shop before trying again."
+            ),
+        )
+        messages.warning(request, "Payment confirmation rejected; the rider was notified.")
+        return redirect("shop_order_detail", shop_order_id=shop_order.pk)
+
+    if (
+        shop_order.status != "OUT_FOR_DELIVERY"
+        or shop_order.assigned_rider_id != payment_request.rider_id
+        or order.payment_type.upper() != "COD"
+        or order.payment_amount != payment_request.original_cod_amount
+    ):
+        messages.error(
+            request,
+            "The order or COD balance changed after the QR was created. Reject this request and have the rider prepare a new QR.",
+        )
+        return redirect("shop_order_detail", shop_order_id=shop_order.pk)
+
+    if not ClientProfile.objects.filter(user__username=order.user).exists():
+        messages.error(
+            request,
+            "The customer's wallet profile is unavailable, so the payment cannot be settled safely.",
+        )
+        return redirect("shop_order_detail", shop_order_id=shop_order.pk)
+
+    shop_orders = list(
+        ShopOrder.objects.select_for_update()
+        .filter(order=order)
+        .select_related("shop")
+        .order_by("id")
+    )
+    order_items = list(
+        OrderItem.objects.select_for_update()
+        .filter(shop_order__order=order)
+        .select_related("shop_order__shop", "product")
+        .order_by("id")
+    )
+    return_quantities = {
+        f"returned_quantity_{item_id}": quantity
+        for item_id, quantity in payment_request.return_quantities.items()
+    }
+    try:
+        _process_delivery_returns(
+            shop_order,
+            order,
+            shop_orders,
+            order_items,
+            return_quantities,
+        )
+    except ValueError as error:
+        messages.error(request, str(error))
+        return redirect("shop_order_detail", shop_order_id=shop_order.pk)
+    if order.payment_amount != payment_request.settlement_amount:
+        messages.error(
+            request,
+            "The order balance changed while applying the returned quantities. Reject this request and have the rider prepare a new QR.",
+        )
+        return redirect("shop_order_detail", shop_order_id=shop_order.pk)
+
+    applied_amount = _settle_order_wallet(order, payment_request.settlement_amount)
+    if (
+        applied_amount != payment_request.settlement_amount
+        or order.payment_amount != Decimal("0.00")
+    ):
+        raise RuntimeError(
+            "Approved shop UPI payment did not reconcile with the COD balance."
+        )
+    CODBalancePayment.objects.create(
+        shop_order=shop_order,
+        amount=payment_request.qr_amount,
+        received_by=payment_request.rider.user,
+    )
+    payment_request.status = "APPROVED"
+    payment_request.reviewed_by = request.user
+    payment_request.reviewed_at = timezone.now()
+    payment_request.save(update_fields=[
+        "status",
+        "reviewed_by",
+        "reviewed_at",
+        "updated_at",
+    ])
+    shared_rider_payment = _finish_rider_delivery(
+        shop_order,
+        order,
+        payment_request.rider,
+        remark=payment_request.delivery_remark,
+        rating=payment_request.customer_rating,
+    )
+    _notify_cod_payment_rider(
+        payment_request,
+        "Shop approved COD payment",
+        (
+            f"The shop approved ₹{payment_request.qr_amount:.2f} for order "
+            f"{shop_order.shop_order_number or order.order_id}; the full "
+            f"₹{payment_request.settlement_amount:.2f} balance is settled. "
+            "Delivery is complete."
+        ),
+    )
+    if shared_rider_payment:
+        messages.success(
+            request,
+            f"Payment approved and delivery completed. Shared-rider pay of ₹{shared_rider_payment.amount:.2f} was transferred.",
+        )
+    else:
+        messages.success(request, "Payment approved and delivery completed.")
+    return redirect("shop_order_detail", shop_order_id=shop_order.pk)
+
+
+@login_required
+@transaction.atomic
+def approve_cod_payment(request, payment_request_id):
+    return _review_cod_payment_request(
+        request,
+        payment_request_id,
+        approve=True,
+    )
+
+
+@login_required
+@transaction.atomic
+def reject_cod_payment(request, payment_request_id):
+    return _review_cod_payment_request(
+        request,
+        payment_request_id,
+        approve=False,
+    )
+
+
+@login_required
+@transaction.atomic
 def edit_completed_delivery_location(request, shop_order_id):
     if request.method != "POST":
         return HttpResponse("POST required.", status=405)
 
-    rider = ShopStaff.objects.filter(
-        user=request.user,
-        is_active=True,
-        role="RIDER",
-    ).first()
-    if not rider:
-        raise PermissionDenied
-
     shop_order = get_object_or_404(
         ShopOrder.objects.select_for_update().select_related("order"),
         pk=shop_order_id,
-        assigned_rider=rider,
+        assigned_rider__user=request.user,
+        assigned_rider__is_active=True,
+        assigned_rider__role="RIDER",
         delivery_completed_at__isnull=False,
     )
     if shop_order.status not in {"DELIVERED", "COMPLETED"}:
@@ -8849,19 +12954,147 @@ def accept_rider_order(request, shop_order_id):
         child for child in order_shop_orders if child.pk == requested_order.pk
     )
 
-    rider_membership = ShopStaff.objects.filter(
-        user=request.user,
-        is_active=True,
-        role="RIDER",
-    ).select_for_update().select_related("shop").first()
-
+    public_rider = None
+    if request.session.get("active_portal") == "RIDER":
+        public_rider = PublicRiderApplication.objects.select_for_update().filter(
+            user=request.user,
+            status=PublicRiderApplication.STATUS_APPROVED,
+        ).first()
+        if not public_rider:
+            raise PermissionDenied
+    if public_rider:
+        if not uses_public_rider_network(shop_order):
+            raise PermissionDenied
+        rider_membership = ShopStaff.objects.select_for_update().filter(
+            user=request.user,
+            shop=shop_order.shop,
+        ).first()
+        if rider_membership and (
+            not rider_membership.is_active
+            or rider_membership.role != "RIDER"
+        ):
+            raise PermissionDenied
+        if rider_membership is None:
+            rider_membership = ShopStaff.objects.create(
+                user=request.user,
+                shop=shop_order.shop,
+                role="RIDER",
+                mobile_no=public_rider.phone,
+                is_active=True,
+                is_public_rider=True,
+            )
+    else:
+        rider_membership = ShopStaff.objects.filter(
+            user=request.user,
+            is_active=True,
+            role="RIDER",
+            is_public_rider=False,
+        ).select_for_update().select_related("shop").first()
     if not rider_membership:
         raise PermissionDenied
+    if (
+        public_rider
+        and not public_rider.is_online
+        and not shop_order.assigned_rider_id
+    ):
+        messages.info(
+            request,
+            "You are offline. Go online before accepting new delivery offers.",
+        )
+        return redirect("rider_dashboard")
+    if public_rider and request.POST.get("action") == "decline":
+        if shop_order.public_rider_offer_user_id != request.user.id:
+            raise PermissionDenied
+        public_rider.public_rider_offer_cooldown_until = (
+            timezone.now()
+            + timedelta(seconds=PUBLIC_RIDER_OFFER_COOLDOWN_SECONDS)
+        )
+        public_rider.save(update_fields=[
+            "public_rider_offer_cooldown_until",
+            "updated_at",
+        ])
+        advance_public_rider_offer(
+            shop_order.pk,
+            declined_user_id=request.user.id,
+        )
+        messages.info(
+            request,
+            "You declined this delivery. Another rider can be notified after "
+            f"at least {PUBLIC_RIDER_OFFER_COOLDOWN_SECONDS} seconds if one "
+            "is eligible. Each offer has its own randomized acceptance timer.",
+        )
+        return redirect("rider_dashboard")
+    if public_rider and (
+        shop_order.public_rider_offer_user_id != request.user.id
+        or not shop_order.public_rider_offer_expires_at
+        or shop_order.public_rider_offer_expires_at <= timezone.now()
+    ):
+        advance_public_rider_offer(shop_order.pk)
+        messages.info(
+            request,
+            "This delivery offer expired or is no longer assigned to you. "
+            "Another public rider can be notified after the "
+            f"{PUBLIC_RIDER_OFFER_COOLDOWN_SECONDS}-second transfer gap.",
+        )
+        return redirect("rider_dashboard")
+    if public_rider and not any(
+        rider.user_id == request.user.id
+        for rider in eligible_public_riders(shop_order)
+    ):
+        messages.info(
+            request,
+            "This order is outside your work area or batch limits, or you have already started pickup.",
+        )
+        return redirect("rider_dashboard")
+    public_rider_route_estimate = None
+    if public_rider:
+        acceptance_location = _public_rider_acceptance_location(
+            request,
+            rider_membership,
+        )
+        if not acceptance_location:
+            messages.error(
+                request,
+                "Allow location access and wait for your location to update before accepting, so the pickup distance and rider pay can be recorded.",
+            )
+            return redirect("rider_dashboard")
+        public_rider_route_estimate = _public_rider_route_estimate(
+            shop_order,
+            acceptance_location,
+            _delivery_sharing_settings(),
+        )
+        if not public_rider_route_estimate or public_rider_route_estimate["estimated_pay"] is None:
+            messages.error(
+                request,
+                "The local road route or rider location is unavailable. Ask the shop or administrator to check the uploaded road network and order locations before accepting.",
+            )
+            return redirect("rider_dashboard")
+        public_rider_route_estimate["rider_location"] = acceptance_location
+    if not public_rider:
+        if (
+            shop_order.public_rider_network_requested
+            and not shop_order.public_rider_fallback_to_staff
+        ):
+            raise PermissionDenied
+        if (
+            shop_order.shop.rider_delivery_preference != "STAFF"
+            and not shop_order.public_rider_fallback_to_staff
+            and shop_order.assigned_rider_id != rider_membership.id
+        ):
+            raise PermissionDenied
 
-    group_shop_ids = set(_shared_rider_group_shop_ids(rider_membership))
-    last_accepted_shop = _rider_last_accepted_shop(rider_membership)
+    group_shop_ids = (
+        set()
+        if public_rider
+        else set(_shared_rider_group_shop_ids(rider_membership))
+    )
+    last_accepted_shop = (
+        None
+        if public_rider
+        else _rider_last_accepted_shop(rider_membership)
+    )
     shared_rider_radius_km = _shared_rider_assignment_radius_km()
-    if not _rider_can_accept_shop_orders(
+    if not public_rider and not _rider_can_accept_shop_orders(
         rider_membership,
         shop_order.shop,
         origin_shop=last_accepted_shop,
@@ -8875,7 +13108,7 @@ def accept_rider_order(request, shop_order_id):
         return redirect("rider_dashboard")
     if shop_order.assigned_rider_id and shop_order.assigned_rider_id != rider_membership.id:
         raise PermissionDenied
-    if (
+    if not public_rider and (
         shop_order.shop_id != rider_membership.shop_id
         and _shop_order_ready_at(shop_order) + SHARED_RIDER_OFFER_DELAY > timezone.now()
     ):
@@ -8886,16 +13119,37 @@ def accept_rider_order(request, shop_order_id):
         )
         return redirect("rider_dashboard")
 
-    active_loads = [
-        _shop_order_estimated_load(active_order)
-        for active_order in ShopOrder.objects.select_for_update().filter(
-            assigned_rider=rider_membership,
+    active_assigned_orders = list(
+        ShopOrder.objects.select_for_update().filter(
+            Q(assigned_rider__user=request.user)
+            if public_rider
+            else Q(assigned_rider=rider_membership),
             status__in=["READY", "RIDER_ASSIGNED", "PICKED_UP", "OUT_FOR_DELIVERY"],
             delivery_completed_at__isnull=True,
         ).exclude(
             status__in=["DELIVERED", "COMPLETED", "CANCELLED"],
         ).prefetch_related("order_items")
+    )
+    active_loads = [
+        _shop_order_estimated_load(active_order)
+        for active_order in active_assigned_orders
     ]
+    has_active_public_orders = bool(active_assigned_orders) if public_rider else False
+    if public_rider and has_active_public_orders and (
+        not public_rider.public_rider_batch_accepting
+        or not public_rider.public_rider_batch_started_at
+        or any(
+            active.status not in {"READY", "RIDER_ASSIGNED"}
+            for active in active_assigned_orders
+        )
+        or public_rider.public_rider_batch_started_at
+        + timedelta(minutes=5) <= timezone.now()
+    ):
+        messages.info(
+            request,
+            "Your five-minute order collection window is closed. Finish all active deliveries before accepting new offers.",
+        )
+        return redirect("rider_dashboard")
     current_weight = sum(
         (load["weight_kg"] for load in active_loads),
         Decimal("0.00"),
@@ -8921,8 +13175,8 @@ def accept_rider_order(request, shop_order_id):
     projected_volume = current_volume + requested_load["volume_cubic_ft"]
     accepted_at = timezone.now()
     orders_to_assign = [shop_order]
-    accepted_shop_location = _get_shop_coordinates(shop_order.shop)
-    if accepted_shop_location:
+    accepted_shop_location = _get_shop_order_pickup_location(shop_order)
+    if accepted_shop_location and not public_rider:
         for sibling_order in order_shop_orders:
             if (
                 sibling_order.pk == shop_order.pk
@@ -8969,6 +13223,73 @@ def accept_rider_order(request, shop_order_id):
         order_to_assign.rider_accepted_at = (
             order_to_assign.rider_accepted_at or accepted_at
         )
+        order_to_assign.public_rider_offer_user = None
+        order_to_assign.public_rider_offer_expires_at = None
+        order_to_assign.public_rider_offer_retry_at = None
+        order_to_assign.public_rider_offer_attempted_user_ids = []
+        order_to_assign.public_rider_offer_declined_until = {}
+        if public_rider and order_to_assign.pk == shop_order.pk:
+            order_to_assign.public_rider_route_estimate = {
+                "rider_location": public_rider_route_estimate["rider_location"],
+                "rider_to_pickup_km": (
+                    str(public_rider_route_estimate["rider_to_pickup_km"])
+                    if public_rider_route_estimate["rider_to_pickup_km"] is not None
+                    else None
+                ),
+                "pickup_to_delivery_km": (
+                    str(public_rider_route_estimate["pickup_to_delivery_km"])
+                    if public_rider_route_estimate["pickup_to_delivery_km"] is not None
+                    else None
+                ),
+                "total_distance_km": (
+                    str(public_rider_route_estimate["total_distance_km"])
+                    if public_rider_route_estimate["total_distance_km"] is not None
+                    else None
+                ),
+                "straight_line_rider_to_pickup_km": (
+                    str(
+                        public_rider_route_estimate[
+                            "straight_line_rider_to_pickup_km"
+                        ],
+                    )
+                    if public_rider_route_estimate[
+                        "straight_line_rider_to_pickup_km"
+                    ] is not None
+                    else None
+                ),
+                "straight_line_pickup_to_delivery_km": (
+                    str(
+                        public_rider_route_estimate[
+                            "straight_line_pickup_to_delivery_km"
+                        ],
+                    )
+                    if public_rider_route_estimate[
+                        "straight_line_pickup_to_delivery_km"
+                    ] is not None
+                    else None
+                ),
+                "estimated_pay_distance_km": str(
+                    public_rider_route_estimate["estimated_pay_distance_km"],
+                ),
+                "distance_calculation_method": (
+                    public_rider_route_estimate["distance_calculation_method"]
+                ),
+                "base_fare": str(public_rider_route_estimate["base_fare"]),
+                "rate_per_km": str(public_rider_route_estimate["rate_per_km"]),
+                "estimated_pay": str(
+                    public_rider_route_estimate["estimated_pay"],
+                ),
+                "item_count": public_rider_route_estimate["item_count"],
+                "weight_kg": str(public_rider_route_estimate["weight_kg"]),
+                "volume_cubic_ft": str(
+                    public_rider_route_estimate["volume_cubic_ft"],
+                ),
+                "calculated_at": public_rider_route_estimate["calculated_at"],
+            }
+        if not public_rider:
+            order_to_assign.public_rider_network_requested = False
+            order_to_assign.public_rider_fallback_to_staff = False
+            order_to_assign.public_rider_route_estimate = {}
         order_to_assign.rider_pickup_otp = ""
         order_to_assign.rider_pickup_otp_expires_at = None
         order_to_assign.rider_pickup_otp_attempts = 0
@@ -8976,6 +13297,14 @@ def accept_rider_order(request, shop_order_id):
             "assigned_rider",
             "status",
             "rider_accepted_at",
+            "public_rider_offer_user",
+            "public_rider_offer_expires_at",
+            "public_rider_offer_retry_at",
+            "public_rider_offer_attempted_user_ids",
+            "public_rider_offer_declined_until",
+            "public_rider_network_requested",
+            "public_rider_fallback_to_staff",
+            "public_rider_route_estimate",
             "rider_pickup_otp",
             "rider_pickup_otp_expires_at",
             "rider_pickup_otp_attempts",
@@ -8990,10 +13319,32 @@ def accept_rider_order(request, shop_order_id):
                 else "Assigned to the rider who accepted a nearby shop delivery for this customer order."
             ),
         )
+    if public_rider and not has_active_public_orders:
+        public_rider.public_rider_batch_accepting = True
+        public_rider.public_rider_batch_started_at = accepted_at
+    if public_rider:
+        public_rider.public_rider_offer_cooldown_until = (
+            accepted_at
+            + timedelta(seconds=PUBLIC_RIDER_OFFER_COOLDOWN_SECONDS)
+        )
+        public_rider.save(update_fields=[
+            "public_rider_batch_accepting",
+            "public_rider_batch_started_at",
+            "public_rider_offer_cooldown_until",
+            "updated_at",
+        ])
     if shop_order.order:
         shop_order.order.assigned_rider = rider_membership.user.username
+        shop_order.order.rider_contact_no = (
+            public_rider.phone if public_rider else rider_membership.mobile_no
+        )
         shop_order.order.status = "RIDER_ASSIGNED"
-        shop_order.order.save(update_fields=["assigned_rider", "status", "updated_at"])
+        shop_order.order.save(update_fields=[
+            "assigned_rider",
+            "rider_contact_no",
+            "status",
+            "updated_at",
+        ])
 
     assigned_sibling_count = len(orders_to_assign) - 1
     if assigned_sibling_count:
@@ -9005,6 +13356,11 @@ def accept_rider_order(request, shop_order_id):
         success_message = (
             "Order accepted. Collect its parcel from the shop; customer delivery "
             "for this customer order starts once its parcels are collected."
+        )
+    if public_rider:
+        success_message += (
+            f" You can receive another public offer in "
+            f"{PUBLIC_RIDER_OFFER_COOLDOWN_SECONDS} seconds."
         )
     messages.success(
         request,
@@ -9030,7 +13386,12 @@ def rider_pickup_order(request, shop_order_id):
         ),
         pk=shop_order_id,
     )
-    if not user_can_access_shop(request.user, shop_order.shop):
+    is_assigned_rider = bool(
+        shop_order.assigned_rider_id
+        and shop_order.assigned_rider.user_id == request.user.id
+        and shop_order.assigned_rider.is_active
+    )
+    if not user_can_access_shop(request.user, shop_order.shop) and not is_assigned_rider:
         raise PermissionDenied
     can_confirm_pickup = (
         request.user.is_superuser
@@ -9046,9 +13407,9 @@ def rider_pickup_order(request, shop_order_id):
     if not can_confirm_pickup:
         raise PermissionDenied
 
-    otp = (request.POST.get("pickup_otp") or "").strip()
-    if otp.startswith("SH-PICKUP:"):
-        otp = otp.removeprefix("SH-PICKUP:")
+    otp = _rider_pickup_otp_from_qr_value(
+        request.POST.get("pickup_otp"),
+    )
     if len(otp) != 6 or not otp.isascii() or not otp.isdigit():
         return _pickup_otp_response(
             request,
@@ -9136,6 +13497,17 @@ def rider_pickup_order(request, shop_order_id):
         "rider_pickup_otp_attempts",
         "updated_at",
     ])
+    if rider.is_public_rider:
+        application = PublicRiderApplication.objects.select_for_update().filter(
+            user=rider.user,
+            status=PublicRiderApplication.STATUS_APPROVED,
+        ).first()
+        if application:
+            application.public_rider_batch_accepting = False
+            application.save(update_fields=[
+                "public_rider_batch_accepting",
+                "updated_at",
+            ])
     OrderStatusHistory.objects.create(
         shop_order=shop_order,
         status="PICKED_UP",
@@ -9163,23 +13535,245 @@ def rider_pickup_order(request, shop_order_id):
 
 
 @login_required
+def rider_scan_pickup_qr(request):
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
+
+    public_rider_approved = PublicRiderApplication.objects.filter(
+        user=request.user,
+        status=PublicRiderApplication.STATUS_APPROVED,
+    ).exists()
+    has_active_shop_rider_membership = ShopStaff.objects.filter(
+        user=request.user,
+        is_active=True,
+        role="RIDER",
+        is_public_rider=False,
+    ).exists()
+    if not public_rider_approved and not has_active_shop_rider_membership:
+        raise PermissionDenied
+
+    qr_value = (request.POST.get("order_qr") or "").strip()
+    try:
+        scanned_url = urlsplit(qr_value)
+        if (
+            scanned_url.scheme not in {"http", "https"}
+            or scanned_url.netloc.lower() != request.get_host().lower()
+            or scanned_url.query
+            or scanned_url.fragment
+        ):
+            raise ValueError("QR URL does not belong to this site.")
+        order_match = re.fullmatch(r"/shop/orders/([0-9]+)/?", scanned_url.path)
+        if not order_match:
+            raise ValueError("QR does not point to a shop order.")
+        shop_order_id = int(order_match.group(1))
+    except (TypeError, ValueError):
+        return JsonResponse(
+            {"success": False, "message": "This QR does not contain a valid SellerHelper order link."},
+            status=400,
+        )
+
+    shop_order = ShopOrder.objects.select_related(
+        "order",
+        "assigned_rider",
+        "shop",
+    ).filter(pk=shop_order_id).first()
+    accepted_by_user = bool(
+        shop_order
+        and shop_order.rider_accepted_at
+        and shop_order.order.assigned_rider == request.user.username
+    )
+    active_shop_rider = bool(
+        shop_order
+        and ShopStaff.objects.filter(
+            shop=shop_order.shop,
+            user=request.user,
+            role="RIDER",
+            is_active=True,
+            is_public_rider=False,
+        ).exists()
+    )
+    rider_owns_order = bool(
+        shop_order
+        and (
+            (
+                shop_order.assigned_rider_id
+                and shop_order.assigned_rider.user_id == request.user.id
+                and shop_order.assigned_rider.role == "RIDER"
+                and shop_order.assigned_rider.is_active
+                and (
+                    not shop_order.assigned_rider.is_public_rider
+                    or public_rider_approved
+                )
+            )
+            or (
+                accepted_by_user
+                and (active_shop_rider or public_rider_approved)
+            )
+        )
+    )
+    if not rider_owns_order:
+        return JsonResponse(
+            {
+                "success": False,
+                "message": "This order is neither assigned to nor accepted by your rider account.",
+            },
+            status=403,
+        )
+
+    is_active_order = bool(
+        shop_order.status in {
+            "READY",
+            "RIDER_ASSIGNED",
+            "PICKED_UP",
+            "OUT_FOR_DELIVERY",
+        }
+        and shop_order.delivery_completed_at is None
+    )
+    if not is_active_order:
+        return JsonResponse(
+            {
+                "success": False,
+                "assigned_to_you": bool(
+                    shop_order.assigned_rider_id
+                    and shop_order.assigned_rider.user_id == request.user.id
+                ),
+                "accepted_by_you": bool(
+                    shop_order.rider_accepted_at
+                    and shop_order.order.assigned_rider == request.user.username
+                ),
+                "is_active_order": False,
+                "order_status": shop_order.status,
+                "message": (
+                    f"Order {shop_order.shop_order_number or shop_order.order.order_id} "
+                    f"belongs to your account, but it is not in your active orders. "
+                    f"Current status: {shop_order.status}."
+                ),
+            },
+            status=409,
+        )
+
+    assigned_to_rider = bool(
+        shop_order.assigned_rider_id
+        and shop_order.assigned_rider.user_id == request.user.id
+        and shop_order.assigned_rider.role == "RIDER"
+        and shop_order.assigned_rider.is_active
+        and (
+            not shop_order.assigned_rider.is_public_rider
+            or public_rider_approved
+        )
+    )
+    accepted_by_rider = bool(
+        shop_order.rider_accepted_at
+        and shop_order.order.assigned_rider == request.user.username
+    )
+    if assigned_to_rider and accepted_by_rider:
+        rider_acceptance = "assigned to and accepted by you"
+    elif accepted_by_rider:
+        rider_acceptance = "accepted by you"
+    else:
+        rider_acceptance = "assigned to your rider account"
+    return JsonResponse({
+        "success": True,
+        "order_url": reverse(
+            "shop_order_detail",
+            kwargs={"shop_order_id": shop_order.pk},
+        ),
+        "message": (
+            f"Verified: order {shop_order.shop_order_number or shop_order.order.order_id} "
+            f"is in your active orders and is {rider_acceptance}. "
+            f"Current status: {shop_order.status}."
+        ),
+        "assigned_to_you": assigned_to_rider,
+        "accepted_by_you": accepted_by_rider,
+        "is_active_order": True,
+        "order_status": shop_order.status,
+    })
+
+
+@login_required
 @transaction.atomic
 def rider_start_active_deliveries(request):
     if request.method != "POST":
         return HttpResponse("POST required.", status=405)
 
+
+@login_required
+@transaction.atomic
+def shop_order_action(request, shop_order_id, action):
+    """Perform a small shop-order action triggered via a scanned QR URL.
+
+    Allowed actions (for shop staff / owners):
+    - mark-open: add a history remark that the order was opened via scan.
+
+    Pickup must be confirmed using the rider's current pickup OTP.
+
+    The endpoint requires login. Shop staff permissions are validated before action.
+    """
+    shop_order = get_object_or_404(
+        ShopOrder.objects.select_for_update().select_related("shop", "order"),
+        pk=shop_order_id,
+    )
+
+    # Check permissions: owner, superuser, or shop staff with manager/change-status privilege
+    if not (
+        request.user.is_superuser
+        or shop_order.shop.owner_id == request.user.id
+        or ShopStaff.objects.filter(
+            shop=shop_order.shop,
+            user=request.user,
+            is_active=True,
+        ).filter(Q(role="MANAGER") | Q(can_change_order_status=True)).exists()
+    ):
+        raise PermissionDenied
+
+    if action == "mark-verified":
+        messages.error(
+            request,
+            "Pickup must be verified with the rider's current six-digit OTP.",
+        )
+        return redirect("shop_order_detail", shop_order_id=shop_order_id)
+
+    if action == "mark-open":
+        OrderStatusHistory.objects.create(
+            shop_order=shop_order,
+            status=shop_order.status,
+            remark=(
+                f"Order opened by scan by {request.user.username}."
+            ),
+        )
+        messages.success(request, "Order open event recorded.")
+        return redirect("shop_order_detail", shop_order_id=shop_order_id)
+
+    messages.error(request, "Unknown action requested.")
+    return redirect("shop_order_detail", shop_order_id=shop_order_id)
+
+    public_rider = (
+        PublicRiderApplication.objects.filter(
+            user=request.user,
+            status=PublicRiderApplication.STATUS_APPROVED,
+        ).first()
+        if request.session.get("active_portal") == "RIDER"
+        else None
+    )
+    if request.session.get("active_portal") == "RIDER" and not public_rider:
+        raise PermissionDenied
     rider = ShopStaff.objects.select_for_update().filter(
         user=request.user,
         is_active=True,
         role="RIDER",
+        **({"is_public_rider": False} if not public_rider else {}),
     ).first()
-    if not rider:
+    if not rider and not public_rider:
         raise PermissionDenied
-
+    assigned_filter = (
+        Q(assigned_rider__user=request.user)
+        if public_rider
+        else Q(assigned_rider=rider)
+    )
     collected_orders = list(
         ShopOrder.objects.select_for_update()
         .filter(
-            assigned_rider=rider,
+            assigned_filter,
             status="PICKED_UP",
             delivery_completed_at__isnull=True,
         )
@@ -9204,7 +13798,7 @@ def rider_start_active_deliveries(request):
             shop_order=collected_order,
             status="OUT_FOR_DELIVERY",
             remark=(
-                f"Rider {rider.user.username} started delivery for this "
+                f"Rider {request.user.username} started delivery for this "
                 "picked-up parcel."
             ),
         )
@@ -9223,13 +13817,14 @@ def rider_start_active_deliveries(request):
 
 
 @login_required
+@transaction.atomic
 def verify_rider_pickup_otp(request):
     if request.method != "POST":
         return HttpResponse("POST required.", status=405)
 
-    otp = (request.POST.get("pickup_otp") or "").strip()
-    if otp.startswith("SH-PICKUP:"):
-        otp = otp.removeprefix("SH-PICKUP:")
+    otp = _rider_pickup_otp_from_qr_value(
+        request.POST.get("pickup_otp"),
+    )
     if len(otp) != 6 or not otp.isascii() or not otp.isdigit():
         return _pickup_otp_response(
             request,
@@ -9290,15 +13885,14 @@ def rider_cancel_order(request, shop_order_id):
         id=shop_order_id,
     )
 
-    rider_staff = ShopStaff.objects.filter(
-        user=request.user,
-        is_active=True,
-        role="RIDER",
-    ).select_related("shop").first()
+    rider_staff = _rider_membership_for_order(request.user, shop_order)
     if not rider_staff:
         raise PermissionDenied
 
-    if shop_order.assigned_rider_id != rider_staff.id:
+    if (
+        not shop_order.assigned_rider_id
+        or shop_order.assigned_rider.user_id != request.user.id
+    ):
         messages.error(request, "Only the rider currently assigned to this delivery can release it.")
         return redirect("rider_dashboard")
     if shop_order.status not in {"READY", "RIDER_ASSIGNED"}:
@@ -9531,6 +14125,25 @@ def shop_settings(request, shop_id):
         )
         return redirect("shop_list")
 
+    has_active_shop_rider = ShopStaff.objects.filter(
+        shop=shop,
+        role="RIDER",
+        is_active=True,
+        is_public_rider=False,
+    ).exists()
+    global_public_rider_enabled = public_rider_service_enabled()
+    if global_public_rider_enabled and not has_active_shop_rider and (
+        not shop.public_rider_network_enabled
+        or shop.rider_delivery_preference != "PUBLIC"
+    ):
+        shop.public_rider_network_enabled = True
+        shop.rider_delivery_preference = "PUBLIC"
+        shop.save(update_fields=[
+            "public_rider_network_enabled",
+            "rider_delivery_preference",
+            "updated_at",
+        ])
+
     if request.method == "POST":
         try:
             eta_lead_minutes = int(request.POST.get("delivery_eta_reminder_minutes", "3"))
@@ -9557,6 +14170,22 @@ def shop_settings(request, shop_id):
             messages.error(request, "Rider nearby radius must be between 10 and 5000 meters.")
             return redirect("shop_settings", shop_id=shop.id)
 
+        public_rider_network_enabled = not has_active_shop_rider or (
+            request.POST.get("public_rider_network_enabled") == "on"
+        )
+        rider_delivery_preference = "PUBLIC" if not has_active_shop_rider else (
+            request.POST.get("rider_delivery_preference") or "STAFF"
+        ).upper()
+        if rider_delivery_preference not in {"STAFF", "PUBLIC"}:
+            messages.error(request, "Choose a valid default rider preference.")
+            return redirect("shop_settings", shop_id=shop.id)
+        if rider_delivery_preference == "PUBLIC" and not public_rider_network_enabled:
+            messages.error(
+                request,
+                "Enable the public rider network before selecting it as the default.",
+            )
+            return redirect("shop_settings", shop_id=shop.id)
+
         delivery_tax_form = None
         if shop.gstin:
             delivery_tax_form = ShopDeliveryTaxSettingsForm(
@@ -9579,12 +14208,16 @@ def shop_settings(request, shop_id):
         shop.delivery_eta_reminder_minutes = eta_lead_minutes
         shop.rider_nearby_notification_meters = nearby_radius_meters
         shop.delivery_fee = delivery_fee
+        shop.public_rider_network_enabled = public_rider_network_enabled
+        shop.rider_delivery_preference = rider_delivery_preference
         update_fields = [
             "require_customer_otp_verification",
             "allow_scheduled_delivery",
             "delivery_eta_reminder_minutes",
             "rider_nearby_notification_meters",
             "delivery_fee",
+            "public_rider_network_enabled",
+            "rider_delivery_preference",
             "updated_at",
         ]
         if delivery_tax_form:
@@ -9592,6 +14225,10 @@ def shop_settings(request, shop_id):
             shop.delivery_gst_rate = delivery_tax_form.cleaned_data["delivery_gst_rate"]
             update_fields.extend(["delivery_hsn_code", "delivery_gst_rate"])
         shop.save(update_fields=update_fields)
+        for application in PublicRiderApplication.objects.filter(
+            status=PublicRiderApplication.STATUS_APPROVED,
+        ).iterator():
+            sync_public_rider_shop_memberships(application)
         messages.success(request, "Shop delivery settings updated.")
         return redirect("shop_settings", shop_id=shop.id)
 
@@ -9600,20 +14237,29 @@ def shop_settings(request, shop_id):
         "seller/shop_settings.html",
         {
             "shop": shop,
+            "has_active_shop_rider": has_active_shop_rider,
+            "public_rider_service_enabled": global_public_rider_enabled,
         }
     )
 
 @login_required
 def verify_customer_otp(request, shop_order_id):
-    shop_order = get_object_or_404(ShopOrder.objects.select_related("shop", "order"), id=shop_order_id)
-    rider = ShopStaff.objects.filter(
-        user=request.user,
-        is_active=True,
-        role="RIDER",
-    ).select_related("shop").first()
+    shop_order = get_object_or_404(
+        ShopOrder.objects.select_related(
+            "shop",
+            "order",
+            "assigned_rider__user",
+            "assigned_rider__shop",
+        ),
+        id=shop_order_id,
+    )
+    rider = _rider_membership_for_order(request.user, shop_order)
     if not rider:
         raise PermissionDenied
-    if shop_order.assigned_rider_id and shop_order.assigned_rider_id != rider.id:
+    if (
+        shop_order.assigned_rider_id
+        and shop_order.assigned_rider.user_id != request.user.id
+    ):
         messages.error(request, "This order is assigned to another rider.")
         return redirect("rider_dashboard")
     if (
@@ -10126,16 +14772,41 @@ from .models import Product, ProductShop, Shop
 
 @login_required
 def product_list(request):
-
+    search_query = request.GET.get("q", "").strip()[:100]
+    stock_sort = request.GET.get("sort") == "stock_low"
     products = (
         Product.objects
         .filter(
             created_by=request.user
         )
+        .annotate(
+            total_shop_stock=Coalesce(
+                Sum(
+                    "shop_assignments__stock",
+                    filter=Q(shop_assignments__is_active=True),
+                ),
+                Decimal("0.0000"),
+            ),
+        )
         .prefetch_related(
             "shop_assignments__shop"
         )
-        .order_by("-created_at")
+    )
+    if search_query:
+        products = products.filter(
+            Q(product_name__icontains=search_query)
+            | Q(product_alias_name__icontains=search_query)
+            | Q(product_title__icontains=search_query)
+            | Q(product_description__icontains=search_query)
+            | Q(product_category__icontains=search_query)
+            | Q(product_color__icontains=search_query)
+            | Q(product_size__icontains=search_query)
+            | Q(sku__icontains=search_query)
+        )
+    products = (
+        products.order_by("total_shop_stock", "product_name")
+        if stock_sort
+        else products.order_by("-created_at")
     )
 
     return render(
@@ -10143,6 +14814,10 @@ def product_list(request):
         "seller/product_list.html",
         {
             "products": products,
+            "product_search_query": search_query,
+            "product_stock_sort": stock_sort,
+            "focus_product_id": request.GET.get("focus_product", ""),
+            "focus_shop_id": request.GET.get("focus_shop", ""),
         }
     )
 
@@ -10561,6 +15236,10 @@ def shop_storefront(request, shop_id):
         .select_related("product")
         .order_by("product__product_name")
     )
+    for assignment in assignments:
+        assignment.storefront_total_stock = (
+            assignment.stock + assignment.b2b_stock
+        )
     return render(
         request,
         "seller/shop_storefront.html",
@@ -10684,7 +15363,15 @@ def storefront_product_edit(request, product_shop_id):
             "b2b_stock",
         ]
         if product_shop.shop.allow_product_image_overrides:
-            update_fields.append("image_url_override")
+            update_fields.extend(
+                (
+                    "image_url_override",
+                    "image_url_override_2",
+                    "image_url_override_3",
+                    "image_url_override_4",
+                    "image_url_override_5",
+                )
+            )
         product_shop.save(update_fields=update_fields)
         stock_change = product_shop.stock - old_stock
         if stock_change:
@@ -10811,15 +15498,10 @@ def market_product_detail(request, product_shop_id):
 
         title = " ".join(title_parts)
 
-    cart = request.session.get(
-        "cart",
-        {}
-    )
+    cart, _ = _address_scoped_cart(request)
     is_b2b = _is_b2b_customer(request)
 
-    quantity = int(
-        cart.get(str(item.id), 0)
-    )
+    quantity = _cart_quantity(cart, item.id)
     bulk_price = item.effective_bulk_price_for_customer(is_b2b=is_b2b)
 
     return JsonResponse(
@@ -10838,7 +15520,9 @@ def market_product_detail(request, product_shop_id):
             "bulk_unit": item.bulk_unit_for_customer(is_b2b=is_b2b),
             "bulk_min_quantity": item.bulk_min_quantity,
             "bulk_available": bulk_price is not None and bool(item.bulk_unit_for_customer(is_b2b=is_b2b)),
-            "stock": item.stock_for_customer(is_b2b=is_b2b),
+            "stock": _json_stock_quantity(
+                item.stock_for_customer(is_b2b=is_b2b)
+            ),
             "has_b2b_price": bool(
                 is_b2b and item.shop.has_valid_gstin and item.b2b_price is not None
             ),
@@ -10849,6 +15533,7 @@ def market_product_detail(request, product_shop_id):
                 and item.b2b_bulk_unit
             ),
             "image_url": image_url,
+            "image_urls": item.display_image_urls,
             "shop": item.shop.name,
             "quantity": quantity,
         }
@@ -10945,9 +15630,74 @@ def notifications_api(request):
     if request.GET.get("view") != "all":
         notifications = notifications.filter(is_read=False)
     items = notifications[:20]
+    public_offer_count = 0
+    available_delivery_count = 0
+    active_delivery_count = 0
+    if request.GET.get("notifications_only") != "1":
+        public_rider = None
+        if request.session.get("active_portal") == "RIDER":
+            application = PublicRiderApplication.objects.filter(
+                user=request.user,
+                status=PublicRiderApplication.STATUS_APPROVED,
+            ).first()
+            if application:
+                public_rider = application
+        rider_membership = ShopStaff.objects.filter(
+            user=request.user,
+            is_active=True,
+            role="RIDER",
+            is_public_rider=bool(public_rider),
+        ).select_related("shop").order_by("shop_id", "pk").first()
+        active_order_rows = []
+        if rider_membership or public_rider:
+            active_order_rows = list(
+                ShopOrder.objects.filter(
+                    Q(assigned_rider__user=request.user)
+                    | Q(
+                        rider_accepted_at__isnull=False,
+                        order__assigned_rider=request.user.username,
+                    ),
+                    status__in=[
+                        "READY",
+                        "RIDER_ASSIGNED",
+                        "PICKED_UP",
+                        "OUT_FOR_DELIVERY",
+                    ],
+                    delivery_completed_at__isnull=True,
+                )
+                .exclude(status__in=["DELIVERED", "COMPLETED", "CANCELLED"])
+                .prefetch_related("order_items"),
+            )
+        active_delivery_count = len(active_order_rows)
+        if rider_membership and (not public_rider or public_rider.is_online):
+            active_loads = [
+                _shop_order_estimated_load(shop_order)
+                for shop_order in active_order_rows
+            ]
+            rider_load_weight = sum(
+                (load["weight_kg"] for load in active_loads),
+                Decimal("0.00"),
+            )
+            rider_load_volume = sum(
+                (load["volume_cubic_ft"] for load in active_loads),
+                Decimal("0.00"),
+            )
+            available_ids, _, _ = _rider_available_order_ids(
+                rider_membership,
+                public_rider,
+                request.user,
+                rider_load_weight,
+                rider_load_volume,
+            )
+            available_delivery_count = len(available_ids)
+            if public_rider:
+                public_offer_count = available_delivery_count
     payload = {
         "count": notifications.count(),
         "unread_count": notifications.filter(is_read=False).count(),
+        "public_offer_count": public_offer_count,
+        "available_delivery_count": available_delivery_count,
+        "active_delivery_count": active_delivery_count,
         "items": [
             {
                 "id": notification.id,
@@ -10955,6 +15705,10 @@ def notifications_api(request):
                 "message": notification.message,
                 "type": notification.notification_type,
                 "url": notification.related_url,
+                "read_url": reverse(
+                    "mark_notification_read",
+                    kwargs={"notification_id": notification.id},
+                ),
                 "read": notification.is_read,
                 "created_at": notification.created_at.isoformat(),
             }
@@ -11053,44 +15807,93 @@ from rapidfuzz.fuzz import ratio
 @login_required
 @login_required
 def marketplace(request):
-    if request.session.get("active_portal") == "ADMIN":
+    is_theme_preview = (
+        request.GET.get("theme_preview") == "1"
+        and request.user.is_superuser
+    )
+    if not is_theme_preview and request.session.get("active_portal") == "ADMIN":
         return redirect(
             "admin_catalog_dashboard" if request.user.is_superuser else "home"
         )
-    if request.session.get("active_portal") == "SHOP_STAFF":
+    if not is_theme_preview and request.session.get("active_portal") == "SHOP_STAFF":
         return redirect("dashboard")
-    if request.session.get("active_portal") == "SHOP_OWNER":
+    if not is_theme_preview and request.session.get("active_portal") == "SHOP_OWNER":
         return redirect("home")
 
-    client = get_object_or_404(
-        ClientProfile,
-        user=request.user
-    )
+    client = ClientProfile.objects.filter(user=request.user).first()
+    if client is None and not is_theme_preview:
+        raise Http404("Customer profile not found.")
     is_b2b = _is_b2b_customer(request, client)
     marketplace_layout_settings = MarketplaceLayoutSettings.objects.first()
+    marketplace_theme = SiteThemeSettings.objects.first()
+    marketplace_section_names = (
+        "hero",
+        "search",
+        "nearby",
+        "category_nav",
+        "products",
+    )
+    marketplace_section_order = (
+        marketplace_theme.marketplace_section_order.split(",")
+        if marketplace_theme
+        else list(marketplace_section_names)
+    )
+    if (
+        len(marketplace_section_order) != len(marketplace_section_names)
+        or set(marketplace_section_order) != set(marketplace_section_names)
+    ):
+        marketplace_section_order = list(marketplace_section_names)
+    marketplace_theme_order = {
+        name: marketplace_section_order.index(name) + 1
+        for name in marketplace_section_names
+    }
+    category_order = (
+        marketplace_theme.marketplace_category_order.split(",")
+        if marketplace_theme and marketplace_theme.marketplace_category_order
+        else []
+    )
+    category_order_index = {
+        name: index for index, name in enumerate(category_order)
+    }
+    featured_products = {}
+    featured_catalog_ids = (
+        marketplace_theme.marketplace_featured_product_ids
+        if marketplace_theme else []
+    )
+    if featured_catalog_ids:
+        featured_rank = {
+            int(product_id): index
+            for index, product_id in enumerate(featured_catalog_ids)
+        }
+        featured_catalog_products = AdminProductCatalog.objects.filter(
+            pk__in=featured_rank,
+            is_active=True,
+        )
+        for catalog_product in featured_catalog_products:
+            featured_products[
+                (catalog_product.product_category, catalog_product.product_name)
+            ] = featured_rank[catalog_product.pk]
 
     address_id = request.GET.get("address")
 
     address = None
 
-    if address_id:
+    if address_id and client:
 
         address = get_object_or_404(
             ClientDeliveryAddress,
             id=address_id,
-            client=client
+            client=client,
+            is_active=True,
         )
+        _switch_address_scoped_cart(request, address)
+
+    elif client:
+
+        _, address = _address_scoped_cart(request, client=client)
 
     else:
-
-        address = (
-            client.delivery_addresses
-            .filter(
-                is_active=True,
-                is_default=True
-            )
-            .first()
-        )
+        _address_scoped_cart(request)
 
     products = []
     product_groups = []
@@ -11132,6 +15935,10 @@ def marketplace(request):
             "product_assignments__product"
         )
     )
+    if is_theme_preview:
+        shops = Shop.objects.filter(
+            Q(is_shop_open=True) | Q(allow_scheduled_delivery=True)
+        ).prefetch_related("product_assignments__product")
 
     storefront_slug = _storefront_slug_from_host(request)
     if storefront_slug:
@@ -11153,10 +15960,10 @@ def marketplace(request):
         shop.pk: shop.is_scheduled_delivery
         for shop in shops
     }
-    favorite_shop_ids = set(
+    favorite_shop_ids = set() if is_theme_preview else set(
         FavoriteShop.objects.filter(user=request.user).values_list("shop_id", flat=True)
     )
-    favorite_product_ids = set(
+    favorite_product_ids = set() if is_theme_preview else set(
         FavoriteProduct.objects.filter(user=request.user).values_list(
             "product_shop_id",
             flat=True,
@@ -11176,14 +15983,15 @@ def marketplace(request):
     if selected_market not in valid_markets:
         selected_market = ""
 
-    UserActivity.objects.create(
-        user=request.user,
-        event_type="MARKETPLACE_SEARCH" if search else "MARKETPLACE_VIEW",
-        path=request.path,
-        search_term=search,
-        location={"lat": lat, "lng": lng} if lat is not None and lng is not None else {},
-        metadata={"shop_id": selected_shop_id or "", "market": selected_market},
-    )
+    if not is_theme_preview:
+        UserActivity.objects.create(
+            user=request.user,
+            event_type="MARKETPLACE_SEARCH" if search else "MARKETPLACE_VIEW",
+            path=request.path,
+            search_term=search,
+            location={"lat": lat, "lng": lng} if lat is not None and lng is not None else {},
+            metadata={"shop_id": selected_shop_id or "", "market": selected_market},
+        )
 
     nearby_shops = []
     deliverable_shops = []
@@ -11218,10 +16026,16 @@ def marketplace(request):
     search_terms = [term for term in search.split() if term]
 
     def matches_search(values):
-        searchable_text = " ".join(str(value or "") for value in values).lower()
-        return bool(search and (
-            search in searchable_text
-            or all(term in searchable_text for term in search_terms)
+        searchable_text = normalize_search_text(
+            " ".join(str(value or "") for value in values)
+        )
+        normalized_search = normalize_search_text(search)
+        normalized_terms = [
+            normalize_search_text(term) for term in search_terms
+        ]
+        return bool(normalized_search and (
+            normalized_search in searchable_text
+            or all(term in searchable_text for term in normalized_terms)
         ))
 
     def shop_search_fields(shop):
@@ -11311,7 +16125,10 @@ def marketplace(request):
 
                 best_score = max(
                     (
-                        ratio(search, str(value).lower().strip())
+                        ratio(
+                            normalize_search_text(search),
+                            normalize_search_text(str(value).strip()),
+                        )
                         for value in product_catalog_fields(assignment)
                         if value
                     ),
@@ -11447,22 +16264,64 @@ def marketplace(request):
             "subcategories": [
                 {
                     "name": sub_name,
-                    "items": _interleave_category_products(
-                        sub_items,
-                        nearby_shop_order,
+                    "items": (
+                        _interleave_category_products(
+                            sorted(
+                                [
+                                    item for item in sub_items
+                                    if (
+                                        item.product.product_category,
+                                        item.product.product_name,
+                                    ) in featured_products
+                                ],
+                                key=lambda item: featured_products[
+                                    (
+                                        item.product.product_category,
+                                        item.product.product_name,
+                                    )
+                                ],
+                            ),
+                            nearby_shop_order,
+                        )
+                        + _interleave_category_products(
+                            [
+                                item for item in sub_items
+                                if (
+                                    item.product.product_category,
+                                    item.product.product_name,
+                                ) not in featured_products
+                            ],
+                            nearby_shop_order,
+                        )
                     ),
                 }
-                for sub_name, sub_items in sorted(subgroups.items(), key=lambda x: x[0])
+                for sub_name, sub_items in sorted(
+                    subgroups.items(),
+                    key=lambda item: (
+                        category_order_index.get(item[0], len(category_order_index)),
+                        item[0],
+                    ),
+                )
             ],
         })
 
-    cart = request.session.get(
-        "cart",
-        {}
-    )
+    for market_group in product_groups:
+        for subcategory in market_group["subcategories"]:
+            for item in subcategory["items"]:
+                item.is_marketplace_featured = (
+                    item.product.product_category,
+                    item.product.product_name,
+                ) in featured_products
+                if is_theme_preview:
+                    item.is_favorited = False
+
+    cart = _address_scoped_cart(request)[0]
 
     for item in products:
         product = item.product
+        item.marketplace_search_keywords = format_search_keywords_by_language(
+            product.search_keywords
+        )
         item.shop.is_scheduled_delivery = scheduled_delivery_by_shop_id.get(
             item.shop_id,
             False,
@@ -11510,8 +16369,9 @@ def marketplace(request):
             "bulk_available": item.has_bulk_offer,
             "has_b2b_price": item.has_b2b_price,
             "has_b2b_bulk_offer": item.has_b2b_bulk_offer,
-            "stock": item.marketplace_stock,
+            "stock": _json_stock_quantity(item.marketplace_stock),
             "image_url": item.display_image_url,
+            "image_urls": item.display_image_urls,
             "shop": item.shop.name,
             "scheduled_delivery": item.shop.is_scheduled_delivery,
             "quantity": int(cart.get(str(item.id), 0)),
@@ -11526,11 +16386,12 @@ def marketplace(request):
         for quantity in cart.values()
     )
 
-    return render(
+    response = render(
         request,
         "market/marketplace.html",
         {
             "client": client,
+            "is_theme_preview": is_theme_preview,
             "is_b2b_customer": is_b2b,
             "address": address,
             "products": products,
@@ -11544,6 +16405,24 @@ def marketplace(request):
                 marketplace_layout_settings.rows_per_category
                 if marketplace_layout_settings
                 else 2
+            ),
+            "marketplace_theme": marketplace_theme,
+            "marketplace_theme_order": marketplace_theme_order,
+            "marketplace_show_hero": (
+                marketplace_theme.marketplace_hero_enabled
+                if marketplace_theme else True
+            ),
+            "marketplace_show_nearby_shops": (
+                marketplace_theme.marketplace_nearby_shops_enabled
+                if marketplace_theme else True
+            ),
+            "marketplace_show_category_nav": (
+                marketplace_theme.marketplace_category_nav_enabled
+                if marketplace_theme else True
+            ),
+            "marketplace_show_products": (
+                marketplace_theme.marketplace_products_enabled
+                if marketplace_theme else True
             ),
             "nearby_shops": nearby_shops,
             "selected_shop_id": selected_shop_id,
@@ -11562,6 +16441,9 @@ def marketplace(request):
             ),
         }
     )
+    if is_theme_preview:
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    return response
 
 
 def _can_manage_shop_stock(request, shop):
@@ -12412,12 +17294,15 @@ def cart_add(request, product_shop_id):
         if not _storefront_is_active(storefront_shop) or item.shop_id != storefront_shop.pk:
             raise Http404("This product is not available in this shop storefront.")
 
-    cart = request.session.get(
-        "cart",
-        {}
-    )
-    if not isinstance(cart, dict):
-        cart = {}
+    cart, active_delivery_address = _address_scoped_cart(request)
+    if not _shop_can_deliver_to_address(item.shop, active_delivery_address):
+        return JsonResponse(
+            {
+                "success": False,
+                "message": "This product is not available in your delivery location.",
+            },
+            status=400,
+        )
 
     storefront_slug = _storefront_slug_from_host(request)
     if storefront_slug:
@@ -12483,9 +17368,7 @@ def cart_add(request, product_shop_id):
 
     cart[line_key] = current_quantity
 
-    request.session["cart"] = cart
-
-    request.session.modified = True
+    _save_address_scoped_cart(request, cart)
 
     cart_count = sum(
         int(q)
@@ -12505,12 +17388,7 @@ def cart(request):
     client = ClientProfile.objects.filter(user=request.user).first()
     is_b2b = _is_b2b_customer(request, client)
 
-    cart_data = request.session.get(
-        "cart",
-        {}
-    )
-    if not isinstance(cart_data, dict):
-        cart_data = {}
+    cart_data, active_delivery_address = _address_scoped_cart(request, client=client)
 
     parsed_lines = {
         key: parsed
@@ -12580,9 +17458,19 @@ def cart(request):
         price = bulk_price if is_bulk_order else assignment.effective_price_for_customer(is_b2b=is_b2b)
         total = price * quantity
         subtotal += total
+        available_for_delivery = _shop_can_deliver_to_address(
+            assignment.shop,
+            active_delivery_address,
+        )
         items.append({
             "assignment": assignment,
             "quantity": quantity,
+            "available_for_delivery": available_for_delivery,
+            "availability_label": (
+                ""
+                if available_for_delivery
+                else "Not available in this delivery location"
+            ),
             "price": price,
             "unit": unit,
             "total_unit": _quantity_unit_display(quantity, unit),
@@ -12615,8 +17503,7 @@ def cart(request):
     if unavailable_cart_lines:
         for line_key in unavailable_cart_lines:
             cart_data.pop(line_key, None)
-        request.session["cart"] = cart_data
-        request.session.modified = True
+        _save_address_scoped_cart(request, cart_data)
         messages.warning(
             request,
             "Unavailable cart offer(s) were removed. Review your remaining cart items.",
@@ -12659,8 +17546,30 @@ def cart(request):
             "active_item_count": sum(item["quantity"] for item in items),
             "saved_baskets": saved_baskets,
             "is_b2b_customer": is_b2b,
+            "delivery_addresses": (
+                client.delivery_addresses.filter(is_active=True).order_by("-is_default", "id")
+                if client
+                else []
+            ),
+            "active_delivery_address": active_delivery_address,
         }
     )
+
+
+@login_required
+def cart_select_delivery_address(request):
+    if request.method != "POST":
+        return redirect("cart")
+
+    client = get_object_or_404(ClientProfile, user=request.user)
+    address = get_object_or_404(
+        ClientDeliveryAddress,
+        pk=request.POST.get("address_id"),
+        client=client,
+        is_active=True,
+    )
+    _switch_address_scoped_cart(request, address)
+    return redirect("checkout" if request.POST.get("next") == "checkout" else "cart")
 
 
 @login_required
@@ -12677,9 +17586,7 @@ def cart_basket_save(request):
         messages.error(request, "You already have a basket with that name.")
         return redirect("cart")
 
-    cart_data = request.session.get("cart", {})
-    if not isinstance(cart_data, dict):
-        cart_data = {}
+    cart_data = _address_scoped_cart(request)[0]
     quantities = {}
     for line_key, raw_quantity in cart_data.items():
         parsed = _parse_cart_line_key(line_key)
@@ -12767,9 +17674,7 @@ def cart_basket_add_item(request, product_shop_id):
         messages.error(request, "This product is out of stock for your account.")
         return redirect("cart")
 
-    cart = request.session.get("cart", {})
-    if not isinstance(cart, dict):
-        cart = {}
+    cart = _address_scoped_cart(request)[0]
     is_bulk_order = request.POST.get("offer") == "bulk"
     line_key = _cart_line_key(assignment.pk, is_bulk_order=is_bulk_order)
     try:
@@ -12838,9 +17743,7 @@ def cart_basket_restore(request, basket_id):
         pk=basket_id,
         user=request.user,
     )
-    cart = request.session.get("cart", {})
-    if not isinstance(cart, dict):
-        cart = {}
+    cart = _address_scoped_cart(request)[0]
 
     is_b2b = _is_b2b_customer(request)
     unavailable = []
@@ -12900,8 +17803,7 @@ def cart_basket_restore(request, basket_id):
             )
 
     if added_count:
-        request.session["cart"] = cart
-        request.session.modified = True
+        _save_address_scoped_cart(request, cart)
         messages.success(
             request,
             f"Added {added_count} available item(s) from “{basket.name}” to your cart.",
@@ -13062,9 +17964,18 @@ def cart_update(request, product_shop_id):
     available_stock = item.stock_for_customer(is_b2b=is_b2b)
     quantity = max(0, min(quantity, available_stock))
 
-    cart = request.session.get("cart", {})
-    if not isinstance(cart, dict):
-        cart = {}
+    cart, active_delivery_address = _address_scoped_cart(request)
+    if quantity > 0 and not _shop_can_deliver_to_address(
+        item.shop,
+        active_delivery_address,
+    ):
+        return JsonResponse(
+            {
+                "success": False,
+                "message": "This product is not available in your delivery location.",
+            },
+            status=400,
+        )
 
     key = _cart_line_key(product_shop_id, is_bulk_order=is_bulk_order)
     other_quantity = _cart_quantity(cart, product_shop_id, is_bulk_order=not is_bulk_order)
@@ -13076,8 +17987,7 @@ def cart_update(request, product_shop_id):
 
     cart[key] = quantity
 
-    request.session["cart"] = cart
-    request.session.modified = True
+    _save_address_scoped_cart(request, cart)
 
     cart_count = sum(
         max(0, int(q))
@@ -13192,18 +18102,12 @@ def cart_remove(request, product_shop_id):
     if request.method != "POST":
         return redirect("cart")
 
-    cart = request.session.get(
-        "cart",
-        {}
-    )
-    if not isinstance(cart, dict):
-        cart = {}
+    cart = _address_scoped_cart(request)[0]
 
     is_bulk_order = request.POST.get("offer") == "bulk"
     cart.pop(_cart_line_key(product_shop_id, is_bulk_order=is_bulk_order), None)
 
-    request.session["cart"] = cart
-    request.session.modified = True
+    _save_address_scoped_cart(request, cart)
 
     return redirect("cart")
 
@@ -13272,6 +18176,47 @@ def _generate_unique_tracking_code():
     raise RuntimeError("Could not allocate a unique six-character order tracking code.")
 
 
+def _checkout_delivery_issues(items, address):
+    if not address:
+        return []
+
+    shops = {item["assignment"].shop_id: item["assignment"].shop for item in items}
+    return [
+        shop.name
+        for shop in shops.values()
+        if not _shop_can_deliver_to_address(shop, address)
+    ]
+
+
+def _shop_can_deliver_to_address(shop, address):
+    location = address.location if isinstance(address.location, dict) else {}
+    latitude = address.latitude if address.latitude is not None else location.get("lat")
+    longitude = address.longitude if address.longitude is not None else location.get("lng")
+    pincode = (
+        address.pincode
+        or location.get("pincode")
+        or location.get("postal_code")
+        or location.get("postcode")
+        or location.get("zip")
+    )
+    has_delivery_rules = bool(shop.delivery_area) or bool(
+        normalize_pincodes(shop.delivery_pincode)
+    )
+    has_customer_location = (
+        latitude is not None
+        and longitude is not None
+    ) or bool(pincode)
+    if not has_customer_location and not has_delivery_rules:
+        return bool(shop.is_shop_open or shop.allow_scheduled_delivery)
+    return shop_delivers_to_location(
+            shop,
+            lat=latitude,
+            lng=longitude,
+            pincode=pincode,
+            allow_scheduled_delivery=shop.allow_scheduled_delivery,
+        )
+
+
 @login_required
 def checkout(request):
     if request.GET.get("payment_error") == "razorpay_unavailable":
@@ -13283,7 +18228,7 @@ def checkout(request):
     )
     is_b2b = _is_b2b_customer(request, client)
 
-    cart_data = request.session.get("cart", {})
+    cart_data, cart_delivery_address = _address_scoped_cart(request, client=client)
 
     if not cart_data:
         messages.warning(
@@ -13444,6 +18389,8 @@ def checkout(request):
             )
             return redirect("cart")
 
+    _track_checkout_attempt(request, items)
+
     addresses = (
         client.delivery_addresses
         .filter(
@@ -13456,12 +18403,10 @@ def checkout(request):
     )
 
     selected_address = (
-        addresses
-        .filter(
-            is_default=True
-        )
-        .first()
-    )
+        addresses.filter(pk=cart_delivery_address.pk).first()
+        if cart_delivery_address
+        else None
+    ) or addresses.filter(is_default=True).first() or addresses.first()
     if request.method == "POST":
         address_id = request.POST.get(
             "address"
@@ -13482,6 +18427,24 @@ def checkout(request):
             client=client,
             is_active=True,
         )
+        if cart_delivery_address is None or address.pk != cart_delivery_address.pk:
+            _switch_address_scoped_cart(request, address)
+            messages.info(
+                request,
+                "This address has its own cart. Review the items and total for the selected address before placing the order.",
+            )
+            return redirect("checkout")
+
+        delivery_issues = _checkout_delivery_issues(items, address)
+        if delivery_issues:
+            messages.error(
+                request,
+                "Delivery is unavailable at this address from: "
+                + ", ".join(delivery_issues)
+                + ". Change the delivery address or remove those shops' items.",
+            )
+            return redirect("checkout")
+
         buyer_gstin = (
             address.gstin
             or (client.gstin if is_b2b else "")
@@ -13641,6 +18604,7 @@ def checkout(request):
                     "subtotal": subtotal,
                     "addresses": addresses,
                     "selected_address": address,
+                    "delivery_issues": [],
                     "razorpay_key_id": settings.RAZORPAY_KEY_ID,
                     "razorpay_order_id": razorpay_order_id,
                     "razorpay_amount": amount_paise,
@@ -13703,6 +18667,13 @@ def checkout(request):
         checkout_address,
         buyer_gstin_override=buyer_gstin,
     )
+    delivery_gst_amount = sum(
+        (
+            row["delivery_gst_amount"]
+            for row in gst_preview["shops"].values()
+        ),
+        Decimal("0.00"),
+    )
     checkout_extra = gst_preview["total_gst"] + gst_preview["delivery_total"]
     cod_without_wallet = _checkout_charge_totals(
         subtotal,
@@ -13746,6 +18717,7 @@ def checkout(request):
             "subtotal": subtotal,
             "addresses": addresses,
             "selected_address": selected_address,
+            "delivery_issues": _checkout_delivery_issues(items, selected_address),
             "razorpay_configured": bool(
                 settings.RAZORPAY_KEY_ID and settings.RAZORPAY_KEY_SECRET
             ),
@@ -13763,7 +18735,8 @@ def checkout(request):
             "is_b2b_customer": is_b2b,
             "buyer_gstin": buyer_gstin,
             "wallet_amount_used": wallet_amount_used,
-            "gst_amount": gst_preview["total_gst"],
+            "gst_amount": gst_preview["total_gst"] - delivery_gst_amount,
+            "delivery_gst_amount": delivery_gst_amount,
             "delivery_total": gst_preview["delivery_total"],
             "checkout_delivery_address": checkout_address,
             "checkout_shop_summary": _checkout_shop_summary(
@@ -13796,6 +18769,17 @@ def create_order(
 ):
 
     client = ClientProfile.objects.select_for_update().get(pk=client.pk)
+    _switch_address_scoped_cart(request, address)
+    delivery_issues = _checkout_delivery_issues(items, address)
+    if delivery_issues:
+        messages.error(
+            request,
+            "Delivery is unavailable at this address from: "
+            + ", ".join(delivery_issues)
+            + ". Change the delivery address or remove those shops' items.",
+        )
+        return redirect("checkout")
+
     is_b2b = _is_b2b_customer(request, client)
     coupon = None
     coupon_discount = Decimal("0.00")
@@ -14174,7 +19158,7 @@ def create_order(
 
         packing_minutes = max(5, 3 + product_count * 2)
         rider_eta_minutes = 0
-        shop_location = shop.location if isinstance(shop.location, dict) else {}
+        shop_location = _select_shop_pickup_location(shop, order)
         try:
             destination_lat, destination_lng = (
                 float(value.strip())
@@ -14207,6 +19191,7 @@ def create_order(
             order=order,
 
             shop=shop,
+            pickup_location=_select_shop_pickup_location(shop, order),
             shop_order_number=shop_order_numbers[shop_id],
             is_scheduled_delivery=(
                 shop.allow_scheduled_delivery
@@ -14468,9 +19453,19 @@ def create_order(
             ]
         )
 
-    request.session[
-        "cart"
-    ] = {}
+    checkout_key = request.session.get("checkout_attempt_key")
+    if checkout_key:
+        CheckoutAttempt.objects.filter(
+            customer=request.user,
+            checkout_key=checkout_key,
+            order__isnull=True,
+        ).update(
+            order=order,
+            last_activity_at=timezone.now(),
+        )
+        request.session.pop("checkout_attempt_key", None)
+
+    _save_address_scoped_cart(request, {})
     request.session.pop("razorpay_checkout_intent", None)
     request.session.pop("order_voice_instruction_draft_id", None)
 
@@ -14752,6 +19747,9 @@ def order_tracking(request, order_id):
         .order_by("-created_at")
     )
     for tracked_shop_order in shop_orders:
+        tracked_shop_order.pickup_location_data = _get_shop_order_pickup_location(
+            tracked_shop_order
+        )
         for item in tracked_shop_order.order_items.all():
             unit = item.unit or (item.product.unit if item.product_id else "")
             item.quantity_unit = _quantity_unit_total(item.quantity, unit)
@@ -14767,6 +19765,13 @@ def order_tracking(request, order_id):
             tracked_shop_order,
             timezone.now(),
         )
+    order.customer_location_sharing_active = (
+        shop_orders.exclude(
+            status__in=("DELIVERED", "COMPLETED", "CANCELLED", "RETURNED")
+        )
+        .filter(delivery_completed_at__isnull=True)
+        .exists()
+    )
 
     # First shop order
     first_shop_order = shop_orders.first()
@@ -14909,6 +19914,50 @@ def _valid_route_coordinates(location):
         and math.isfinite(longitude)
         and -90 <= latitude <= 90
         and -180 <= longitude <= 180
+    )
+
+
+def _recent_customer_live_location(location):
+    if not _valid_route_coordinates(location):
+        return False
+    try:
+        observed_at = datetime.fromisoformat(
+            str(location.get("observed_at", "")).replace("Z", "+00:00")
+        )
+    except (TypeError, ValueError):
+        return False
+    if timezone.is_naive(observed_at):
+        observed_at = timezone.make_aware(observed_at)
+    now = timezone.now()
+    return now - timedelta(minutes=2) <= observed_at <= now + timedelta(seconds=30)
+
+
+def _recent_public_rider_location(user):
+    now_timestamp = timezone.now().timestamp()
+    memberships = ShopStaff.objects.filter(
+        user=user,
+        is_active=True,
+        is_public_rider=True,
+        role="RIDER",
+    ).values_list("last_location", flat=True)
+    recent_locations = []
+    for location in memberships:
+        if not isinstance(location, dict) or not _valid_route_coordinates(location):
+            continue
+        try:
+            observed_at = float(location.get("observed_at"))
+        except (TypeError, ValueError):
+            continue
+        if 0 <= now_timestamp - observed_at <= 600:
+            recent_locations.append({
+                "lat": float(location["lat"]),
+                "lng": float(location["lng"]),
+                "observed_at": observed_at,
+            })
+    return max(
+        recent_locations,
+        key=lambda location: location["observed_at"],
+        default=None,
     )
 
 
@@ -15218,11 +20267,24 @@ def shop_order_rider_location(request, shop_order_id):
         ShopOrder.objects.select_related("shop", "assigned_rider__user"),
         pk=shop_order_id,
     )
-    if not user_can_access_shop(request.user, shop_order.shop):
+    is_assigned_rider = bool(
+        shop_order.assigned_rider_id
+        and shop_order.assigned_rider.user_id == request.user.pk
+        and shop_order.assigned_rider.is_active
+        and shop_order.assigned_rider.role == "RIDER"
+    )
+    if not user_can_access_shop(request.user, shop_order.shop) and not is_assigned_rider:
         raise PermissionDenied
     location = shop_order.rider_last_location
     if not _valid_route_coordinates(location):
         location = None
+    customer_location = (
+        shop_order.order.customer_live_location
+        if is_assigned_rider
+        and shop_order.status == "OUT_FOR_DELIVERY"
+        and _recent_customer_live_location(shop_order.order.customer_live_location)
+        else None
+    )
     rider_name = (
         shop_order.assigned_rider.user.get_full_name()
         or shop_order.assigned_rider.user.username
@@ -15231,43 +20293,13 @@ def shop_order_rider_location(request, shop_order_id):
     )
     return JsonResponse({
         "location": location,
+        "customer_location": customer_location,
         "rider_name": rider_name,
         "updated_at": shop_order.updated_at.isoformat(),
     })
 
 
-@login_required
-def update_rider_location(request, shop_order_id):
-    if request.method != "POST":
-        return JsonResponse({"error": "POST required."}, status=405)
-
-    shop_order = get_object_or_404(
-        ShopOrder.objects.select_for_update().select_related("shop", "order"),
-        id=shop_order_id,
-    )
-    rider = ShopStaff.objects.filter(
-        user=request.user,
-        is_active=True,
-        role="RIDER",
-    ).select_related("shop").first()
-    if not rider or shop_order.assigned_rider_id != rider.id:
-        raise PermissionDenied
-    if shop_order.status != "OUT_FOR_DELIVERY":
-        return JsonResponse({"error": "Location updates are only accepted during delivery."}, status=409)
-
-    try:
-        latitude = float(request.POST.get("latitude", ""))
-        longitude = float(request.POST.get("longitude", ""))
-    except (TypeError, ValueError):
-        return JsonResponse({"error": "Valid latitude and longitude are required."}, status=400)
-    if (
-        not math.isfinite(latitude)
-        or not math.isfinite(longitude)
-        or not -90 <= latitude <= 90
-        or not -180 <= longitude <= 180
-    ):
-        return JsonResponse({"error": "Location coordinates are out of range."}, status=400)
-
+def _save_shop_order_rider_location(shop_order, latitude, longitude):
     shop_order.rider_last_location = {"lat": latitude, "lng": longitude}
     update_fields = ["rider_last_location", "updated_at"]
     distance_km = _order_delivery_distance_km(shop_order.order, latitude, longitude)
@@ -15294,6 +20326,290 @@ def update_rider_location(request, shop_order_id):
             shop_order.rider_nearby_notified_at = timezone.now()
             update_fields.append("rider_nearby_notified_at")
     shop_order.save(update_fields=update_fields)
+
+
+@login_required
+def update_rider_location(request, shop_order_id):
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required."}, status=405)
+
+    shop_order = get_object_or_404(
+        ShopOrder.objects.select_for_update().select_related(
+            "shop",
+            "order",
+            "assigned_rider__user",
+            "assigned_rider__shop",
+        ),
+        id=shop_order_id,
+    )
+    rider = _rider_membership_for_order(request.user, shop_order)
+    if (
+        not rider
+        or not shop_order.assigned_rider_id
+        or shop_order.assigned_rider.user_id != request.user.id
+    ):
+        raise PermissionDenied
+    if shop_order.status != "OUT_FOR_DELIVERY":
+        return JsonResponse({"error": "Location updates are only accepted during delivery."}, status=409)
+
+    try:
+        latitude = float(request.POST.get("latitude", ""))
+        longitude = float(request.POST.get("longitude", ""))
+    except (TypeError, ValueError):
+        return JsonResponse({"error": "Valid latitude and longitude are required."}, status=400)
+    if (
+        not math.isfinite(latitude)
+        or not math.isfinite(longitude)
+        or not -90 <= latitude <= 90
+        or not -180 <= longitude <= 180
+    ):
+        return JsonResponse({"error": "Location coordinates are out of range."}, status=400)
+
+    _save_shop_order_rider_location(shop_order, latitude, longitude)
+    return JsonResponse({"success": True})
+
+
+@login_required
+def mobile_location_session(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required."}, status=405)
+    if request.POST.get("consent") != "true":
+        return JsonResponse({"error": "Location sharing consent is required."}, status=400)
+
+    role = request.POST.get("role", "").strip().lower()
+    order_ids = []
+    destinations = []
+    if role == "customer":
+        order_reference = request.POST.get("order_id", "").strip()
+        order = get_object_or_404(
+            Order,
+            Q(tracking_code=order_reference) | Q(order_id=order_reference),
+            user=request.user.username,
+            is_valid_order=True,
+        )
+        active_shop_orders = ShopOrder.objects.filter(order=order).exclude(
+            status__in=("DELIVERED", "COMPLETED", "CANCELLED", "RETURNED")
+        ).filter(delivery_completed_at__isnull=True)
+        if not active_shop_orders.exists():
+            return JsonResponse({"error": "This order is no longer active."}, status=409)
+        order_ids = [order.pk]
+    elif role == "rider":
+        active_shop_orders = (
+            ShopOrder.objects.filter(
+                assigned_rider__user=request.user,
+                assigned_rider__is_active=True,
+                assigned_rider__role="RIDER",
+                status="OUT_FOR_DELIVERY",
+                delivery_completed_at__isnull=True,
+            )
+            .select_related("order")
+            .order_by("pk")
+        )
+        order_ids = list(active_shop_orders.values_list("pk", flat=True))
+        if not order_ids:
+            return JsonResponse(
+                {"error": "No active deliveries are assigned to this rider."},
+                status=409,
+            )
+        destinations = [
+            {
+                "latitude": coordinates["lat"],
+                "longitude": coordinates["lng"],
+                "identifier": f"shop-order-{shop_order.pk}",
+            }
+            for shop_order in active_shop_orders
+            if (
+                coordinates := _get_order_delivery_coordinates(shop_order.order)
+            )
+        ]
+        if not destinations:
+            return JsonResponse(
+                {"error": "Add delivery map coordinates before enabling nearby rider tracking."},
+                status=409,
+            )
+    else:
+        return JsonResponse({"error": "Choose a supported location-sharing role."}, status=400)
+
+    token = signing.dumps(
+        {
+            "user_id": request.user.pk,
+            "role": role,
+            "order_ids": order_ids,
+        },
+        salt="sellerhelper.mobile-live-location",
+        compress=True,
+    )
+    return JsonResponse(
+        {
+            "token": token,
+            "role": role,
+            "endpoint": request.build_absolute_uri(
+                reverse("mobile_live_location_update")
+            ),
+            "destinations": destinations,
+        }
+    )
+
+
+@csrf_exempt
+def mobile_live_location_update(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required."}, status=405)
+
+    auth_scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+    if auth_scheme.lower() != "bearer" or not token:
+        return JsonResponse({"error": "A valid location session is required."}, status=401)
+    try:
+        claims = signing.loads(
+            token,
+            salt="sellerhelper.mobile-live-location",
+            max_age=24 * 60 * 60,
+        )
+    except signing.SignatureExpired:
+        return JsonResponse({"error": "The location session has expired."}, status=401)
+    except signing.BadSignature:
+        return JsonResponse({"error": "The location session is invalid."}, status=401)
+
+    user = get_user_model().objects.filter(
+        pk=claims.get("user_id"),
+        is_active=True,
+    ).first()
+    order_ids = claims.get("order_ids")
+    role = claims.get("role")
+    if not user or not isinstance(order_ids, list) or not order_ids:
+        return JsonResponse({"error": "The location session is invalid."}, status=401)
+
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return JsonResponse(
+            {"error": "A valid JSON request body is required."},
+            status=400,
+        )
+    if not isinstance(payload, dict):
+        return JsonResponse(
+            {"error": "A JSON object is required."},
+            status=400,
+        )
+
+    if role == "customer" and payload.get("stop") is True:
+        Order.objects.filter(
+            pk__in=order_ids,
+            user=user.username,
+        ).update(customer_live_location={}, updated_at=timezone.now())
+        return JsonResponse({"success": True, "tracking_active": False})
+
+    try:
+        latitude = float(payload.get("latitude"))
+        longitude = float(payload.get("longitude"))
+    except (AttributeError, TypeError, ValueError):
+        return JsonResponse(
+            {"error": "Valid latitude and longitude are required."},
+            status=400,
+        )
+    if (
+        not math.isfinite(latitude)
+        or not math.isfinite(longitude)
+        or not -90 <= latitude <= 90
+        or not -180 <= longitude <= 180
+    ):
+        return JsonResponse({"error": "Location coordinates are out of range."}, status=400)
+
+    observed_at = timezone.now()
+    location = {
+        "lat": latitude,
+        "lng": longitude,
+        "observed_at": observed_at.isoformat(),
+    }
+    if role == "customer":
+        active_orders = Order.objects.filter(
+            pk__in=order_ids,
+            user=user.username,
+            is_valid_order=True,
+            shop_orders__delivery_completed_at__isnull=True,
+        ).exclude(
+            shop_orders__status__in=("DELIVERED", "COMPLETED", "CANCELLED", "RETURNED")
+        ).distinct()
+        active_order_ids = list(active_orders.values_list("pk", flat=True))
+        active_orders.update(customer_live_location=location, updated_at=observed_at)
+        tracking_active = bool(active_order_ids)
+    elif role == "rider":
+        active_shop_orders = (
+            ShopOrder.objects.select_for_update()
+            .filter(
+                pk__in=order_ids,
+                assigned_rider__user=user,
+                assigned_rider__is_active=True,
+                assigned_rider__role="RIDER",
+                status="OUT_FOR_DELIVERY",
+                delivery_completed_at__isnull=True,
+            )
+            .select_related("order", "shop", "assigned_rider")
+        )
+        active_shop_orders = list(active_shop_orders)
+        for shop_order in active_shop_orders:
+            _save_shop_order_rider_location(shop_order, latitude, longitude)
+        tracking_active = bool(active_shop_orders)
+    else:
+        return JsonResponse({"error": "The location session is invalid."}, status=401)
+
+    return JsonResponse(
+        {
+            "success": True,
+            "tracking_active": tracking_active,
+        }
+    )
+
+
+@login_required
+def update_public_rider_location(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required."}, status=405)
+    if request.session.get("active_portal") != "RIDER":
+        raise PermissionDenied
+    application = PublicRiderApplication.objects.filter(
+        user=request.user,
+        status=PublicRiderApplication.STATUS_APPROVED,
+    ).first()
+    if not application:
+        raise PermissionDenied
+
+    observed_at = timezone.now()
+    try:
+        latitude = float(request.POST.get("latitude", ""))
+        longitude = float(request.POST.get("longitude", ""))
+    except (TypeError, ValueError):
+        return JsonResponse(
+            {"error": "Valid latitude and longitude are required."},
+            status=400,
+        )
+    if (
+        not math.isfinite(latitude)
+        or not math.isfinite(longitude)
+        or not -90 <= latitude <= 90
+        or not -180 <= longitude <= 180
+    ):
+        return JsonResponse(
+            {"error": "Location coordinates are out of range."},
+            status=400,
+        )
+
+    location = {
+        "lat": latitude,
+        "lng": longitude,
+        "observed_at": observed_at.timestamp(),
+    }
+    updated_memberships = ShopStaff.objects.filter(
+        user=request.user,
+        is_active=True,
+        is_public_rider=True,
+        role="RIDER",
+    ).update(last_location=location)
+    if not updated_memberships:
+        return JsonResponse(
+            {"error": "No active public rider network membership was found."},
+            status=409,
+        )
     return JsonResponse({"success": True})
 
 
@@ -15532,6 +20848,7 @@ def delivery_address_edit(request, pk):
             }
 
             address.save()
+            _zero_unavailable_address_cart_items(request, address)
 
             messages.success(
                 request,

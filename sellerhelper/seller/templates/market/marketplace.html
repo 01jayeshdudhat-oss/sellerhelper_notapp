@@ -9,6 +9,90 @@ Marketplace
 (() => {
     const productsPerRow = Number("{{ marketplace_products_per_row|default:4 }}");
     const configuredRows = Number("{{ marketplace_rows_per_category|default:2 }}");
+    const productAutoScrollStates = new WeakMap();
+    const categorySearchTimers = new WeakMap();
+    const categoryServerSearchTimers = new WeakMap();
+    const categorySearchScrollPositions = new WeakMap();
+    const categorySearchStorageKeys = new WeakMap();
+    const normalizeSearchText = (value) => String(value || "")
+        .normalize("NFKC")
+        .normalize("NFD")
+        .toLowerCase()
+        .replace(/\u00df/g, "ss")
+        .replace(/\u03c2/g, "\u03c3")
+        .replace(/[\u0901\u0981\u0a81]/gu, (mark) => ({
+            "\u0901": "\u0902",
+            "\u0981": "\u0982",
+            "\u0a81": "\u0a82",
+        })[mark])
+        .replace(/[\u094d\u09cd\u0a4d\u0acd\u0b4d\u0bcd\u0c4d\u0ccd\u0d4d\u{111c0}\u{114c2}\uaaf6](?=$|\s|[.,!?;:])/gu, "")
+        .replace(/(\p{Script=Latin})\p{M}+/gu, "$1")
+        .replace(/[\u0610-\u061a\u064b-\u065f\u0670\u06d6-\u06ed]/gu, "")
+        .normalize("NFC");
+    const setupProductAutoScroll = () => {
+        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+            return;
+        }
+
+        document.querySelectorAll(".category-product-track, .category-product-row").forEach((container) => {
+            if (productAutoScrollStates.has(container)) {
+                return;
+            }
+
+            const state = {
+                direction: 1,
+                pauseUntil: 0,
+                userPausedUntil: 0,
+                lastFrame: 0,
+            };
+            container.classList.add("product-auto-scroll-ready");
+            const pauseForUser = () => {
+                state.userPausedUntil = performance.now() + 5000;
+            };
+            ["pointerdown", "touchstart", "wheel", "keydown"].forEach((eventName) => {
+                container.addEventListener(eventName, pauseForUser, { passive: true });
+            });
+
+            const animate = (now) => {
+                if (!container.isConnected) {
+                    return;
+                }
+
+                const maxScroll = container.scrollWidth - container.clientWidth;
+                const bounds = container.getBoundingClientRect();
+                const isVisible = bounds.bottom > 0 && bounds.top < window.innerHeight;
+                if (
+                    !document.hidden
+                    && isVisible
+                    && maxScroll > 1
+                    && now >= state.pauseUntil
+                    && now >= state.userPausedUntil
+                ) {
+                    if (state.direction > 0 && container.scrollLeft >= maxScroll - 1) {
+                        container.scrollLeft = maxScroll;
+                        state.direction = -1;
+                        state.pauseUntil = now + 2000;
+                    } else if (state.direction < 0 && container.scrollLeft <= 1) {
+                        container.scrollLeft = 0;
+                        state.direction = 1;
+                        state.pauseUntil = now + 2000;
+                    } else {
+                        const elapsed = state.lastFrame ? Math.min(now - state.lastFrame, 50) : 0;
+                        container.scrollLeft = Math.max(
+                            0,
+                            Math.min(maxScroll, container.scrollLeft + state.direction * elapsed * 0.08),
+                        );
+                    }
+                }
+
+                state.lastFrame = now;
+                window.requestAnimationFrame(animate);
+            };
+
+            productAutoScrollStates.set(container, state);
+            window.requestAnimationFrame(animate);
+        });
+    };
     const arrangeCategoryProducts = () => {
         const mobileLayout = window.matchMedia("(max-width: 767.98px)").matches;
         document.querySelectorAll(".category-product-track").forEach((track) => {
@@ -31,31 +115,368 @@ Marketplace
                     item.dataset.categoryOrder = String(index);
                 }
             });
+            const searchInput = track.closest(".market-category-card")
+                ?.querySelector(".category-product-search-input");
             if (!mobileLayout) {
+                track.style.removeProperty("--market-product-item-width");
+                if (searchInput?.value) {
+                    updateCategorySearch(searchInput);
+                }
                 return;
             }
 
-            const itemWidth = `calc((100% - ${3 * (productsPerRow - 1)}px) / ${productsPerRow})`;
+            const trackStyle = window.getComputedStyle(track);
+            const columnGap = parseFloat(trackStyle.columnGap) || 0;
+            const rowGap = parseFloat(trackStyle.rowGap) || 0;
+            const itemWidth = `calc((100% - ${columnGap * (productsPerRow - 1)}px) / ${productsPerRow})`;
             const blockSize = productsPerRow * configuredRows;
             const productRows = [];
             items.forEach((item, index) => {
                 const blockIndex = Math.floor(index / blockSize);
                 const indexInBlock = index % blockSize;
-                const rowInBlock = blockIndex === 0
+                const rowIndex = blockIndex === 0
                     ? Math.floor(indexInBlock / productsPerRow)
                     : indexInBlock % configuredRows;
-                const rowIndex = rowInBlock;
                 if (!productRows[rowIndex]) {
                     const row = document.createElement("div");
                     row.className = "category-product-row";
+                    row.dataset.themeComponent = "marketplace_product_row";
                     row.style.setProperty("--market-product-item-width", itemWidth);
+                    row.style.setProperty("--market-product-row-gap", `${rowGap}px`);
                     productRows[rowIndex] = row;
                     track.append(row);
                 }
                 productRows[rowIndex].append(item);
             });
+            if (searchInput?.value) {
+                updateCategorySearch(searchInput);
+            }
+        });
+        window.applySiteComponentLayouts?.();
+        setupProductAutoScroll();
+    };
+    const resetCategorySearchTimer = (input) => {
+        const existingTimer = categorySearchTimers.get(input);
+        if (existingTimer !== undefined) {
+            window.clearTimeout(existingTimer);
+            categorySearchTimers.delete(input);
+        }
+        if (!input.value.trim()) {
+            return;
+        }
+
+        categorySearchTimers.set(input, window.setTimeout(() => {
+            input.value = "";
+            updateCategorySearch(input, true);
+        }, 10000));
+    };
+    const updateCategorySearch = (input, clearAfterTimeout = false) => {
+        const category = input.closest(".market-category-card");
+        const track = category?.querySelector(".category-product-track");
+        if (!track) {
+            return;
+        }
+
+        const query = normalizeSearchText(input.value.trim());
+        const hadActiveSearch = input.dataset.categorySearchActive === "true";
+        const items = Array.from(track.querySelectorAll(".category-product-item"));
+        let matchCount = 0;
+        items.forEach((item) => {
+            const searchText = [
+                item.dataset.searchText || "",
+                item.dataset.searchKeywords || "",
+            ].join(" ");
+            const matches = !query || normalizeSearchText(searchText).includes(query);
+            item.hidden = !matches;
+            if (matches) matchCount += 1;
+        });
+        track.querySelectorAll(".category-product-row").forEach((row) => {
+            row.hidden = !row.querySelector(".category-product-item:not([hidden])");
+        });
+        const status = category.querySelector(".category-product-search-status");
+        if (status) {
+            status.textContent = query
+                ? (matchCount ? `${matchCount} product${matchCount === 1 ? "" : "s"} found` : "No matching products")
+                : "";
+        }
+        const existingServerSearchTimer = categoryServerSearchTimers.get(input);
+        if (existingServerSearchTimer !== undefined) {
+            window.clearTimeout(existingServerSearchTimer);
+            categoryServerSearchTimers.delete(input);
+        }
+        if (query.length >= 2 && matchCount === 0) {
+            if (status) {
+                status.textContent = "No local matches; searching all products...";
+            }
+            categoryServerSearchTimers.set(input, window.setTimeout(() => {
+                if (normalizeSearchText(input.value.trim()) !== query) {
+                    return;
+                }
+                const searchUrl = new URL(window.location.href);
+                searchUrl.searchParams.set("q", input.value.trim());
+                searchUrl.searchParams.delete("shop");
+                searchUrl.searchParams.delete("market");
+                window.location.assign(searchUrl.toString());
+            }, 700));
+        }
+        if (query) {
+            input.dataset.categorySearchActive = "true";
+        } else {
+            delete input.dataset.categorySearchActive;
+            if (hadActiveSearch) {
+                const savedScrollY = categorySearchScrollPositions.get(input);
+                const storageKey = categorySearchStorageKeys.get(input);
+                if (savedScrollY !== undefined) {
+                    categorySearchScrollPositions.delete(input);
+                    if (storageKey) {
+                        try {
+                            window.localStorage.removeItem(storageKey);
+                        } catch (error) {
+                            console.warn("Marketplace search scroll position could not be cleared.", error);
+                        }
+                    }
+                    window.requestAnimationFrame(() => {
+                        const maxScrollY = Math.max(
+                            0,
+                            document.documentElement.scrollHeight - window.innerHeight,
+                        );
+                        window.scrollTo({
+                            top: Math.min(savedScrollY, maxScrollY),
+                            behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+                                ? "auto"
+                                : "smooth",
+                        });
+                    });
+                }
+            }
+        }
+
+        if (query && !clearAfterTimeout) {
+            resetCategorySearchTimer(input);
+        } else if (!query) {
+            const existingTimer = categorySearchTimers.get(input);
+            if (existingTimer !== undefined) {
+                window.clearTimeout(existingTimer);
+                categorySearchTimers.delete(input);
+            }
+        }
+    };
+    const resetActiveCategorySearchTimers = () => {
+        document.querySelectorAll(".category-product-search-input").forEach((input) => {
+            if (input.value.trim()) {
+                resetCategorySearchTimer(input);
+            }
         });
     };
+    document.querySelectorAll(".category-product-search-input").forEach((input) => {
+        const category = input.closest(".market-category-card");
+        const categoryName = category?.querySelector(".market-category-name")?.textContent.trim() || "";
+        const marketName = category?.closest("[data-marketplace-section='products']")
+            ?.querySelector(".market-section-title h4")?.textContent.trim() || "";
+        const inputIndex = Array.from(
+            document.querySelectorAll(".category-product-search-input"),
+        ).indexOf(input);
+        const storageKey = [
+            "marketplace-search-scroll",
+            window.location.pathname,
+            marketName,
+            categoryName,
+            inputIndex,
+        ].join(":");
+        categorySearchStorageKeys.set(input, storageKey);
+        input.addEventListener("focus", () => {
+            if (input.dataset.categorySearchActive === "true") {
+                return;
+            }
+            const savedScrollY = window.scrollY;
+            let storedScrollY = null;
+            try {
+                storedScrollY = window.localStorage.getItem(storageKey);
+            } catch (error) {
+                console.warn("Marketplace search scroll position could not be read.", error);
+            }
+            const parsedStoredScrollY = storedScrollY === null
+                ? NaN
+                : Number(storedScrollY);
+            const hasStoredScrollY = Number.isFinite(parsedStoredScrollY)
+                && parsedStoredScrollY >= 0;
+            const scrollYToRestore = hasStoredScrollY ? parsedStoredScrollY : savedScrollY;
+            categorySearchScrollPositions.set(input, scrollYToRestore);
+            if (!hasStoredScrollY) {
+                try {
+                    window.localStorage.setItem(storageKey, String(savedScrollY));
+                } catch (error) {
+                    console.warn("Marketplace search scroll position could not be saved.", error);
+                }
+            }
+            const navbar = document.querySelector(".main-navbar");
+            const navbarBottom = navbar?.getBoundingClientRect().bottom || 0;
+            const marketTabsWrap = document.querySelector(".market-category-nav-wrap");
+            const marketTabs = marketTabsWrap?.querySelector(".market-category-nav");
+            const marketTabsHeight = marketTabsWrap
+                && window.getComputedStyle(marketTabsWrap).display !== "none"
+                ? marketTabs?.getBoundingClientRect().height || 0
+                : 0;
+            const inputTop = input.getBoundingClientRect().top + savedScrollY;
+            window.scrollTo({
+                top: Math.max(0, inputTop - navbarBottom - marketTabsHeight - 8),
+                behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+                    ? "auto"
+                    : "smooth",
+            });
+        });
+        input.addEventListener("input", () => updateCategorySearch(input));
+        input.addEventListener("search", () => updateCategorySearch(input));
+        input.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                input.value = "";
+                updateCategorySearch(input);
+            }
+        });
+    });
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    document.querySelectorAll("[data-category-voice-search]").forEach((button) => {
+        const category = button.closest(".market-category-card");
+        const input = category?.querySelector(".category-product-search-input");
+        const status = category?.querySelector(".category-product-voice-status");
+        if (!input || !status) {
+            return;
+        }
+
+        const setListening = (listening) => {
+            button.classList.toggle("btn-danger", listening);
+            button.classList.toggle("btn-outline-secondary", !listening);
+            button.setAttribute("aria-pressed", String(listening));
+        };
+        const applyTranscript = (transcript) => {
+            input.value = transcript;
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+        };
+
+        document.addEventListener("sellerhelper:native-voice-start", (event) => {
+            if (window.__sellerHelperVoiceSearchTarget !== button) {
+                return;
+            }
+            setListening(true);
+            status.textContent = "Listening. Speak the product name.";
+        });
+        document.addEventListener("sellerhelper:native-voice-result", (event) => {
+            if (window.__sellerHelperVoiceSearchTarget !== button) {
+                return;
+            }
+            const transcript = String(event.detail?.transcript || "").trim();
+            if (!transcript) {
+                return;
+            }
+            applyTranscript(transcript);
+            status.textContent = event.detail?.isFinal
+                ? `Heard: ${transcript}`
+                : `Listening: ${transcript}`;
+            if (event.detail?.isFinal) {
+                setListening(false);
+                window.__sellerHelperVoiceSearchTarget = null;
+            }
+        });
+        document.addEventListener("sellerhelper:native-voice-error", (event) => {
+            if (window.__sellerHelperVoiceSearchTarget !== button) {
+                return;
+            }
+            setListening(false);
+            status.textContent = event.detail?.message
+                || "Voice search failed. Please type your search instead.";
+            window.__sellerHelperVoiceSearchTarget = null;
+        });
+        document.addEventListener("sellerhelper:native-voice-end", () => {
+            if (window.__sellerHelperVoiceSearchTarget !== button) {
+                return;
+            }
+            setListening(false);
+            status.textContent = input.value.trim()
+                ? `Voice search: ${input.value.trim()}`
+                : "No words were recognized. Tap the microphone and try again.";
+            window.__sellerHelperVoiceSearchTarget = null;
+        });
+
+        button.addEventListener("click", () => {
+            if (window.ReactNativeWebView) {
+                if (window.__sellerHelperVoiceSearchTarget === button) {
+                    window.ReactNativeWebView.postMessage(JSON.stringify({ type: "voice.stop" }));
+                    return;
+                }
+                if (window.__sellerHelperVoiceSearchTarget) {
+                    status.textContent = "Another voice search is already listening.";
+                    return;
+                }
+                window.__sellerHelperVoiceSearchTarget = button;
+                applyTranscript("");
+                status.textContent = "Starting voice search…";
+                window.ReactNativeWebView.postMessage(JSON.stringify({
+                    type: "voice.start",
+                    language: navigator.language || "en-IN",
+                }));
+                return;
+            }
+            if (!SpeechRecognition) {
+                status.textContent = "Voice search is not supported in this browser. Type your search instead.";
+                return;
+            }
+            if (button._categoryVoiceRecognition) {
+                button._categoryVoiceRecognition.stop();
+                return;
+            }
+
+            const recognition = new SpeechRecognition();
+            button._categoryVoiceRecognition = recognition;
+            recognition.lang = navigator.language || "en-IN";
+            recognition.interimResults = true;
+            recognition.maxAlternatives = 1;
+            applyTranscript("");
+            recognition.onstart = () => {
+                setListening(true);
+                status.textContent = "Listening. Speak the product name.";
+            };
+            recognition.onresult = (event) => {
+                let transcript = "";
+                for (let index = 0; index < event.results.length; index += 1) {
+                    transcript += `${event.results[index][0].transcript} `;
+                }
+                transcript = transcript.trim();
+                if (!transcript) {
+                    return;
+                }
+                applyTranscript(transcript);
+                status.textContent = event.results[event.results.length - 1].isFinal
+                    ? `Heard: ${transcript}`
+                    : `Listening: ${transcript}`;
+            };
+            recognition.onerror = (event) => {
+                const messages = {
+                    "not-allowed": "Microphone permission is blocked. Allow microphone access in browser settings.",
+                    "service-not-allowed": "The browser speech recognition service is unavailable.",
+                    "audio-capture": "No microphone was found. Check your microphone and try again.",
+                    "no-speech": "No speech was detected. Tap the microphone and try again.",
+                };
+                status.textContent = messages[event.error]
+                    || "Voice search failed. Please type your search instead.";
+            };
+            recognition.onend = () => {
+                button._categoryVoiceRecognition = null;
+                setListening(false);
+                if (input.value.trim()) {
+                    status.textContent = `Voice search: ${input.value.trim()}`;
+                }
+            };
+            try {
+                recognition.start();
+            } catch (error) {
+                button._categoryVoiceRecognition = null;
+                status.textContent = "Could not start voice search. Check microphone permission and try again.";
+            }
+        });
+    });
+    ["pointerdown", "pointermove", "touchstart", "touchmove", "wheel", "keydown"].forEach((eventName) => {
+        window.addEventListener(eventName, resetActiveCategorySearchTimers, { passive: true });
+    });
     window.addEventListener("resize", arrangeCategoryProducts, { passive: true });
     if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", arrangeCategoryProducts, { once: true });
@@ -78,7 +499,7 @@ Marketplace
             return;
         }
 
-        const headerVisible = !document.body.classList.contains("sellerhelper-bars-hidden");
+        const headerVisible = !navbar.classList.contains("navigation-hidden");
         const topOffset = headerVisible ? navbar.offsetHeight : 0;
         document.documentElement.style.setProperty(
             "--market-category-tabs-top",
@@ -113,13 +534,37 @@ Marketplace
 {% block content %}
 
 <style>
-.marketplace-shell { max-width: 1600px; margin: 0 auto; padding-inline: clamp(12px, 2vw, 28px); }
+.marketplace-shell {
+    --market-primary: #146c5b;
+    --market-accent: #16835f;
+    --market-header-start: #123b65;
+    --market-header-end: #208b72;
+    --market-card-radius: 18px;
+    --market-section-gap: 22px;
+    --market-product-gap: 14px;
+    --market-content-width: 2400px;
+    --market-product-width: 190px;
+    --market-desktop-padding: 16px;
+    --market-mobile-padding: 2px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--market-section-gap);
+    max-width: 1600px;
+    margin: 0 auto;
+    padding-inline: var(--market-desktop-padding);
+}
+.marketplace-shell > [data-marketplace-section] { margin-block: 0 !important; }
+.marketplace-shell [data-marketplace-section][hidden] { display: none !important; }
+@media (min-width: 992px) {
+    .marketplace-shell { width: 100%; max-width: var(--market-content-width); }
+    .marketplace-main-container { max-width: none !important; }
+}
 .market-header {
     position: relative; overflow: hidden; isolation: isolate;
-    color: #fff; border-radius: 26px; padding: clamp(20px, 4vw, 42px);
-    margin-bottom: 22px;
+    color: #fff; border-radius: var(--market-card-radius); padding: clamp(20px, 4vw, 42px);
+    margin-bottom: 0;
     background: radial-gradient(circle at 88% 8%, rgba(255,255,255,.2), transparent 28%),
-                linear-gradient(125deg, #123b65 0%, #146c5b 55%, #208b72 100%);
+                linear-gradient(125deg, var(--market-header-start) 0%, var(--market-primary) 55%, var(--market-header-end) 100%);
     box-shadow: 0 18px 48px rgba(18, 59, 101, .18);
 }
 .market-header:after {
@@ -135,40 +580,54 @@ Marketplace
 .market-search { position: relative; max-width: 820px; margin: 0 auto 24px; }
 .market-search .form-control { min-height: 58px; border: 1px solid #dfe7ed; border-radius: 16px 0 0 16px; box-shadow: 0 8px 24px rgba(18,38,63,.06); }
 .market-search .btn { min-width: 58px; }
-.market-search .btn-primary { border-radius: 0 16px 16px 0; background: #146c5b; border-color: #146c5b; }
+.market-search .btn-primary { border-radius: 0 16px 16px 0; background: var(--market-primary); border-color: var(--market-primary); }
 .market-search .btn-clear { border-radius: 0 16px 16px 0; }
-.nearby-shop-panel { border: 1px solid #e7edf0 !important; border-radius: 20px; background: #fff; }
+.nearby-shop-panel { border: 1px solid #e7edf0 !important; border-radius: var(--market-card-radius); background: #fff; }
 .nearby-shop-panel > summary { min-height: 64px; padding: 17px 20px; }
 .nearby-shop-panel > summary::-webkit-details-marker { display: none; }
 .nearby-shop-panel[open] > summary { border-bottom: 1px solid #edf1f3; }
 .nearby-shop-panel .summary-hint { transition: transform .2s ease; }
 .nearby-shop-panel[open] .summary-hint { transform: rotate(180deg); }
-.nearby-shop-card { overflow: hidden; border-radius: 16px !important; transition: transform .18s ease, box-shadow .18s ease; }
+.nearby-shop-card { overflow: hidden; border-radius: var(--market-card-radius) !important; transition: transform .18s ease, box-shadow .18s ease; }
 .nearby-shop-card:hover { transform: translateY(-3px); box-shadow: 0 12px 28px rgba(17, 40, 58, .13) !important; }
 .nearby-shop-card img { transition: transform .25s ease; }
 .nearby-shop-card:hover img { transform: scale(1.035); }
 .market-category-nav { position: sticky; top: 68px; z-index: 20; background: rgba(245,247,251,.94); backdrop-filter: blur(12px); padding: 10px 0; margin-bottom: 18px; }
+.market-product-modal-open .market-category-nav-wrap { display: none !important; }
 .market-category-nav .nav-pills { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; padding-bottom: 4px; }
-.market-category-nav .nav-link { white-space: nowrap; color: #334155 !important; background: #fff; border: 1px solid #e1e8ed; }
-.market-category-nav .nav-link:hover { color: #146c5b !important; border-color: #b7d9d1; background: #eff8f5; }
+.market-category-nav .nav-link { white-space: nowrap; color: #334155 !important; background: #fff; border: 1px solid #e1e8ed; border-radius: var(--market-card-radius); }
+.market-category-nav .nav-link:hover { color: var(--market-primary) !important; border-color: #b7d9d1; background: #eff8f5; }
 .market-section-title { border-bottom: 1px solid #e5ebef; padding-bottom: 12px; }
 .market-section-title[id] { scroll-margin-top: 145px; }
-.market-category-card { border-radius: 20px !important; overflow: hidden; }
+.market-category-card { border-radius: var(--market-card-radius) !important; overflow: hidden; }
 .market-category-card .card-body { padding: clamp(12px, 2vw, 22px); }
 .market-category-name { letter-spacing: .08em; font-size: .78rem; }
 .category-product-track {
-    display: flex; gap: 14px; overflow-x: auto; overscroll-behavior-x: contain;
+    display: flex; gap: var(--market-product-gap); overflow-x: auto; overscroll-behavior-x: contain;
     scroll-snap-type: x proximity; scrollbar-width: thin; padding: 2px 2px 12px;
 }
-.category-product-item { flex: 0 0 190px; width: 190px; scroll-snap-align: start; }
+.product-auto-scroll-ready { scroll-behavior: auto !important; scroll-snap-type: none !important; }
+.category-product-item { flex: 0 0 var(--market-product-width); width: var(--market-product-width); scroll-snap-align: start; }
 .product-card {
-    display: flex; flex-direction: column; background: #fff; border-radius: 18px;
+    display: flex; flex-direction: column; background: #fff; border-radius: var(--market-card-radius);
     overflow: hidden; border: 1px solid #e8edf0; transition: .2s ease;
     height: 100%; cursor: pointer; box-shadow: 0 3px 12px rgba(18,38,63,.035);
 }
 .product-card:hover { transform: translateY(-3px); border-color: #c9ded8; box-shadow: 0 12px 28px rgba(18,38,63,.11); }
 .product-card:focus-visible { outline: 3px solid #36a68b; outline-offset: 3px; }
 .product-media { position: relative; }
+.marketplace-featured-badge {
+    position: absolute;
+    z-index: 2;
+    top: 6px;
+    left: 6px;
+    padding: 3px 7px;
+    border-radius: 999px;
+    color: #fff;
+    background: var(--market-accent);
+    font-size: .68rem;
+    font-weight: 800;
+}
 .product-image, .product-placeholder { display: block; width: 100%; height: clamp(130px, 15vw, 190px); }
 .product-image { object-fit: contain; background: linear-gradient(180deg,#fff,#f7faf9); padding: 14px; }
 .product-placeholder { display:flex; align-items:center; justify-content:center; background:#f4f7f6; font-size:48px; }
@@ -177,9 +636,9 @@ Marketplace
 .product-body { display:flex; flex:1; flex-direction:column; padding: 10px; }
 .product-body > small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .product-name { font-weight: 700; line-height: 1.35; min-height: 2.7em; margin-top: 4px; }
-.product-price { color: #145d52; font-size: 1.2rem; font-weight: 800; }
-.product-body .mt-2[onclick] { margin-top: auto !important; padding-top: 10px; }
-.product-card .btn-success { min-height: 42px; border-radius: 12px; font-weight: 700; background: #16835f; border-color: #16835f; }
+.product-price { color: var(--market-primary); font-size: 1.2rem; font-weight: 800; }
+.product-body > .product-cart-action { width: 100%; margin-top: auto !important; padding-top: 10px; justify-content: center; }
+.product-card .btn-success { min-height: 42px; border-radius: var(--market-card-radius); font-weight: 700; background: var(--market-accent); border-color: var(--market-accent); }
 .product-cart-action { display: flex; min-height: 42px; align-items: flex-end; }
 .product-cart-action > .btn-success,
 .product-cart-action > .qty-control { min-height: 42px; }
@@ -190,12 +649,19 @@ Marketplace
 .modal-product-image { width:100%; height:320px; object-fit:contain; background:#f8f9fa; }
 .modal-product-image-fallback { display:grid; min-height:180px; place-items:center; color:#64748b; background:#f3f6f5; border-radius:12px; font-size:2.5rem; }
 .modal-product-image[hidden], .modal-product-image-fallback[hidden] { display:none !important; }
+.modal-product-thumbnails { display:flex; gap:8px; overflow-x:auto; padding:8px 2px 4px; overscroll-behavior-inline:contain; }
+.modal-product-thumbnail { flex:0 0 64px; width:64px; height:64px; padding:3px; border:2px solid transparent; border-radius:8px; background:#fff; }
+.modal-product-thumbnail[aria-pressed="true"] { border-color:var(--market-accent,#16835f); }
+.modal-product-thumbnail img { display:block; width:100%; height:100%; object-fit:contain; }
+.modal-product-thumbnails[hidden] { display:none !important; }
+.modal-product-thumbnail[hidden] { display:none !important; }
 @media (max-width: 767.98px) {
-    .marketplace-shell { padding: 4px 2px 72px !important; }
+    .marketplace-shell { padding: 4px var(--market-mobile-padding) 72px !important; row-gap: var(--market-section-gap); }
+    .marketplace-shell > [data-marketplace-section] { margin-block: 0 !important; }
     .main-container > .container-fluid > .marketplace-shell {
         width: calc(100% + 16px);
         margin-inline: -8px;
-        padding-inline: 2px !important;
+        padding-inline: var(--market-mobile-padding) !important;
     }
     .marketplace-shell > .mb-4 { margin-bottom: 12px !important; }
     .market-header { border-radius: 14px; padding: 12px 11px; margin-bottom: 10px; }
@@ -256,8 +722,10 @@ Marketplace
     }
     .market-section-title { margin-bottom: 7px !important; padding-bottom: 5px; }
     .market-section-title h4 { font-size: 1.05rem; }
-    .market-category-card { margin: 0 !important; padding: 0 !important; border-radius: 0 !important; }
+    .market-category-card { margin: 0 !important; padding: 0 !important; border-radius: var(--market-card-radius) !important; }
     .market-category-card > .card-body { margin: 0 !important; padding: 0 !important; }
+    .category-product-search { margin: 7px 0 0; }
+    .category-product-search-status { min-height: 1em; }
     .marketplace-shell .d-grid.gap-3.mb-3 { gap: 0 !important; margin-bottom: 0 !important; }
     .market-category-name { margin: 0 !important; padding: 0 !important; font-size: .72rem; }
     .category-product-track {
@@ -270,15 +738,21 @@ Marketplace
     }
     .category-product-row {
         display: flex;
-        gap: 3px;
+        flex: 0 0 auto;
+        width: 100%;
+        gap: var(--market-product-row-gap, 3px);
         overflow-x: auto;
         overflow-y: hidden;
         overscroll-behavior-x: contain;
-        scroll-snap-type: x proximity;
+        scroll-snap-type: none;
         scrollbar-width: thin;
         -webkit-overflow-scrolling: touch;
+        padding-bottom: 4px;
     }
-    .category-product-row .category-product-item { flex: 0 0 var(--market-product-item-width, calc((100% - 9px) / 4)); }
+    .category-product-row > .category-product-item {
+        flex: 0 0 var(--market-product-item-width);
+        scroll-snap-align: start;
+    }
     .marketplace-shell > .row.g-3 {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -306,7 +780,7 @@ Marketplace
         padding: 0;
         scroll-snap-align: start;
     }
-    .nearby-shop-card { margin: 1px; padding: 1px; border-radius: 8px !important; }
+    .nearby-shop-card { margin: 1px; padding: 1px; border-radius: var(--market-card-radius) !important; }
     .nearby-shop-card .card-body { min-width: 0; margin: 0 !important; padding: 0 !important; font-size: .65rem; }
     .nearby-shop-card .card-body small,
     .nearby-shop-card .card-body .small { font-size: .56rem; }
@@ -317,7 +791,7 @@ Marketplace
         aspect-ratio: 1.28;
     }
     .nearby-shop-panel .row .favorite-heart { width: 20px; height: 20px; font-size: .65rem; }
-    .product-card { min-width: 0; margin: 1px; padding: 1px; border-radius: 8px; }
+    .product-card { min-width: 0; margin: 1px; padding: 1px; border-radius: var(--market-card-radius); }
     .product-card:hover { transform: none; }
     .product-image, .product-placeholder { height: auto; aspect-ratio: 1.28; }
     .product-image { padding: 0; }
@@ -379,10 +853,9 @@ Marketplace
     .market-category-card > .card-body { margin: 0 !important; padding: 0 !important; }
     .market-category-name { font-size: .62rem; }
     .marketplace-shell .d-grid.gap-3.mb-3 { gap: 0 !important; margin-bottom: 0 !important; }
-    .category-product-track,
-    .category-product-row { gap: 0; }
+    .category-product-track { gap: 0; }
     .category-product-item { min-height: 0; }
-    .product-card { margin: 1px; padding: 1px; border-radius: 8px; }
+    .product-card { margin: 1px; padding: 1px; border-radius: var(--market-card-radius); }
     .product-image, .product-placeholder { height: 44px; aspect-ratio: auto; }
     .product-image { padding: 1px; }
     .product-placeholder { font-size: 18px; }
@@ -405,7 +878,7 @@ Marketplace
     .product-unit { font-size: .54rem; }
     .product-price-row { margin-top: 1px !important; padding: 0; line-height: 1; }
     .product-body > .mt-2 { margin-top: 2px !important; }
-    .product-body > .mt-2[onclick] { margin-top: 2px !important; padding-top: 0; }
+    .product-body > .product-cart-action.mt-2 { margin-top: auto !important; padding-top: 2px; }
     .product-cart-action { min-height: 22px; }
     .product-cart-action > .btn-success,
     .product-cart-action > .qty-control { min-height: 22px; }
@@ -434,26 +907,29 @@ Marketplace
 </style>
 
 
-<div class="container-fluid py-3 marketplace-shell">
+<div class="container-fluid py-3 marketplace-shell" data-theme-component="marketplace_page"
+     style="--market-primary: {{ marketplace_theme.marketplace_primary_color|default:'#146c5b' }}; --market-accent: {{ marketplace_theme.marketplace_accent_color|default:'#16835f' }}; --market-header-start: {{ marketplace_theme.marketplace_header_start_color|default:'#123b65' }}; --market-header-end: {{ marketplace_theme.marketplace_header_end_color|default:'#208b72' }}; --market-card-radius: {{ marketplace_theme.marketplace_card_radius|default:18 }}px; --market-section-gap: {{ marketplace_theme.marketplace_section_gap|default:22 }}px; --market-product-gap: {{ marketplace_theme.marketplace_product_gap|default:14 }}px; --market-content-width: {{ marketplace_theme.marketplace_content_width|default:2400 }}px; --market-product-width: {{ marketplace_theme.marketplace_product_width|default:190 }}px; --market-desktop-padding: {{ marketplace_theme.marketplace_desktop_padding|default:16 }}px; --market-mobile-padding: {{ marketplace_theme.marketplace_mobile_padding|default:2 }}px; row-gap: {{ marketplace_theme.marketplace_section_gap|default:22 }}px;">
 
 
     <!-- =================================================
          HEADER
     ================================================== -->
 
-    <div class="market-header">
+    {% if marketplace_show_hero %}
+    <div class="market-header" data-marketplace-section="hero" data-theme-component="marketplace_hero" style="order: {{ marketplace_theme_order.hero }};">
 
         <div class="d-flex justify-content-between align-items-center">
 
             <div>
 
                 <h2 class="fw-bold mb-1">
-                    🛍️ Marketplace
+                    🛍️ {{ marketplace_theme.marketplace_hero_title|default:"Marketplace" }}
                 </h2>
 
                 <div>
-                    Find products from nearby shops
+                    {{ marketplace_theme.marketplace_hero_text|default:"Find products from nearby shops" }}
                 </div>
+                {% endif %}
 
             </div>
 
@@ -676,7 +1152,7 @@ Marketplace
     </div>
 
     {% if request.session.active_portal == "B2B_CUSTOMER" and not is_b2b_customer %}
-    <div class="alert alert-info d-flex flex-column flex-sm-row justify-content-between align-items-sm-center gap-2">
+    <div class="alert alert-info d-flex flex-column flex-sm-row justify-content-between align-items-sm-center gap-2" style="order: 1;">
         <span>Add a valid GSTIN to your profile to unlock B2B product prices and bulk offers.</span>
         <a href="{% url 'client_profile' %}" class="btn btn-sm btn-outline-primary text-nowrap">Add GSTIN</a>
     </div>
@@ -687,7 +1163,7 @@ Marketplace
          SEARCH
     ================================================== -->
 
-    <form method="get" class="market-search{% if is_customer_portal %} marketplace-search-duplicate{% endif %}">
+    <form method="get" data-marketplace-section="search" data-theme-component="marketplace_search" style="order: {{ marketplace_theme_order.search }};" class="market-search{% if is_customer_portal %} marketplace-search-duplicate{% endif %}">
         {% if address %}<input type="hidden" name="address" value="{{ address.id }}">{% endif %}
         {% if not address and request.GET.current_lat and request.GET.current_lng %}
             <input type="hidden" name="current_lat" value="{{ request.GET.current_lat }}">
@@ -732,8 +1208,8 @@ Marketplace
 
     </form>
 
-    {% if nearby_shops %}
-    <section class="mb-4">
+    {% if nearby_shops and marketplace_show_nearby_shops %}
+    <section class="mb-4" data-marketplace-section="nearby" data-theme-component="marketplace_nearby" style="order: {{ marketplace_theme_order.nearby }};">
         <details class="card nearby-shop-panel shadow-sm">
             <summary class="card-body d-flex justify-content-between align-items-center gap-3 fw-bold"
                      style="cursor:pointer;list-style:none">
@@ -756,13 +1232,26 @@ Marketplace
                         <div class="col-6 col-md-4 col-lg-3 col-xl-2 position-relative">
                             <a class="card nearby-shop-card h-100 text-decoration-none text-dark border-0 shadow-sm"
                                href="{% url 'marketplace' %}?shop={{ entry.shop.id }}{% if request.GET.q %}&amp;q={{ request.GET.q|urlencode }}{% endif %}{% if address %}&amp;address={{ address.id }}{% elif request.GET.current_lat and request.GET.current_lng %}&amp;current_lat={{ request.GET.current_lat }}&amp;current_lng={{ request.GET.current_lng }}{% endif %}">
-                                {% if entry.shop.cover_image_url %}
-                                    <img src="{{ entry.shop.cover_image_url }}" class="card-img-top" style="height:100px;object-fit:cover" alt="{{ entry.shop.name }}">
-                                {% elif entry.shop.logo_url %}
-                                    <img src="{{ entry.shop.logo_url }}" class="card-img-top" style="height:100px;object-fit:contain;padding:12px" alt="{{ entry.shop.name }}">
-                                {% else %}
-                                    <div class="d-flex align-items-center justify-content-center bg-light" style="height:100px;font-size:2rem">🏪</div>
-                                {% endif %}
+                                <div class="position-relative bg-light" style="height:100px">
+                                    {% if entry.shop.cover_image %}
+                                        <img src="{{ entry.shop.cover_image.url }}" class="card-img-top w-100 h-100" style="object-fit:cover" alt="{{ entry.shop.name }}">
+                                    {% elif entry.shop.cover_image_url %}
+                                        <img src="{{ entry.shop.cover_image_url }}" class="card-img-top w-100 h-100" style="object-fit:cover" alt="{{ entry.shop.name }}">
+                                    {% elif entry.shop.logo_image %}
+                                        <img src="{{ entry.shop.logo_image.url }}" class="card-img-top w-100 h-100" style="object-fit:contain;padding:12px" alt="{{ entry.shop.name }} logo">
+                                    {% elif entry.shop.logo_url %}
+                                        <img src="{{ entry.shop.logo_url }}" class="card-img-top w-100 h-100" style="object-fit:contain;padding:12px" alt="{{ entry.shop.name }} logo">
+                                    {% else %}
+                                        <div class="d-flex align-items-center justify-content-center h-100" style="font-size:2rem">🏪</div>
+                                    {% endif %}
+                                    {% if entry.shop.cover_image or entry.shop.cover_image_url %}
+                                        {% if entry.shop.logo_image %}
+                                            <img src="{{ entry.shop.logo_image.url }}" alt="{{ entry.shop.name }} logo" class="position-absolute bottom-0 start-0 m-2 rounded-circle border border-2 border-white bg-white" style="width:42px;height:42px;object-fit:contain">
+                                        {% elif entry.shop.logo_url %}
+                                            <img src="{{ entry.shop.logo_url }}" alt="{{ entry.shop.name }} logo" class="position-absolute bottom-0 start-0 m-2 rounded-circle border border-2 border-white bg-white" style="width:42px;height:42px;object-fit:contain">
+                                        {% endif %}
+                                    {% endif %}
+                                </div>
                                 <div class="card-body py-2">
                                     <div class="fw-bold text-truncate">{{ entry.shop.name }}</div>
                                     <small class="text-muted">{% if entry.distance_km is not None %}{{ entry.distance_km|floatformat:1 }} km away{% else %}Delivery available{% endif %}</small>
@@ -792,8 +1281,8 @@ Marketplace
          MARKET NAVIGATION
     ================================================== -->
 
-    {% if product_groups %}
-    <div class="market-category-nav-wrap">
+    {% if product_groups and marketplace_show_category_nav %}
+    <div class="market-category-nav-wrap" data-marketplace-section="category_nav" data-theme-component="marketplace_category_nav" style="order: {{ marketplace_theme_order.category_nav }};">
         <div class="market-category-nav">
             <div class="nav nav-pills gap-2" aria-label="Marketplace markets">
                 {% for market_group in product_groups %}
@@ -816,6 +1305,8 @@ Marketplace
     ================================================== -->
 
     {% if product_groups %}
+    {% if marketplace_show_products %}
+    <div data-marketplace-section="products" data-theme-component="marketplace_products" style="order: {{ marketplace_theme_order.products }};">
         {% for market_group in product_groups %}
             <div class="mb-4">
                 <div class="d-flex align-items-center justify-content-between mb-3 market-section-title">
@@ -824,18 +1315,39 @@ Marketplace
 
                 <div class="d-grid gap-3 mb-3">
                     {% for subcategory in market_group.subcategories %}
-                        <section class="card market-category-card border-0 shadow-sm">
+                        <section class="card market-category-card border-0 shadow-sm" data-theme-component="marketplace_category">
                             <div class="card-body">
                                 <h6 class="fw-bold text-uppercase text-secondary market-category-name">{{ subcategory.name }}</h6>
-                                <div class="category-product-track mt-2">
+                                <div class="input-group input-group-sm category-product-search">
+                                    <span class="input-group-text" aria-hidden="true"><i class="bi bi-search"></i></span>
+                                    <input
+                                        type="search"
+                                        class="form-control category-product-search-input"
+                                        placeholder="Search {{ subcategory.name }} products"
+                                        aria-label="Search {{ subcategory.name }} products within this category"
+                                        autocomplete="off"
+                                    >
+                                    <button
+                                        class="btn btn-outline-secondary"
+                                        type="button"
+                                        data-category-voice-search
+                                        aria-label="Search {{ subcategory.name }} products by voice"
+                                        aria-pressed="false"
+                                        title="Search this category by voice"
+                                    ><i class="bi bi-mic-fill" aria-hidden="true"></i></button>
+                                </div>
+                                <div class="small text-muted category-product-voice-status" aria-live="polite"></div>
+                                <div class="small text-muted category-product-search-status" aria-live="polite"></div>
+                                <div class="category-product-track mt-2" data-theme-component="marketplace_product_row">
                                     {% for item in subcategory.items %}
-                                            <div class="category-product-item">
+                                            <div class="category-product-item" data-theme-component="marketplace_product" data-search-text="{{ item.product.product_name }} {{ item.product.product_alias_name }} {{ item.product.product_title }} {{ item.shop.name }} {{ item.product.search_keywords }}" data-search-keywords="{{ item.marketplace_search_keywords }}">
                                                 <div class="product-card" data-product-id="{{ item.id }}" role="button" tabindex="0" aria-label="View {{ item.product.product_name }} details" onclick="openProduct({{ item.id }})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openProduct({{ item.id }});}">
                                                     <div class="product-media">
+                                                        {% if item.is_marketplace_featured %}<span class="marketplace-featured-badge">Featured</span>{% endif %}
                                                         {% if item.display_image_url %}
-                                                            <img src="{{ item.display_image_url }}" class="product-image" loading="lazy" decoding="async" alt="{{ item.product.product_name }}">
+                                                            <img src="{{ item.display_image_url }}" data-image-candidates="{{ item.display_image_urls|join:'|' }}" onerror="sellerHelperTryNextProductImage(this)" class="product-image" data-theme-component="marketplace_product_image" loading="lazy" decoding="async" alt="{{ item.product.product_name }}">
                                                         {% else %}
-                                                            <div class="product-placeholder">📦</div>
+                                                            <div class="product-placeholder" data-theme-component="marketplace_product_image">📦</div>
                                                         {% endif %}
                                                         <form method="post" action="{% url 'toggle_favorite_product' item.id %}" onclick="event.stopPropagation();">
                                                             {% csrf_token %}
@@ -869,7 +1381,7 @@ Marketplace
                                                                 <small class="product-unit">/ {{ item.marketplace_unit }}</small>
                                                             {% endif %}
                                                         </div>
-                                                        <div class="small text-success">{{ item.marketplace_stock }} available</div>
+                                                        <div class="small text-success">{{ item.marketplace_stock|floatformat:-4 }} available</div>
                                                         {% if item.has_bulk_offer %}
                                                             <div class="product-bulk-offer border-top mt-2 pt-2" onclick="event.stopPropagation();">
                                                                 <div class="product-bulk-title small fw-semibold">
@@ -912,6 +1424,8 @@ Marketplace
                 </div>
             </div>
         {% endfor %}
+    </div>
+    {% endif %}
     {% else %}
 
     <!-- =================================================
@@ -924,6 +1438,7 @@ Marketplace
 
         <div
             class="col-6 col-md-4 col-lg-3 col-xl-2"
+            data-theme-component="marketplace_product"
         >
 
             <div
@@ -941,12 +1456,15 @@ Marketplace
                     {% if item.display_image_url %}
                         <img
                             src="{{ item.display_image_url }}"
+                            data-image-candidates="{{ item.display_image_urls|join:'|' }}"
+                            onerror="sellerHelperTryNextProductImage(this)"
                             class="product-image"
+                            data-theme-component="marketplace_product_image"
                             loading="lazy"
                             alt="{{ item.product.product_name }}"
                         >
                     {% else %}
-                        <div class="product-placeholder">📦</div>
+                        <div class="product-placeholder" data-theme-component="marketplace_product_image">📦</div>
                     {% endif %}
                     <form method="post" action="{% url 'toggle_favorite_product' item.id %}" onclick="event.stopPropagation();">
                         {% csrf_token %}
@@ -1034,7 +1552,7 @@ Marketplace
 
                     <div class="small text-success">
 
-                        {{ item.marketplace_stock }} available
+                        {{ item.marketplace_stock|floatformat:-4 }} available
 
                     </div>
                     <!-- Quantity -->
@@ -1209,6 +1727,7 @@ Marketplace
                                 hidden
                             >
                             <div id="modalProductImageFallback" class="modal-product-image-fallback" hidden aria-label="Product image unavailable">📦</div>
+                            <div id="modalProductImageThumbnails" class="modal-product-thumbnails" role="group" aria-label="More product images" hidden></div>
 
                         </div>
 
@@ -1339,6 +1858,46 @@ Marketplace
 
 const csrfToken = "{{ csrf_token }}";
 
+const productModalElement = document.getElementById("productModal");
+const marketplaceSections = Array.from(
+    document.querySelectorAll(".marketplace-shell [data-marketplace-section]")
+);
+let marketplaceSectionVisibility = null;
+
+productModalElement.addEventListener("show.bs.modal", () => {
+    if (window.ReactNativeWebView) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({
+            type: "ui.modal",
+            open: true
+        }));
+    }
+    if (marketplaceSectionVisibility !== null) return;
+    document.body.classList.add("market-product-modal-open");
+    marketplaceSectionVisibility = marketplaceSections.map((section) => ({
+        section,
+        hidden: section.getAttribute("hidden")
+    }));
+    marketplaceSections.forEach((section) => section.setAttribute("hidden", ""));
+});
+
+productModalElement.addEventListener("hidden.bs.modal", () => {
+    if (window.ReactNativeWebView) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({
+            type: "ui.modal",
+            open: false
+        }));
+    }
+    document.body.classList.remove("market-product-modal-open");
+    if (marketplaceSectionVisibility === null) return;
+    marketplaceSectionVisibility.forEach(({ section, hidden }) => {
+        if (hidden === null) {
+            section.removeAttribute("hidden");
+        } else {
+            section.setAttribute("hidden", hidden);
+        }
+    });
+    marketplaceSectionVisibility = null;
+});
 
 /* =====================================================
    OPEN PRODUCT
@@ -1489,14 +2048,46 @@ function renderProductDetails(productId, data) {
                 "modalProductImage"
             );
         const imageFallback = document.getElementById("modalProductImageFallback");
+        const imageThumbnails = document.getElementById("modalProductImageThumbnails");
         const productCardImage = document.querySelector(
             `[data-product-id="${productId}"] .product-image`
         );
-        const imageCandidates = [
-            productCardImage?.currentSrc || productCardImage?.src,
-            data.image_url ? new URL(data.image_url, window.location.href).href : "",
-        ].filter((url, index, urls) => url && urls.indexOf(url) === index);
+        const imageCandidates = (data.image_urls?.length
+            ? data.image_urls
+            : [
+                productCardImage?.currentSrc || productCardImage?.src,
+                data.image_url ? new URL(data.image_url, window.location.href).href : "",
+            ]
+        ).filter((url, index, urls) => url && urls.indexOf(url) === index);
         let imageCandidateIndex = 0;
+        imageThumbnails.replaceChildren();
+        imageThumbnails.hidden = imageCandidates.length < 2;
+        imageCandidates.forEach((imageUrl, index) => {
+            const thumbnail = document.createElement("button");
+            thumbnail.type = "button";
+            thumbnail.className = "modal-product-thumbnail";
+            thumbnail.setAttribute("aria-label", `Show product image ${index + 1}`);
+            thumbnail.setAttribute("aria-pressed", String(index === 0));
+            thumbnail.addEventListener("click", () => {
+                imageCandidateIndex = index;
+                image.hidden = true;
+                image.style.display = "none";
+                imageFallback.hidden = true;
+                image.src = imageCandidates[index];
+                imageThumbnails.querySelectorAll(".modal-product-thumbnail").forEach((button, buttonIndex) => {
+                    button.setAttribute("aria-pressed", String(buttonIndex === index));
+                });
+            });
+            const thumbnailImage = document.createElement("img");
+            thumbnailImage.src = imageUrl;
+            thumbnailImage.alt = "";
+            thumbnailImage.loading = "lazy";
+            thumbnailImage.addEventListener("error", () => {
+                thumbnail.hidden = true;
+            }, { once: true });
+            thumbnail.appendChild(thumbnailImage);
+            imageThumbnails.appendChild(thumbnail);
+        });
         image.hidden = true;
         imageFallback.hidden = true;
         image.onload = () => {
@@ -1507,12 +2098,18 @@ function renderProductDetails(productId, data) {
         image.onerror = () => {
             imageCandidateIndex += 1;
             if (imageCandidateIndex < imageCandidates.length) {
+                imageThumbnails.querySelectorAll(".modal-product-thumbnail").forEach((button, index) => {
+                    button.setAttribute("aria-pressed", String(index === imageCandidateIndex));
+                });
                 image.src = imageCandidates[imageCandidateIndex];
                 return;
             }
             image.hidden = true;
             image.style.display = "none";
             imageFallback.hidden = false;
+            imageThumbnails.querySelectorAll(".modal-product-thumbnail").forEach((button) => {
+                button.setAttribute("aria-pressed", "false");
+            });
         };
 
         if (imageCandidates.length) {
@@ -1535,6 +2132,21 @@ function renderProductDetails(productId, data) {
         updateModalCart(productId, data.quantity, data.stock);
 }
 
+window.sellerHelperTryNextProductImage = function (image) {
+    const candidates = (image.dataset.imageCandidates || "")
+        .split("|")
+        .filter(Boolean);
+    const nextIndex = Number(image.dataset.imageCandidateIndex || "0") + 1;
+    if (nextIndex < candidates.length) {
+        image.dataset.imageCandidateIndex = String(nextIndex);
+        image.src = candidates[nextIndex];
+        return;
+    }
+    const placeholder = document.createElement("div");
+    placeholder.className = "product-placeholder";
+    placeholder.textContent = "📦";
+    image.replaceWith(placeholder);
+};
 
 
 /* =====================================================
@@ -1543,7 +2155,7 @@ function renderProductDetails(productId, data) {
 
 function addToCart(productId) {
 
-    fetch(
+    return fetch(
         `/cart/add/${productId}/`,
         {
             method: "POST",
@@ -1580,6 +2192,13 @@ function addToCart(productId) {
             data.cart_count
         );
 
+        syncProductDetailQuantity(productId, data.quantity);
+        return data;
+    })
+    .catch(error => {
+        console.error("Could not add product to cart.", error);
+        alert("Unable to add product. Please try again.");
+        return null;
     });
 
 }
@@ -1674,7 +2293,7 @@ function updateQuantity(
     );
 
 
-    fetch(
+    return fetch(
         `/cart/update/${productId}/`,
         {
             method: "POST",
@@ -1713,8 +2332,29 @@ function updateQuantity(
             data.cart_count
         );
 
+        syncProductDetailQuantity(productId, data.quantity);
+        return data;
+    })
+    .catch(error => {
+        console.error("Could not update cart quantity.", error);
+        alert("Unable to update cart. Please try again.");
+        return null;
     });
 
+}
+
+function syncProductDetailQuantity(productId, quantity) {
+    const pageProduct = document.getElementById(`market-product-data-${productId}`);
+    if (!pageProduct) return;
+
+    const productData = JSON.parse(pageProduct.textContent);
+    productData.quantity = quantity;
+    pageProduct.textContent = JSON.stringify(productData);
+    try {
+        localStorage.setItem(`market-product-${productId}`, JSON.stringify(productData));
+    } catch (error) {
+        console.warn("Could not refresh cached marketplace product details.", error);
+    }
 }
 
 
@@ -2054,31 +2694,10 @@ function addModalProduct(productId, stock) {
     }
 
 
-    addToCart(productId);
-
-
-    /*
-     * Wait for addToCart() to update the product-card
-     */
-    setTimeout(() => {
-
-        const qtyElement =
-            document.getElementById(
-                `qty-${productId}`
-            );
-
-        const quantity = qtyElement
-            ? parseInt(qtyElement.innerText) || 1
-            : 1;
-
-
-        updateModalCart(
-            productId,
-            quantity,
-            stock
-        );
-
-    }, 300);
+    addToCart(productId).then(data => {
+        if (!data) return;
+        updateModalCart(productId, data.quantity, stock);
+    });
 
 }
 
@@ -2139,64 +2758,12 @@ function changeModalQuantity(
     updateQuantity(
         productId,
         quantity
-    );
-
-
-    /*
-     * Update modal after server response
-     */
-    setTimeout(() => {
-
-        updateModalCart(
-            productId,
-            quantity,
-            stock
-        );
-
-    }, 300);
+    ).then(data => {
+        if (!data) return;
+        updateModalCart(productId, data.quantity, stock);
+    });
 
 }
-
-
-function changeModalQuantity(
-    productId,
-    change
-) {
-
-    const qtyElement =
-        document.getElementById(
-            "modalQty"
-        );
-
-    let quantity =
-        parseInt(
-            qtyElement.innerText
-        ) || 0;
-
-
-    quantity += change;
-
-
-    if (quantity < 0) {
-
-        quantity = 0;
-
-    }
-
-
-    updateQuantity(
-        productId,
-        quantity
-    );
-
-
-    updateModalCart(
-        productId,
-        quantity
-    );
-
-}
-
 
 
 /* =====================================================

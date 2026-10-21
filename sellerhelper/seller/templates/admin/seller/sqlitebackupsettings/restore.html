@@ -1,0 +1,37 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+  <p>
+    Restoring replaces the live database with the selected backup. Stop other
+    application workers and schedule a maintenance window before continuing.
+    A safety backup of the current database will be created first.
+  </p>
+
+  {% if backups %}
+    <form method="post">
+      {% csrf_token %}
+      <fieldset class="module aligned">
+        <div class="form-row">
+          <label for="backup">Backup file and created time</label>
+          <select id="backup" name="backup" required>
+            {% for backup in backups %}
+              <option value="{{ backup.path.name }}">
+                {{ backup.created_at|date:"d M Y, H:i:s T" }} — {{ backup.path.name }}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-row">
+          <label for="confirmation">Type RESTORE to confirm</label>
+          <input id="confirmation" name="confirmation" type="text" autocomplete="off" required>
+        </div>
+      </fieldset>
+      <div class="submit-row">
+        <input type="submit" value="Restore database" class="default">
+        <a href="{% url 'admin:seller_sqlitebackupsettings_change' 1 %}">Cancel</a>
+      </div>
+    </form>
+  {% else %}
+    <p>No SQLite backups are available to restore.</p>
+  {% endif %}
+{% endblock %}

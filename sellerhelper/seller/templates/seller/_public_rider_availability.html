@@ -1,0 +1,59 @@
+<form method="post" action="{% url 'set_public_rider_availability' %}"
+      class="public-rider-availability d-flex align-items-center gap-2 {% if public_rider_online %}is-online{% else %}is-offline{% endif %}"
+      aria-label="Public rider availability">
+    {% csrf_token %}
+    <input type="hidden" name="view" value="{{ request.GET.view|default:'available' }}">
+    <input type="hidden" name="is_online" value="{% if public_rider_online %}false{% else %}true{% endif %}">
+    <label class="form-check form-switch public-rider-availability-label" for="publicRiderAvailabilityToggle">
+        <span class="public-rider-availability-status" role="status">
+            {% if public_rider_online %}Online{% else %}Offline{% endif %}
+        </span>
+        <input id="publicRiderAvailabilityToggle"
+               class="form-check-input"
+               type="checkbox"
+               role="switch"
+               aria-label="{% if public_rider_online %}Go offline{% else %}Go online{% endif %}"
+               {% if public_rider_online %}checked{% endif %}
+               onchange="this.form.requestSubmit()">
+    </label>
+</form>
+<style>
+    .public-rider-availability {
+        flex: 0 0 auto;
+        padding: 5px 9px;
+        border: 1px solid #d7dee5;
+        border-radius: 999px;
+        background: #f1f3f5;
+    }
+    .public-rider-availability.is-online {
+        border-color: #a3d9b1;
+        background: #e8f7ec;
+        color: #146c2e;
+    }
+    .public-rider-availability-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0;
+        cursor: pointer;
+        font-size: .82rem;
+        font-weight: 700;
+        white-space: nowrap;
+    }
+    .public-rider-availability .form-check-input {
+        width: 2.2rem;
+        height: 1.2rem;
+        margin: 0;
+        cursor: pointer;
+        background-color: #adb5bd;
+        border-color: #adb5bd;
+        box-shadow: none;
+    }
+    .public-rider-availability.is-online .form-check-input {
+        background-color: #198754;
+        border-color: #198754;
+    }
+    @media (min-width: 992px) {
+        .public-rider-availability { margin-left: auto; margin-right: 10px; }
+    }
+</style>

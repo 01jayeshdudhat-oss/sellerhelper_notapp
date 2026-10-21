@@ -21,26 +21,35 @@
     .portal-card:hover { transform: translateY(-4px); box-shadow: 0 18px 38px rgba(16,42,56,.1); }
     .portal-icon { width: 54px; height: 54px; display:grid; place-items:center; border-radius:17px; color:#087e68; background:#e8f6f1; font-size:25px; }
     .portal-role { font-size: .78rem; letter-spacing: .04em; }
+    .homepage-content-layout { display: flex; flex-direction: column; }
+    .homepage-welcome-hero { order: {{ site_homepage_theme_order.hero|default:1 }}; }
+    .homepage-feature-cards { order: {{ site_homepage_theme_order.features|default:2 }}; }
 </style>
 {% endblock %}
 
 {% block content %}
 <main class="container py-3">
-    {% if not user.is_authenticated %}
-        <section class="welcome-hero mb-4">
-            <span class="badge rounded-pill text-bg-light text-success mb-3">Local shops, all in one place</span>
-            <h1 class="display-5">Your neighbourhood, delivered.</h1>
-            <p class="lead mt-3">Discover trusted local shops, shop everyday essentials, and follow every order from checkout to your door.</p>
-            <div class="d-flex flex-wrap gap-2 mt-4">
-                <a class="btn btn-light btn-lg" href="{% url 'login' %}">Sign in</a>
-                <a class="btn btn-outline-light btn-lg" href="{% url 'signup' %}">Create customer account</a>
-            </div>
-        </section>
-        <section class="row g-3">
-            <div class="col-md-4"><article class="card portal-card p-4"><div class="portal-icon mb-3"><i class="bi bi-bag-heart"></i></div><h2 class="h5">Shop local</h2><p class="text-muted mb-0">Browse nearby stores and products in one marketplace.</p></article></div>
-            <div class="col-md-4"><article class="card portal-card p-4"><div class="portal-icon mb-3"><i class="bi bi-truck"></i></div><h2 class="h5">Track deliveries</h2><p class="text-muted mb-0">See order progress and delivery updates in real time.</p></article></div>
-            <div class="col-md-4"><article class="card portal-card p-4"><div class="portal-icon mb-3"><i class="bi bi-shop"></i></div><h2 class="h5">Grow your shop</h2><p class="text-muted mb-0">Bring your local business online and manage orders simply.</p></article></div>
-        </section>
+    {% if theme_preview or not user.is_authenticated %}
+        <div class="homepage-content-layout" data-theme-component="home_content">
+            {% if not site_theme or site_theme.homepage_hero_enabled %}
+                <section class="welcome-hero homepage-welcome-hero mb-4" data-theme-component="home_hero">
+                    <span class="badge rounded-pill text-bg-light text-success mb-3">{{ site_theme.homepage_hero_badge|default:"Local shops, all in one place" }}</span>
+                    <h1 class="display-5">{{ site_theme.homepage_hero_title|default:"Your neighbourhood, delivered." }}</h1>
+                    <p class="lead mt-3">{{ site_theme.homepage_hero_text|default:"Discover trusted local shops, shop everyday essentials, and follow every order from checkout to your door." }}</p>
+                    <div class="d-flex flex-wrap gap-2 mt-4">
+                        <a class="btn btn-light btn-lg" href="{% url 'login' %}">{{ site_theme.homepage_primary_cta|default:"Sign in" }}</a>
+                        <a class="btn btn-outline-light btn-lg" href="{% url 'signup' %}">{{ site_theme.homepage_secondary_cta|default:"Create customer account" }}</a>
+                    </div>
+                </section>
+            {% endif %}
+            {% if not site_theme or site_theme.homepage_features_enabled %}
+                <section class="row g-3 homepage-feature-cards" data-theme-component="home_features">
+                    <div class="col-md-4"><article class="card portal-card p-4" data-theme-component="home_feature_card"><div class="portal-icon mb-3"><i class="bi bi-bag-heart"></i></div><h2 class="h5">{{ site_theme.homepage_feature_1_title|default:"Shop local" }}</h2><p class="text-muted mb-0">{{ site_theme.homepage_feature_1_text|default:"Browse nearby stores and products in one marketplace." }}</p></article></div>
+                    <div class="col-md-4"><article class="card portal-card p-4" data-theme-component="home_feature_card"><div class="portal-icon mb-3"><i class="bi bi-truck"></i></div><h2 class="h5">{{ site_theme.homepage_feature_2_title|default:"Track deliveries" }}</h2><p class="text-muted mb-0">{{ site_theme.homepage_feature_2_text|default:"See order progress and delivery updates in real time." }}</p></article></div>
+                    <div class="col-md-4"><article class="card portal-card p-4" data-theme-component="home_feature_card"><div class="portal-icon mb-3"><i class="bi bi-shop"></i></div><h2 class="h5">{{ site_theme.homepage_feature_3_title|default:"Grow your shop" }}</h2><p class="text-muted mb-0">{{ site_theme.homepage_feature_3_text|default:"Bring your local business online and manage orders simply." }}</p></article></div>
+                </section>
+            {% endif %}
+        </div>
     {% elif is_staff_portal %}
         <section class="welcome-hero mb-4">
             <span class="badge rounded-pill text-bg-light text-success mb-3 portal-role">{{ active_staff.get_role_display }} · {{ active_staff.shop.name }}</span>
@@ -108,6 +117,16 @@
             <div class="col-sm-6 col-lg-4"><a class="card portal-card p-4 text-decoration-none text-dark" href="{% url 'customer_favorites' %}"><div class="portal-icon mb-3"><i class="bi bi-heart"></i></div><h2 class="h5">Your favourites</h2><p class="text-muted mb-0">Quickly find shops and products you saved.</p></a></div>
             <div class="col-sm-6 col-lg-4"><a class="card portal-card p-4 text-decoration-none text-dark" href="{% url 'shop_add' %}"><div class="portal-icon mb-3"><i class="bi bi-shop-window"></i></div><h2 class="h5">Become a seller</h2><p class="text-muted mb-0">Set up a shop and start reaching local customers.</p></a></div>
         </div>
+        <section class="card portal-card p-4 mt-3" data-theme-component="home_public_rider_card">
+            <div class="d-flex flex-column flex-sm-row align-items-sm-center gap-3">
+                <div class="portal-icon flex-shrink-0"><i class="bi bi-bicycle"></i></div>
+                <div class="flex-grow-1">
+                    <h2 class="h5 mb-1">Become a public rider</h2>
+                    <p class="text-muted mb-0">Apply to deliver for local shops. You can start using the Rider workspace after admin approval.</p>
+                </div>
+                <a class="btn btn-success flex-shrink-0" href="{% url 'public_rider_apply' %}">Apply now</a>
+            </div>
+        </section>
     {% endif %}
 
     {% if user.is_superuser and active_portal != "ADMIN" %}

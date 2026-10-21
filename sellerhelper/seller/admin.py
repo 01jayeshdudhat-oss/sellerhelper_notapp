@@ -1,5 +1,16 @@
+from datetime import datetime, timezone as datetime_timezone
+from pathlib import Path
+
 from django.contrib import admin, messages
 from django.contrib.auth import get_user_model
+from django.conf import settings
+from django.core.exceptions import PermissionDenied
+from django.db import connections
+from django.http import FileResponse, Http404, HttpResponseNotAllowed, HttpResponseRedirect
+from django.template.response import TemplateResponse
+from django.urls import path, reverse
+from django.utils import timezone
+from django.utils.html import format_html
 
 from .push_notifications import queue_expo_push_notifications
 from .offline_keyword_dictionary import dictionary_is_ready
@@ -7,6 +18,8 @@ from .models import (
     AdminProductCatalog,
     DeliverySharingSettings,
     Order,
+    PublicRiderApplication,
+    RoadNetworkGeoJSON,
     Product,
     ProductShop,
     Shop,
@@ -21,7 +34,14 @@ from .models import (
     SiteWallet,
     SiteWalletTransaction,
     ShopStorefrontSettings,
+    SQLiteBackupSettings,
 )
+from .sqlite_backups import (
+    create_sqlite_backup,
+    list_sqlite_backups,
+    restore_sqlite_backup,
+)
+from .public_riders import sync_public_rider_shop_memberships
 
 
 User = get_user_model()
@@ -111,6 +131,8 @@ class ShopAdmin(admin.ModelAdmin):
         "logo_url",
         "is_shop_open",
         "share_riders_with_nearby_shops",
+        "public_rider_network_enabled",
+        "rider_delivery_preference",
         "allow_product_image_overrides",
         "allow_owner_create_shared_rider_groups",
     )
@@ -126,6 +148,132 @@ class ShopAdmin(admin.ModelAdmin):
         "storefront_subscription_active",
     )
     readonly_fields = ("storefront_slug",)
+
+    def save_model(self, request, obj, form, change):
+        was_public_rider_enabled = (
+            Shop.objects.filter(pk=obj.pk)
+            .values_list("public_rider_network_enabled", flat=True)
+            .first()
+            if change
+            else False
+        )
+        super().save_model(request, obj, form, change)
+        if was_public_rider_enabled != obj.public_rider_network_enabled:
+            for application in PublicRiderApplication.objects.filter(
+                status=PublicRiderApplication.STATUS_APPROVED,
+            ).iterator():
+                sync_public_rider_shop_memberships(application)
+
+
+@admin.register(PublicRiderApplication)
+class PublicRiderApplicationAdmin(admin.ModelAdmin):
+    list_display = ("full_name", "user", "phone", "vehicle_type", "status", "created_at")
+    list_filter = ("status", "vehicle_type", "created_at")
+    search_fields = ("full_name", "phone", "driving_license_number", "user__username")
+    readonly_fields = (
+        "user",
+        "created_at",
+        "updated_at",
+        "reviewed_by",
+        "reviewed_at",
+        "license_document_download",
+        "identity_document_download",
+    )
+    fields = (
+        "user",
+        "full_name",
+        "phone",
+        "address",
+        "vehicle_type",
+        "driving_license_number",
+        "license_document_download",
+        "identity_document_download",
+        "status",
+        "review_notes",
+        "reviewed_by",
+        "reviewed_at",
+        "created_at",
+        "updated_at",
+    )
+    actions = ("approve_applications", "reject_applications")
+
+    @admin.display(description="Driving licence document")
+    def license_document_download(self, obj):
+        return self._document_link(obj, "license_document")
+
+    @admin.display(description="Identity document")
+    def identity_document_download(self, obj):
+        return self._document_link(obj, "identity_document")
+
+    def _document_link(self, obj, field_name):
+        if not obj or not getattr(obj, field_name):
+            return "Not uploaded"
+        url = reverse(
+            "admin:seller_publicriderapplication_document",
+            args=(obj.pk, field_name),
+        )
+        return format_html('<a href="{}">Download privately</a>', url)
+
+    def get_urls(self):
+        urls = super().get_urls()
+        custom_urls = [
+            path(
+                "<int:application_id>/document/<str:field_name>/",
+                self.admin_site.admin_view(self.download_document),
+                name="seller_publicriderapplication_document",
+            ),
+        ]
+        return custom_urls + urls
+
+    def download_document(self, request, application_id, field_name):
+        application = self.get_object(request, application_id)
+        if application is None or not self.has_view_or_change_permission(request, application):
+            raise PermissionDenied
+        if field_name not in {"license_document", "identity_document"}:
+            raise PermissionDenied
+        document = getattr(application, field_name)
+        if not document:
+            raise Http404("Document not found.")
+        return FileResponse(
+            document.open("rb"),
+            as_attachment=True,
+            filename=Path(document.name).name,
+            content_type="application/octet-stream",
+        )
+
+    @admin.action(description="Approve selected public rider applications")
+    def approve_applications(self, request, queryset):
+        for application in queryset:
+            application.status = PublicRiderApplication.STATUS_APPROVED
+            application.reviewed_by = request.user
+            application.reviewed_at = timezone.now()
+            application.save(
+                update_fields=["status", "reviewed_by", "reviewed_at", "updated_at"],
+            )
+            sync_public_rider_shop_memberships(application)
+        self.message_user(request, "Selected public rider applications were approved.")
+
+    @admin.action(description="Reject selected public rider applications")
+    def reject_applications(self, request, queryset):
+        for application in queryset:
+            application.status = PublicRiderApplication.STATUS_REJECTED
+            application.reviewed_by = request.user
+            application.reviewed_at = timezone.now()
+            application.save(
+                update_fields=["status", "reviewed_by", "reviewed_at", "updated_at"],
+            )
+            sync_public_rider_shop_memberships(application)
+        self.message_user(request, "Selected public rider applications were rejected.")
+
+    def save_model(self, request, obj, form, change):
+        if obj.status in {
+            PublicRiderApplication.STATUS_APPROVED,
+            PublicRiderApplication.STATUS_REJECTED,
+        }:
+            obj.reviewed_by = request.user
+            obj.reviewed_at = timezone.now()
+        super().save_model(request, obj, form, change)
+        sync_public_rider_shop_memberships(obj)
 
 
 @admin.register(ShopStorefrontSettings)
@@ -146,23 +294,193 @@ class ShopStorefrontSettingsAdmin(admin.ModelAdmin):
         return False
 
 
+@admin.register(SQLiteBackupSettings)
+class SQLiteBackupSettingsAdmin(admin.ModelAdmin):
+    change_form_template = "admin/seller/sqlitebackupsettings/change_form.html"
+    list_display = ("interval_minutes", "retention_count", "updated_at")
+    fields = ("interval_minutes", "retention_count", "updated_at")
+    readonly_fields = ("updated_at",)
+
+    def get_urls(self):
+        urls = super().get_urls()
+        custom_urls = [
+            path(
+                "backup/",
+                self.admin_site.admin_view(self.backup_view),
+                name="seller_sqlitebackupsettings_backup",
+            ),
+            path(
+                "restore/",
+                self.admin_site.admin_view(self.restore_view),
+                name="seller_sqlitebackupsettings_restore",
+            ),
+        ]
+        return custom_urls + urls
+
+    def backup_view(self, request):
+        if request.method != "POST":
+            return HttpResponseNotAllowed(["POST"])
+        if not request.user.is_superuser:
+            raise PermissionDenied
+
+        database = connections["default"]
+        if database.vendor != "sqlite":
+            messages.error(request, "Immediate backups are available only for SQLite.")
+            return HttpResponseRedirect(
+                reverse("admin:seller_sqlitebackupsettings_change", args=[1])
+            )
+
+        database_path = database.settings_dict["NAME"]
+        if not isinstance(database_path, (str, Path)) or str(database_path) == ":memory:":
+            messages.error(request, "Immediate backups require a file-based SQLite database.")
+            return HttpResponseRedirect(
+                reverse("admin:seller_sqlitebackupsettings_change", args=[1])
+            )
+
+        backup_settings = SQLiteBackupSettings.objects.get(pk=1)
+        backup_directory = Path(settings.BASE_DIR) / "sqlite_backups"
+        try:
+            backup_path = create_sqlite_backup(
+                database_path,
+                backup_directory,
+                backup_settings.retention_count,
+            )
+        except Exception as error:
+            messages.error(request, f"SQLite backup failed: {error}")
+        else:
+            messages.success(request, f"Created SQLite backup: {backup_path.name}")
+        return HttpResponseRedirect(
+            reverse("admin:seller_sqlitebackupsettings_change", args=[1])
+        )
+
+    def restore_view(self, request):
+        if not request.user.is_superuser:
+            raise PermissionDenied
+
+        backup_directory = Path(settings.BASE_DIR) / "sqlite_backups"
+        backups = list_sqlite_backups(backup_directory)
+        if request.method == "POST":
+            if request.POST.get("confirmation") != "RESTORE":
+                messages.error(request, 'Type "RESTORE" to confirm database replacement.')
+            else:
+                backup_name = request.POST.get("backup", "")
+                backup_path = next(
+                    (path for path in backups if path.name == backup_name),
+                    None,
+                )
+                if backup_path is None:
+                    messages.error(request, "Choose a valid backup file.")
+                else:
+                    database = connections["default"]
+                    if database.vendor != "sqlite":
+                        messages.error(request, "Database restore is available only for SQLite.")
+                    else:
+                        database_path = Path(database.settings_dict["NAME"])
+                        backup_settings = SQLiteBackupSettings.objects.get(pk=1)
+                        connections.close_all()
+                        try:
+                            safety_backup = restore_sqlite_backup(
+                                database_path,
+                                backup_path,
+                                backup_directory,
+                                backup_settings.retention_count,
+                            )
+                        except Exception as error:
+                            messages.error(request, f"Database restore failed: {error}")
+                        else:
+                            messages.success(
+                                request,
+                                "Database restored successfully. A pre-restore safety "
+                                f"backup was saved as {safety_backup.name}.",
+                            )
+                        return HttpResponseRedirect(
+                            reverse("admin:seller_sqlitebackupsettings_restore")
+                        )
+
+        context = {
+            **self.admin_site.each_context(request),
+            "opts": self.model._meta,
+            "title": "Restore SQLite database",
+            "backups": [
+                {
+                    "path": backup,
+                    "created_at": timezone.localtime(datetime.fromtimestamp(
+                        backup.stat().st_mtime,
+                        tz=datetime_timezone.utc,
+                    )),
+                }
+                for backup in backups
+            ],
+        }
+        return TemplateResponse(
+            request,
+            "admin/seller/sqlitebackupsettings/restore.html",
+            context,
+        )
+
+    def change_view(self, request, object_id, form_url="", extra_context=None):
+        extra_context = extra_context or {}
+        extra_context["backup_url"] = reverse(
+            "admin:seller_sqlitebackupsettings_backup"
+        )
+        extra_context["restore_url"] = reverse(
+            "admin:seller_sqlitebackupsettings_restore"
+        )
+        return super().change_view(
+            request,
+            object_id,
+            form_url,
+            extra_context=extra_context,
+        )
+
+    def has_add_permission(self, request):
+        return not SQLiteBackupSettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+class RoadNetworkGeoJSONInline(admin.TabularInline):
+    model = RoadNetworkGeoJSON
+    extra = 1
+
+
 @admin.register(DeliverySharingSettings)
 class DeliverySharingSettingsAdmin(admin.ModelAdmin):
     list_display = (
+        "public_rider_service_enabled",
+        "max_additional_pickup_locations",
+        "abandoned_checkout_timeout_minutes",
         "shared_rider_radius_km",
         "customer_direction_radius_km",
+        "public_rider_batch_radius_km",
+        "public_rider_decline_cooldown_minutes",
+        "public_rider_offer_timeout_seconds",
+        "public_rider_offer_riders_per_round",
+        "public_rider_max_active_offers",
         "shared_rider_rate_per_km",
         "shared_rider_base_pay",
         "updated_at",
     )
     fieldsets = (
-        ("Shared rider coverage and pay", {
+        ("Public/shared rider coverage and offer pay", {
             "fields": (
+                "public_rider_service_enabled",
+                "max_additional_pickup_locations",
                 "shared_rider_radius_km",
                 "customer_direction_radius_km",
-                "shared_rider_rate_per_km",
+                "public_rider_batch_radius_km",
+                "public_rider_decline_cooldown_minutes",
+                "public_rider_offer_timeout_seconds",
+                "public_rider_offer_riders_per_round",
+                "public_rider_max_active_offers",
+                "road_network_geojson",
                 "shared_rider_base_pay",
+                "shared_rider_rate_per_km",
             ),
+        }),
+        ("Checkout tracking", {
+            "fields": ("abandoned_checkout_timeout_minutes",),
         }),
         ("Monthly salary suggestions", {
             "fields": (
@@ -175,12 +493,28 @@ class DeliverySharingSettingsAdmin(admin.ModelAdmin):
         ("Audit", {"fields": ("updated_at",)}),
     )
     readonly_fields = ("updated_at",)
+    inlines = (RoadNetworkGeoJSONInline,)
 
     def has_add_permission(self, request):
         return not DeliverySharingSettings.objects.exists()
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+    def save_model(self, request, obj, form, change):
+        was_enabled = (
+            DeliverySharingSettings.objects.filter(pk=1)
+            .values_list("public_rider_service_enabled", flat=True)
+            .first()
+            if change
+            else True
+        )
+        super().save_model(request, obj, form, change)
+        if was_enabled != obj.public_rider_service_enabled:
+            for application in PublicRiderApplication.objects.filter(
+                status=PublicRiderApplication.STATUS_APPROVED,
+            ).iterator():
+                sync_public_rider_shop_memberships(application)
 
 
 # ============================================================
@@ -588,8 +922,8 @@ class NotificationAdmin(admin.ModelAdmin):
 
 @admin.register(ShopStaff)
 class ShopStaffAdmin(admin.ModelAdmin):
-    list_display = ("user", "shop", "role", "mobile_no", "is_active")
-    list_filter = ("role", "is_active", "shop")
+    list_display = ("user", "shop", "role", "is_public_rider", "mobile_no", "is_active")
+    list_filter = ("role", "is_public_rider", "is_active", "shop")
     search_fields = ("user__username", "mobile_no", "shop__name")
 
 

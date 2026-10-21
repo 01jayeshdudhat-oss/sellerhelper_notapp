@@ -119,6 +119,12 @@
                                         <span class="fw-semibold"><i class="bi bi-person-badge me-2 text-warning"></i>Shop staff</span>
                                     </label>
                                 </div>
+                                <div class="workspace-option">
+                                    <input class="workspace-radio" type="radio" name="login_as" id="portalRider" value="RIDER" data-workspace-label="Public rider" {% if selected_portal == "RIDER" %}checked{% endif %}>
+                                    <label class="card w-100 text-start portal-choice" for="portalRider">
+                                        <span class="fw-semibold"><i class="bi bi-bicycle me-2 text-success"></i>Public rider</span>
+                                    </label>
+                                </div>
                                 {% if user.is_superuser %}
                                     <div class="workspace-option">
                                         <input class="workspace-radio" type="radio" name="login_as" id="portalAdmin" value="ADMIN" data-workspace-label="Admin" {% if selected_portal == "ADMIN" %}checked{% endif %}>
@@ -156,6 +162,10 @@
                             <button type="submit" class="btn btn-primary">Login</button>
                         </div>
                     </form>
+                    <div class="mt-3 text-center small">
+                        Want to deliver for participating shops?
+                        <a href="{% url 'public_rider_apply' %}">Apply to become a public rider</a>
+                    </div>
                     <script>
                         const workspaceRadios = document.querySelectorAll('input[name="login_as"]');
                         const selectedWorkspaceName = document.getElementById("selectedWorkspaceName");

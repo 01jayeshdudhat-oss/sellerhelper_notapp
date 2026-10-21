@@ -1,0 +1,1036 @@
+<details id="publicRiderWorkArea" class="card shadow-sm mb-4 public-rider-work-area">
+    <summary class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2 public-rider-work-area-summary">
+        <span>
+            <strong>Your public rider work area</strong>
+            <span class="d-block small text-muted">Draw the area where you want to receive deliveries.</span>
+        </span>
+        <span class="badge {% if public_rider.work_area %}text-bg-success{% else %}text-bg-warning{% endif %}">
+            {% if public_rider.work_area %}Area saved{% else %}Area required for offers{% endif %}
+        </span>
+    </summary>
+    <div class="card-body public-rider-work-area-body">
+        <p class="small text-muted mb-2">
+            Choose a circle with a radius in kilometres or draw a polygon. If location is unavailable, pan the map and click to place the shape. Both pickup and delivery must be inside the saved boundary.
+        </p>
+        <form method="post" action="{% url 'save_public_rider_work_area' %}">
+            {% csrf_token %}
+            <input type="hidden" name="work_area" id="publicRiderWorkAreaValue">
+            <input type="hidden" name="work_areas" id="publicRiderWorkAreasValue">
+            <input type="hidden" name="home_area" id="publicRiderHomeAreaValue">
+            <div class="row g-2 align-items-end mb-2">
+                <div class="col-sm-6">
+                    <label class="form-label mb-1" for="publicRiderWorkAreaType">Work area shape</label>
+                    <select class="form-select" id="publicRiderWorkAreaType">
+                        <option value="circle" selected>Circle</option>
+                        <option value="polygon">Polygon</option>
+                    </select>
+                </div>
+                <div class="col-sm-6" id="publicRiderCircleRadiusField">
+                    <label class="form-label mb-1" for="publicRiderCircleRadius">Circle radius (km)</label>
+                    <input class="form-control" id="publicRiderCircleRadius" type="number"
+                        min="0.05" max="1000" step="any" value="5" inputmode="decimal">
+                </div>
+            </div>
+            <div class="row g-2 align-items-end mb-2">
+                <div class="col-sm-6">
+                    <label class="form-label mb-1" for="publicRiderHomeRadius">Home return radius (km)</label>
+                    <input class="form-control" id="publicRiderHomeRadius" type="number"
+                        min="0.05" max="1000" step="any" value="3" inputmode="decimal">
+                </div>
+                <div class="col-sm-6">
+                    <label class="form-label mb-1" for="publicRiderReturnHomeStartTime">Start homeward offers</label>
+                    <input class="form-control" id="publicRiderReturnHomeStartTime" type="time"
+                        name="return_home_start_time"
+                        value="{{ public_rider.return_home_start_time|time:'H:i'|default:'13:00' }}"
+                        required>
+                    <div class="form-text">Daily start time (for example, 1:00 PM).</div>
+                </div>
+                <div class="col-sm-6">
+                    <label class="form-label mb-1" for="publicRiderReturnHomeAfterMinutes">Homeward offer duration</label>
+                    <div class="input-group">
+                        <input class="form-control" id="publicRiderReturnHomeAfterMinutes" type="number"
+                            min="5" max="1440" step="5" name="return_home_after_minutes"
+                            value="{{ public_rider.return_home_after_minutes|default:'120' }}">
+                        <span class="input-group-text">min</span>
+                    </div>
+                </div>
+            </div>
+            <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                <div class="form-check form-switch mb-0">
+                    <input class="form-check-input" type="checkbox" id="publicRiderReturnHomeEnabled" name="return_home_enabled"
+                        {% if public_rider.return_home_enabled %}checked{% endif %}>
+                    <label class="form-check-label" for="publicRiderReturnHomeEnabled">Automatically offer me deliveries toward home</label>
+                </div>
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="publicRiderUseCurrentHomeLocation">
+                    <i class="bi bi-house-door me-1"></i>Use current location as home
+                </button>
+                <button type="button" class="btn btn-outline-warning btn-sm" id="publicRiderPlaceHomePin">
+                    <i class="bi bi-geo-alt me-1"></i><span id="publicRiderPlaceHomePinLabel">Drop home pin on map</span>
+                </button>
+                <button type="button" class="btn btn-outline-danger btn-sm" id="publicRiderClearHomeArea">
+                    <i class="bi bi-house-x me-1"></i>Clear home location
+                </button>
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="publicRiderFocusHomeArea" hidden>
+                    <i class="bi bi-geo-alt me-1"></i>Go to home
+                </button>
+            </div>
+            <p class="small text-muted mb-2">
+                Every day during this time window, new offers will only go to you when the customer drop-off is closer to home than your current location. Keep live location on so offers can be matched to your direction.
+            </p>
+            <p class="small mb-2"><span class="public-rider-map-legend-home"></span> Orange pin and circle show your home location and return radius.</p>
+            <div class="public-rider-work-area-actions mb-2">
+                <button type="button" class="btn btn-outline-primary btn-sm" id="publicRiderLocateArea">
+                    <i class="bi bi-crosshair me-1"></i>Focus map on my location
+                </button>
+                <button type="button" class="btn btn-outline-danger btn-sm" id="publicRiderClearArea">
+                    Clear area
+                </button>
+            </div>
+            <div class="public-rider-work-area-fallback-actions mb-2" id="publicRiderFallbackDrawControls" hidden>
+                <button type="button" class="btn btn-outline-primary btn-sm" id="publicRiderDrawPolygon">
+                    Start polygon drawing
+                </button>
+                <button type="button" class="btn btn-primary btn-sm" id="publicRiderFinishPolygon" disabled>
+                    Finish polygon
+                </button>
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="publicRiderCancelDrawing" disabled>
+                    Cancel
+                </button>
+            </div>
+            <div class="public-rider-work-area-map-shell">
+                <div id="publicRiderWorkAreaMap" role="application" aria-label="Map for drawing public rider work area"></div>
+                <div class="public-rider-map-loading" id="publicRiderMapLoading" role="status">Loading map…</div>
+            </div>
+            <div id="publicRiderWorkAreaStatus" class="small text-muted mt-2" role="status" aria-live="polite"></div>
+            <button type="submit" class="btn btn-primary mt-3" id="publicRiderSaveWorkArea" disabled>
+                <i class="bi bi-check2-circle me-1"></i>Save work area
+            </button>
+        </form>
+    </div>
+</details>
+<script>
+    (() => {
+        const openWorkAreaFromHash = () => {
+            if (window.location.hash !== "#publicRiderWorkArea") return;
+            const workArea = document.getElementById("publicRiderWorkArea");
+            if (!workArea) return;
+            workArea.open = true;
+            workArea.scrollIntoView({behavior: "smooth", block: "start"});
+        };
+        window.addEventListener("hashchange", openWorkAreaFromHash);
+        if (document.readyState === "loading") {
+            document.addEventListener("DOMContentLoaded", openWorkAreaFromHash, {once: true});
+        } else {
+            openWorkAreaFromHash();
+        }
+    })();
+</script>
+{{ public_rider.work_area|json_script:"publicRiderWorkAreaInitial" }}
+{{ public_rider.home_area|json_script:"publicRiderHomeAreaInitial" }}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+.public-rider-work-area {
+    overflow: visible;
+}
+.public-rider-work-area-summary {
+    cursor: pointer;
+    list-style: none;
+}
+.public-rider-work-area-summary::-webkit-details-marker {
+    display: none;
+}
+.public-rider-work-area-summary::marker {
+    content: "";
+}
+.public-rider-work-area[open] > .public-rider-work-area-summary {
+    border-bottom: 1px solid #e9ecef;
+}
+.public-rider-work-area-map-shell {
+    position: relative;
+    width: 100%;
+    height: clamp(300px, 48vh, 560px);
+    min-height: 280px;
+    overflow: hidden;
+    border: 1px solid #ced4da;
+    border-radius: .65rem;
+    background: #eaf0f4;
+    isolation: isolate;
+}
+#publicRiderWorkAreaMap {
+    width: 100%;
+    height: 100%;
+    min-height: 280px;
+    background: #eaf0f4;
+    touch-action: pan-x pan-y;
+    z-index: 0;
+}
+.public-rider-map-loading {
+    position: absolute;
+    inset: 0;
+    z-index: 500;
+    display: grid;
+    place-items: center;
+    color: #475569;
+    background: #eaf0f4;
+    pointer-events: none;
+}
+.public-rider-map-loading[hidden] {
+    display: none;
+}
+.public-rider-work-area .leaflet-container {
+    font: inherit;
+    -webkit-tap-highlight-color: transparent;
+}
+.public-rider-work-area .public-rider-home-area-label {
+    border: 1px solid #e85d04;
+    border-radius: 999px;
+    color: #7c2d12;
+    background: #fff7ed;
+    font-weight: 700;
+    box-shadow: 0 1px 5px rgba(124, 45, 18, .2);
+}
+.public-rider-work-area .public-rider-home-pin-icon {
+    border: 0;
+    background: transparent;
+}
+.public-rider-home-pin {
+    display: grid;
+    width: 34px;
+    height: 34px;
+    place-items: center;
+    transform: rotate(-45deg);
+    border: 3px solid #fff;
+    border-radius: 50% 50% 50% 0;
+    color: #fff;
+    background: #e85d04;
+    font-size: 13px;
+    font-weight: 800;
+    box-shadow: 0 2px 7px rgba(124, 45, 18, .45);
+}
+.public-rider-home-pin span {
+    transform: rotate(45deg);
+}
+.public-rider-map-legend-home {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    margin-right: .25rem;
+    border: 2px solid #e85d04;
+    border-radius: 50%;
+    background: #f48c06;
+    vertical-align: -1px;
+}
+.public-rider-work-area .leaflet-tile {
+    max-width: none !important;
+}
+.public-rider-work-area .leaflet-control-container {
+    font-size: 16px;
+}
+.public-rider-work-area .leaflet-top {
+    top: max(8px, env(safe-area-inset-top));
+}
+.public-rider-work-area .leaflet-left {
+    left: max(8px, env(safe-area-inset-left));
+}
+.public-rider-work-area .leaflet-right {
+    right: max(8px, env(safe-area-inset-right));
+}
+.public-rider-work-area .leaflet-control-attribution {
+    max-width: 70%;
+    padding: 2px 5px;
+    font-size: 10px;
+    line-height: 1.25;
+}
+@media (max-width: 767.98px) {
+    .public-rider-work-area-body {
+        padding: .75rem;
+    }
+    .public-rider-work-area-map-shell {
+        height: min(56vh, 440px);
+        min-height: 320px;
+        border-radius: .5rem;
+    }
+    .public-rider-work-area-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: .5rem;
+        margin-bottom: .6rem;
+    }
+    .public-rider-work-area-actions .btn {
+        min-height: 42px;
+        padding-inline: .85rem;
+    }
+}
+</style>
+{{ public_rider_last_location|json_script:"publicRiderLastLocationInitial" }}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(() => {
+    const mapElement = document.getElementById("publicRiderWorkAreaMap");
+    const valueInput = document.getElementById("publicRiderWorkAreaValue");
+    const status = document.getElementById("publicRiderWorkAreaStatus");
+    const saveButton = document.getElementById("publicRiderSaveWorkArea");
+    const areaTypeInput = document.getElementById("publicRiderWorkAreaType");
+    const circleRadiusInput = document.getElementById("publicRiderCircleRadius");
+    const circleRadiusField = document.getElementById("publicRiderCircleRadiusField");
+    const workAreasInput = document.getElementById("publicRiderWorkAreasValue");
+    const homeAreaInput = document.getElementById("publicRiderHomeAreaValue");
+    const homeRadiusInput = document.getElementById("publicRiderHomeRadius");
+    const returnHomeEnabledInput = document.getElementById("publicRiderReturnHomeEnabled");
+    const focusHomeButton = document.getElementById("publicRiderFocusHomeArea");
+    const useCurrentHomeButton = document.getElementById("publicRiderUseCurrentHomeLocation");
+    const placeHomePinButton = document.getElementById("publicRiderPlaceHomePin");
+    const placeHomePinLabel = document.getElementById("publicRiderPlaceHomePinLabel");
+    const clearHomeAreaButton = document.getElementById("publicRiderClearHomeArea");
+    const workAreaForm = valueInput?.form;
+    const loading = document.getElementById("publicRiderMapLoading");
+    if (!mapElement || !valueInput || !status) return;
+    if (!window.L) {
+        status.textContent = "The map could not load. Reload the page and try again.";
+        if (loading) {
+            loading.hidden = false;
+            loading.textContent = "Map unavailable.";
+        }
+        return;
+    }
+    let initialArea = {};
+    let initialHomeArea = {};
+    let homeAreaLayer = null;
+    let homePinMarker = null;
+    try {
+        initialArea = JSON.parse(
+            document.getElementById("publicRiderWorkAreaInitial")?.textContent || "{}"
+        );
+    } catch (error) {
+        status.textContent = "Your saved work area could not be displayed.";
+        console.error("Could not parse the saved public rider work area.", error);
+    }
+    try {
+        initialHomeArea = JSON.parse(
+            document.getElementById("publicRiderHomeAreaInitial")?.textContent || "{}"
+        );
+    } catch (error) {
+        console.error("Could not parse the saved public rider home area.", error);
+    }
+    const map = L.map(mapElement, {
+        zoomControl: false,
+        tap: true,
+        touchZoom: true,
+        dragging: true,
+        scrollWheelZoom: false
+    }).setView([20.5937, 78.9629], 13);
+    const details = mapElement.closest("details");
+    const markWorkAreaDirty = () => {
+        if (workAreaForm) workAreaForm.dataset.liveDirty = "true";
+    };
+    details?.addEventListener("toggle", () => {
+        if (details.open) {
+            window.clearTimeout(window.__sellerHelperPublicRiderOfferPoll);
+            window.__sellerHelperPublicRiderOfferPoll = null;
+        } else if (
+            workAreaForm?.dataset.liveDirty !== "true"
+            && document.getElementById("publicRiderDispatch")?.dataset.workAreaReady === "true"
+        ) {
+            window.__sellerHelperPublicRiderOfferPoll = window.setTimeout(
+                () => window.sellerHelperRefreshPageContent(),
+                5000,
+            );
+        }
+    });
+    L.control.zoom({position: "topright"}).addTo(map);
+    const normalLayer = L.tileLayer(
+        "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+        {
+            maxZoom: 20,
+            attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+            subdomains: "abcd"
+        }
+    );
+    const satelliteLayer = L.tileLayer(
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        {
+            maxZoom: 20,
+            attribution: "Tiles &copy; Esri"
+        }
+    );
+    satelliteLayer.addTo(map);
+    L.control.layers(
+        {
+            "Street map": normalLayer,
+            "Satellite": satelliteLayer
+        },
+        null,
+        {position: "topright"}
+    ).addTo(map);
+    [normalLayer, satelliteLayer].forEach((layer) => {
+        layer.on("load", () => {
+            if (loading) loading.hidden = true;
+        });
+        layer.on("tileerror", () => {
+            if (loading) {
+                loading.hidden = false;
+                loading.textContent = "Map tiles unavailable. Check your connection and try again.";
+            }
+        });
+    });
+    const drawnLayers = new L.FeatureGroup();
+    map.addLayer(drawnLayers);
+    let drawMode = null;
+    let polygonPoints = [];
+    let polygonPreview = null;
+    let homePlacementMode = false;
+    let followCurrentLocation = true;
+    let workAreaType = initialArea.type === "polygon" ? "polygon" : "circle";
+    let circleLayer = null;
+    let currentLocation = null;
+    let circleAutoCreated = initialArea.type === "circle";
+    let userClearedArea = false;
+    if (areaTypeInput) areaTypeInput.value = workAreaType;
+    if (circleRadiusField) circleRadiusField.hidden = workAreaType !== "circle";
+
+    const areaPoints = (area) => {
+        if (area.type === "circle" && area.center) {
+            return [[area.center.lat, area.center.lng]];
+        }
+        return Array.isArray(area.points)
+            ? area.points.map((point) => [point.lat, point.lng])
+            : [];
+    };
+    const saveLayerValue = (layer) => {
+        if (!layer) {
+            valueInput.value = "";
+            if (workAreasInput) workAreasInput.value = "";
+            status.textContent = "No work area drawn. Saving will pause public offers.";
+            return;
+        }
+        if (layer instanceof L.Circle) {
+            const center = layer.getLatLng();
+            const circleValue = {
+                type: "circle",
+                center: {lat: center.lat, lng: center.lng},
+                radius_km: layer.getRadius() / 1000
+            };
+            valueInput.value = JSON.stringify(circleValue);
+            if (workAreasInput) workAreasInput.value = JSON.stringify([circleValue]);
+            status.textContent = `Circle work area: ${(layer.getRadius() / 1000).toFixed(2)} km radius.`;
+            return;
+        }
+        const points = layer.getLatLngs()[0] || [];
+        const polygonValue = {
+            type: "polygon",
+            points: points.map((point) => ({lat: point.lat, lng: point.lng}))
+        };
+        valueInput.value = JSON.stringify(polygonValue);
+        if (workAreasInput) workAreasInput.value = JSON.stringify([polygonValue]);
+        status.textContent = `Polygon work area with ${points.length} points.`;
+    };
+
+    const updateHomeAreaValue = () => {
+        if (!homeAreaInput || !homeAreaLayer) {
+            if (homeAreaInput) homeAreaInput.value = "";
+            return;
+        }
+        const center = homeAreaLayer.getLatLng();
+        const radiusKm = Number(homeRadiusInput?.value || 3);
+        if (!Number.isFinite(radiusKm) || radiusKm < 0.05 || radiusKm > 1000) {
+            homeAreaInput.value = "";
+            return;
+        }
+        homeAreaInput.value = JSON.stringify({
+            type: "circle",
+            center: {lat: center.lat, lng: center.lng},
+            radius_km: radiusKm,
+        });
+    };
+
+    const setHomeArea = (center) => {
+        const radiusKm = Number(homeRadiusInput?.value || 3);
+        if (!Number.isFinite(radiusKm) || radiusKm < 0.05 || radiusKm > 1000) {
+            status.textContent = "Enter a home radius between 0.05 and 1000 km.";
+            return;
+        }
+        const latitude = Array.isArray(center) ? center[0] : center.lat;
+        const longitude = Array.isArray(center) ? center[1] : center.lng;
+        if (!homeAreaLayer) {
+            homeAreaLayer = L.circle([latitude, longitude], {
+                radius: radiusKm * 1000,
+                color: "#e85d04",
+                fillColor: "#f48c06",
+                fillOpacity: 0.24,
+                weight: 3,
+                dashArray: "8 8",
+            }).addTo(map);
+            homeAreaLayer.bindTooltip("Home circle", {
+                permanent: true,
+                direction: "center",
+                className: "public-rider-home-area-label",
+            });
+        } else {
+            homeAreaLayer.setLatLng([latitude, longitude]);
+            homeAreaLayer.setRadius(radiusKm * 1000);
+        }
+        if (!homePinMarker) {
+            const homePinIcon = L.divIcon({
+                className: "public-rider-home-pin-icon",
+                html: '<span class="public-rider-home-pin"><span>H</span></span>',
+                iconSize: [34, 40],
+                iconAnchor: [17, 38],
+            });
+            homePinMarker = L.marker([latitude, longitude], {
+                icon: homePinIcon,
+                draggable: true,
+                title: "Home location",
+                zIndexOffset: 1000,
+            }).addTo(map);
+            homePinMarker.bindTooltip("Home location", {
+                direction: "top",
+                offset: [0, -30],
+            });
+            homePinMarker.on("drag", () => {
+                homeAreaLayer.setLatLng(homePinMarker.getLatLng());
+                updateHomeAreaValue();
+            });
+            homePinMarker.on("dragend", () => {
+                markWorkAreaDirty();
+                updateHomeAreaValue();
+                status.textContent = "Home location moved. Save to keep the new home circle.";
+            });
+        } else {
+            homePinMarker.setLatLng([latitude, longitude]);
+        }
+        homeAreaLayer.bringToFront();
+        homePinMarker.setZIndexOffset(1000);
+        updateHomeAreaValue();
+        if (focusHomeButton) focusHomeButton.hidden = false;
+    };
+
+    const setCircleCenter = (center) => {
+        const radiusKm = Number(circleRadiusInput?.value);
+        if (!Number.isFinite(radiusKm) || radiusKm < 0.05 || radiusKm > 1000) {
+            status.textContent = "Enter a circle radius between 0.05 and 1000 km.";
+            return;
+        }
+        const latitude = Array.isArray(center) ? center[0] : center.lat;
+        const longitude = Array.isArray(center) ? center[1] : center.lng;
+        if (circleLayer) {
+            circleLayer.setLatLng([latitude, longitude]);
+            circleLayer.setRadius(radiusKm * 1000);
+            drawnLayers.clearLayers();
+            drawnLayers.addLayer(circleLayer);
+        } else {
+            drawnLayers.clearLayers();
+            circleLayer = L.circle([latitude, longitude], {
+                radius: radiusKm * 1000
+            });
+            drawnLayers.addLayer(circleLayer);
+        }
+        saveLayerValue(circleLayer);
+    };
+
+    if (initialArea.type === "circle" && initialArea.center) {
+        if (circleRadiusInput) {
+            circleRadiusInput.value = String(initialArea.radius_km);
+        }
+        const circle = L.circle(
+            [initialArea.center.lat, initialArea.center.lng],
+            {radius: Number(initialArea.radius_km) * 1000}
+        );
+        circleLayer = circle;
+        drawnLayers.addLayer(circle);
+        saveLayerValue(circle);
+    } else if (initialArea.type === "polygon" && areaPoints(initialArea).length >= 3) {
+        const polygon = L.polygon(areaPoints(initialArea));
+        drawnLayers.addLayer(polygon);
+        saveLayerValue(polygon);
+    }
+    if (initialHomeArea.type === "circle" && initialHomeArea.center) {
+        if (homeRadiusInput) {
+            homeRadiusInput.value = String(initialHomeArea.radius_km || 3);
+        }
+        setHomeArea([initialHomeArea.center.lat, initialHomeArea.center.lng]);
+        updateHomeAreaValue();
+    } else if (homeRadiusInput && homeRadiusInput.value) {
+        homeRadiusInput.value = String(Math.min(Math.max(Number(homeRadiusInput.value) || 3, 0.05), 1000));
+    }
+
+    const fallbackDrawControls = document.getElementById("publicRiderFallbackDrawControls");
+    const drawPolygonButton = document.getElementById("publicRiderDrawPolygon");
+    const finishPolygonButton = document.getElementById("publicRiderFinishPolygon");
+    const cancelDrawingButton = document.getElementById("publicRiderCancelDrawing");
+    const clearDrawingPreview = () => {
+        if (polygonPreview) map.removeLayer(polygonPreview);
+        polygonPreview = null;
+    };
+    const stopDrawing = () => {
+        clearDrawingPreview();
+        drawMode = null;
+        polygonPoints = [];
+        if (finishPolygonButton) finishPolygonButton.disabled = true;
+        if (cancelDrawingButton) cancelDrawingButton.disabled = true;
+    };
+    if (fallbackDrawControls) {
+        fallbackDrawControls.hidden = workAreaType !== "polygon";
+    }
+    drawPolygonButton?.addEventListener("click", () => {
+        markWorkAreaDirty();
+        stopDrawing();
+        drawMode = "polygon";
+        followCurrentLocation = false;
+        if (cancelDrawingButton) cancelDrawingButton.disabled = false;
+        status.textContent = "Click the map to add at least three polygon points, then choose Finish polygon.";
+    });
+    finishPolygonButton?.addEventListener("click", () => {
+        if (drawMode !== "polygon" || polygonPoints.length < 3) {
+            status.textContent = "Add at least three points on the map before finishing the polygon.";
+            return;
+        }
+        const polygon = L.polygon(polygonPoints);
+        markWorkAreaDirty();
+        stopDrawing();
+        drawnLayers.clearLayers();
+        drawnLayers.addLayer(polygon);
+        saveLayerValue(polygon);
+    });
+    cancelDrawingButton?.addEventListener("click", () => {
+        stopDrawing();
+        status.textContent = "Drawing cancelled. Your existing work area is unchanged.";
+    });
+    map.on("click", (event) => {
+        if (homePlacementMode) return;
+        if (drawMode !== "polygon") return;
+        markWorkAreaDirty();
+        polygonPoints.push(event.latlng);
+        clearDrawingPreview();
+        polygonPreview = polygonPoints.length >= 3
+            ? L.polygon(polygonPoints).addTo(map)
+            : L.polyline(polygonPoints).addTo(map);
+        if (finishPolygonButton) {
+            finishPolygonButton.disabled = polygonPoints.length < 3;
+        }
+        status.textContent = `${polygonPoints.length} polygon points added.`;
+    });
+    const resetAreaForShape = () => {
+        stopDrawing();
+        drawnLayers.clearLayers();
+        circleLayer = null;
+        saveLayerValue(null);
+        if (workAreaType === "circle") {
+            userClearedArea = false;
+            if (currentLocation) {
+                setCircleCenter(currentLocation);
+                circleAutoCreated = true;
+            } else {
+                status.textContent = "Getting your location. You can also tap the map to set the circle centre.";
+            }
+        } else {
+            status.textContent = "Choose Start polygon, then click at least three map points.";
+        }
+    };
+    areaTypeInput?.addEventListener("change", () => {
+        markWorkAreaDirty();
+        workAreaType = areaTypeInput.value === "polygon" ? "polygon" : "circle";
+        if (circleRadiusField) circleRadiusField.hidden = workAreaType !== "circle";
+        if (fallbackDrawControls) {
+            fallbackDrawControls.hidden = workAreaType !== "polygon";
+        }
+        resetAreaForShape();
+    });
+    circleRadiusInput?.addEventListener("input", () => {
+        if (workAreaType !== "circle") return;
+        markWorkAreaDirty();
+        if (circleLayer) {
+            setCircleCenter(circleLayer.getLatLng());
+        } else if (currentLocation) {
+            setCircleCenter(currentLocation);
+        } else {
+            status.textContent = "Enter the radius, then tap the map to set the circle centre.";
+        }
+    });
+    homeRadiusInput?.addEventListener("input", () => {
+        markWorkAreaDirty();
+        if (homeAreaLayer) {
+            const radiusKm = Number(homeRadiusInput.value || 3);
+            if (Number.isFinite(radiusKm) && radiusKm >= 0.05 && radiusKm <= 1000) {
+                homeAreaLayer.setRadius(radiusKm * 1000);
+                updateHomeAreaValue();
+            }
+        }
+    });
+    useCurrentHomeButton?.addEventListener("click", () => {
+        if (!window.isSecureContext || !navigator.geolocation) {
+            centerOnCurrentLocation();
+            status.textContent = "Live location is required to set your home circle here. Enable location access and try again.";
+            return;
+        }
+        status.textContent = "Getting your location to set the home circle…";
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                const location = [
+                    position.coords.latitude,
+                    position.coords.longitude,
+                ];
+                updateCurrentLocation(position);
+                markWorkAreaDirty();
+                setHomeArea(location);
+                map.flyTo(location, Math.max(map.getZoom(), 15), {animate: true});
+                status.textContent = "Home circle set to your current location.";
+            },
+            handleLocationError,
+            {enableHighAccuracy: true, timeout: 10000, maximumAge: 60000},
+        );
+    });
+    placeHomePinButton?.addEventListener("click", () => {
+        if (homePlacementMode) {
+            homePlacementMode = false;
+            if (placeHomePinLabel) placeHomePinLabel.textContent = "Drop home pin on map";
+            placeHomePinButton.classList.remove("active");
+            status.textContent = "Home pin placement cancelled.";
+            return;
+        }
+        stopDrawing();
+        homePlacementMode = true;
+        followCurrentLocation = false;
+        if (placeHomePinLabel) {
+            placeHomePinLabel.textContent = "Click map to place home · Cancel";
+        }
+        placeHomePinButton.classList.add("active");
+        status.textContent = "Click the map where your home is. The orange pin and circle preview will appear before saving.";
+    });
+    focusHomeButton?.addEventListener("click", () => {
+        if (!homeAreaLayer) {
+            status.textContent = "Set a home area before using the Go to home button.";
+            return;
+        }
+        map.flyTo(homeAreaLayer.getLatLng(), Math.max(map.getZoom(), 13), {animate: true});
+    });
+    clearHomeAreaButton?.addEventListener("click", () => {
+        markWorkAreaDirty();
+        homePlacementMode = false;
+        if (placeHomePinLabel) placeHomePinLabel.textContent = "Drop home pin on map";
+        placeHomePinButton?.classList.remove("active");
+        if (homeAreaLayer) map.removeLayer(homeAreaLayer);
+        if (homePinMarker) map.removeLayer(homePinMarker);
+        homeAreaLayer = null;
+        homePinMarker = null;
+        if (homeAreaInput) homeAreaInput.value = "";
+        if (returnHomeEnabledInput) returnHomeEnabledInput.checked = false;
+        if (focusHomeButton) focusHomeButton.hidden = true;
+        status.textContent = "Home location cleared. Save work area to remove the saved home circle.";
+    });
+    map.on("click", (event) => {
+        if (homePlacementMode) return;
+        if (workAreaType !== "circle") return;
+        markWorkAreaDirty();
+        followCurrentLocation = false;
+        userClearedArea = false;
+        circleAutoCreated = true;
+        setCircleCenter(event.latlng);
+    });
+    map.on("click", (event) => {
+        if (!homePlacementMode) return;
+        homePlacementMode = false;
+        if (placeHomePinLabel) placeHomePinLabel.textContent = "Drop home pin on map";
+        placeHomePinButton?.classList.remove("active");
+        markWorkAreaDirty();
+        setHomeArea(event.latlng);
+        status.textContent = "Home circle preview placed. Drag the orange pin or change the radius, then save.";
+    });
+    document.getElementById("publicRiderClearArea")?.addEventListener("click", () => {
+        markWorkAreaDirty();
+        stopDrawing();
+        drawnLayers.clearLayers();
+        circleLayer = null;
+        userClearedArea = true;
+        saveLayerValue(null);
+    });
+    workAreaForm?.addEventListener("submit", (event) => {
+        if (
+            workAreaType === "circle"
+            && (
+                !circleRadiusInput
+                || !circleRadiusInput.value
+                || !Number.isFinite(Number(circleRadiusInput.value))
+                || Number(circleRadiusInput.value) < 0.05
+                || Number(circleRadiusInput.value) > 1000
+            )
+        ) {
+            event.preventDefault();
+            status.textContent = "Enter a circle radius between 0.05 and 1000 km.";
+            circleRadiusInput?.focus();
+            return;
+        }
+        if (homeAreaLayer) {
+            const homeRadiusKm = Number(homeRadiusInput?.value);
+            if (
+                !Number.isFinite(homeRadiusKm)
+                || homeRadiusKm < 0.05
+                || homeRadiusKm > 1000
+            ) {
+                event.preventDefault();
+                status.textContent = "Enter a home radius between 0.05 and 1000 km.";
+                homeRadiusInput?.focus();
+                return;
+            }
+            updateHomeAreaValue();
+        } else if (returnHomeEnabledInput?.checked) {
+            event.preventDefault();
+            status.textContent = "Set a home circle using your current location or drop a pin on the map before enabling homeward offers.";
+            useCurrentHomeButton?.focus();
+            return;
+        }
+        const layer = drawnLayers.getLayers()[0];
+        if (layer) saveLayerValue(layer);
+        if (!valueInput.value) {
+            event.preventDefault();
+            status.textContent = "Draw and finish a work area before saving.";
+            return;
+        }
+        if (saveButton) {
+            saveButton.disabled = true;
+            saveButton.textContent = "Saving work area…";
+        }
+        status.textContent = "Saving your work area…";
+    });
+    if (saveButton) saveButton.disabled = false;
+
+    let initialAreaPositioned = false;
+    let currentLocationCentered = false;
+    let currentLocationMarker = null;
+    let lastLocationSentAt = 0;
+    let locationUpdatePending = false;
+    const locationStatus = document.getElementById("publicRiderLocationStatus");
+    const locationUrl = document.getElementById("publicRiderDispatch")?.dataset.locationUrl;
+    const routeRefreshKey = (route) => `public-rider-route-location:${route.id}`;
+    const publicOfferRoutes = document.querySelectorAll("[data-public-offer-route]");
+    publicOfferRoutes.forEach((route) => {
+        if (route.dataset.riderLocationRequired !== "true") {
+            sessionStorage.removeItem(routeRefreshKey(route));
+        }
+    });
+    const csrfToken = document.cookie.split("; ")
+        .find((cookie) => cookie.startsWith("csrftoken="))
+        ?.split("=")[1];
+    const updateCurrentLocation = (position) => {
+        const location = [
+            position.coords.latitude,
+            position.coords.longitude
+        ];
+        currentLocation = location;
+        initialAreaPositioned = true;
+        currentLocationCentered = true;
+        if (!currentLocationMarker) {
+            currentLocationMarker = L.circleMarker(location, {
+                radius: 8,
+                color: "#fff",
+                weight: 3,
+                fillColor: "#0d6efd",
+                fillOpacity: 1
+            }).addTo(map);
+            currentLocationMarker.bindTooltip("Your current location", {
+                permanent: true,
+                direction: "top",
+                offset: [0, -8]
+            });
+        } else {
+            currentLocationMarker.setLatLng(location);
+            currentLocationMarker.setTooltipContent("Your current location");
+        }
+        currentLocationMarker.bringToFront();
+        if (followCurrentLocation) {
+            map.setView(location, Math.max(map.getZoom(), 13), {animate: true});
+        }
+        if (
+            workAreaType === "circle"
+            && !circleLayer
+            && !circleAutoCreated
+            && !userClearedArea
+        ) {
+            setCircleCenter(location);
+            circleAutoCreated = true;
+        }
+        if (locationStatus) {
+            locationStatus.textContent = "Live location is updating on the map.";
+        }
+
+        const now = Date.now();
+        if (
+            !locationUrl
+            || locationUpdatePending
+            || now - lastLocationSentAt < 15000
+        ) return;
+        lastLocationSentAt = now;
+        locationUpdatePending = true;
+        fetch(locationUrl, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                "X-CSRFToken": csrfToken || ""
+            },
+            body: new URLSearchParams({
+                latitude: String(location[0]),
+                longitude: String(location[1])
+            }).toString()
+        }).then((response) => {
+            if (!response.ok) {
+                throw new Error(`Location update failed with status ${response.status}.`);
+            }
+            const routeWaitingForLocation = Array.from(publicOfferRoutes).find(
+                (route) => route.dataset.riderLocationRequired === "true",
+            );
+            if (
+                routeWaitingForLocation
+                && !sessionStorage.getItem(routeRefreshKey(routeWaitingForLocation))
+            ) {
+                sessionStorage.setItem(
+                    routeRefreshKey(routeWaitingForLocation),
+                    "1",
+                );
+                window.location.reload();
+            }
+        }).catch((error) => {
+            console.error("Public rider live location update failed.", error);
+            if (locationStatus) {
+                locationStatus.textContent = "Live location update failed. Check your connection.";
+            }
+        }).finally(() => {
+            locationUpdatePending = false;
+        });
+    };
+    const handleLocationError = (error) => {
+        if (!window.isSecureContext) {
+            const message = "Browser location requires HTTPS (or localhost). You can still pan the map and click to place the work area manually.";
+            if (locationStatus) locationStatus.textContent = message;
+            status.textContent = message;
+        } else if (error.code === error.PERMISSION_DENIED) {
+            if (locationStatus) {
+                locationStatus.textContent = "Location permission was denied. Allow location access to update your position.";
+            }
+            status.textContent = "Location permission was denied. Allow location access or move the map manually.";
+        } else {
+            if (locationStatus) {
+                locationStatus.textContent = "Could not update live location. Check your location settings.";
+            }
+            status.textContent = "Could not get your location. Move the map manually.";
+        }
+    };
+    const centerOnCurrentLocation = () => {
+        if (!window.isSecureContext) {
+            const message = "Browser location requires HTTPS (or localhost). You can still pan the map and click to place the circle centre or polygon points.";
+            status.textContent = message;
+            if (locationStatus) locationStatus.textContent = message;
+            return;
+        }
+        if (!navigator.geolocation) {
+            status.textContent = "Location is not available in this browser. Pan the map and click to set the work area manually.";
+            if (locationStatus) {
+                locationStatus.textContent = "Location is unavailable; pan the map and click to set an area manually.";
+            }
+            return;
+        }
+        followCurrentLocation = true;
+        status.textContent = "Getting your current location…";
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                updateCurrentLocation(position);
+                status.textContent = "Map focused on your current location. Live updates are on.";
+            },
+            handleLocationError,
+            {enableHighAccuracy: true, timeout: 10000, maximumAge: 60000}
+        );
+    };
+    document.getElementById("publicRiderLocateArea")?.addEventListener("click", () => {
+        centerOnCurrentLocation();
+    });
+    try {
+        const savedLocation = JSON.parse(
+            document.getElementById("publicRiderLastLocationInitial")?.textContent || "null",
+        );
+        if (savedLocation && Number.isFinite(Number(savedLocation.lat)) && Number.isFinite(Number(savedLocation.lng))) {
+            currentLocation = [Number(savedLocation.lat), Number(savedLocation.lng)];
+            currentLocationCentered = true;
+            initialAreaPositioned = true;
+            currentLocationMarker = L.circleMarker(currentLocation, {
+                radius: 8,
+                color: "#fff",
+                weight: 3,
+                fillColor: "#0d6efd",
+                fillOpacity: 1,
+            }).addTo(map);
+            currentLocationMarker.bindTooltip("Last saved location; waiting for live GPS", {
+                permanent: true,
+                direction: "top",
+                offset: [0, -8],
+            });
+            map.setView(currentLocation, 15, {animate: false});
+            if (
+                workAreaType === "circle"
+                && !circleLayer
+                && !userClearedArea
+            ) {
+                setCircleCenter(currentLocation);
+                circleAutoCreated = true;
+            }
+            status.textContent = "Map centered on your last saved location; checking for live GPS.";
+            if (locationStatus) {
+                locationStatus.textContent = "Showing your last saved location while live location updates.";
+            }
+        }
+    } catch (error) {
+        console.error("Could not read the saved public rider location.", error);
+    }
+    centerOnCurrentLocation();
+    map.on("dragstart", () => {
+        followCurrentLocation = false;
+    });
+    let locationWatchId = null;
+    if (navigator.geolocation) {
+        locationWatchId = navigator.geolocation.watchPosition(
+            updateCurrentLocation,
+            handleLocationError,
+            {enableHighAccuracy: true, maximumAge: 5000, timeout: 15000}
+        );
+    } else {
+        handleLocationError({code: 2});
+    }
+    window.addEventListener("pagehide", () => {
+        if (locationWatchId !== null) {
+            navigator.geolocation.clearWatch(locationWatchId);
+        }
+    }, {once: true});
+
+    const invalidateMap = () => {
+        map.invalidateSize({pan: false});
+        if (currentLocation && followCurrentLocation) {
+            map.setView(currentLocation, Math.max(map.getZoom(), 13), {animate: false});
+        }
+        if (
+            initialAreaPositioned
+            || currentLocationCentered
+            || !drawnLayers.getLayers().length
+        ) return;
+        initialAreaPositioned = true;
+        map.fitBounds(drawnLayers.getBounds(), {
+            padding: [24, 24],
+            maxZoom: 15
+        });
+    };
+    details?.addEventListener("toggle", () => {
+        if (!details.open) return;
+        requestAnimationFrame(() => {
+            invalidateMap();
+            if (followCurrentLocation) centerOnCurrentLocation();
+        });
+    });
+    requestAnimationFrame(() => requestAnimationFrame(invalidateMap));
+    window.setTimeout(invalidateMap, 300);
+    window.addEventListener(
+        "orientationchange",
+        () => window.setTimeout(invalidateMap, 300)
+    );
+    if (window.ResizeObserver) {
+        new ResizeObserver(invalidateMap).observe(mapElement);
+    }
+})();
+</script>

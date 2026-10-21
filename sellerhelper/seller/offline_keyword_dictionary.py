@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import sqlite3
+import unicodedata
 from pathlib import Path
 from typing import NamedTuple
 
@@ -34,11 +35,128 @@ LANGUAGE_SCRIPTS = {
     "te": "Telugu",
     "ur": "Urdu",
 }
+_SEARCH_KEYWORD_LANGUAGE_LABELS = {
+    "ARABIC": "Urdu / Sindhi (Arabic script)",
+    "BENGALI": "Bengali / Assamese",
+    "DEVANAGARI": "Hindi / Marathi / Nepali / Sanskrit (Devanagari)",
+    "GURMUKHI": "Punjabi (Gurmukhi)",
+    "GUJARATI": "Gujarati",
+    "KANNADA": "Kannada",
+    "LATIN": "English (Latin)",
+    "MALAYALAM": "Malayalam",
+    "MEETEI MAYEK": "Manipuri (Meitei Mayek)",
+    "OL CHIKI": "Santali (Ol Chiki)",
+    "ORIYA": "Odia",
+    "SHARADA": "Kashmiri (Sharada)",
+    "TAMIL": "Tamil",
+    "TELUGU": "Telugu",
+    "TIRHUTA": "Maithili (Tirhuta)",
+}
 
 
 class ProductKeywordMatches(NamedTuple):
     keywords: list[str]
     dictionary_matched: bool
+
+
+def format_search_keywords_by_language(keywords):
+    if isinstance(keywords, str):
+        if "\n\n" in keywords and any(
+            line.strip() in _SEARCH_KEYWORD_LANGUAGE_LABELS.values()
+            or line.strip() in {"Numeric identifiers", "Other search terms"}
+            for line in keywords.splitlines()
+        ):
+            return keywords
+        keyword_phrases = keywords.split()
+    else:
+        keyword_phrases = keywords
+
+    grouped_keywords = {}
+    seen_by_language = {}
+    for phrase in keyword_phrases:
+        phrase = " ".join(str(phrase or "").split())
+        if not phrase:
+            continue
+        first_letter = next(
+            (
+                character
+                for character in phrase
+                if unicodedata.category(character)[0] == "L"
+            ),
+            "",
+        )
+        if not first_letter and phrase.isdigit():
+            language_label = "Numeric identifiers"
+        elif not first_letter:
+            language_label = "Other search terms"
+        else:
+            character_name = unicodedata.name(first_letter, "")
+            language_label = next(
+                (
+                    label
+                    for script_name, label in _SEARCH_KEYWORD_LANGUAGE_LABELS.items()
+                    if script_name in character_name
+                ),
+                "Other search terms",
+            )
+        seen = seen_by_language.setdefault(language_label, set())
+        if phrase.casefold() in seen:
+            continue
+        seen.add(phrase.casefold())
+        grouped_keywords.setdefault(language_label, []).append(phrase)
+
+    return "\n\n".join(
+        f"{language_label}\n\n{' '.join(language_keywords)}"
+        for language_label, language_keywords in grouped_keywords.items()
+    )
+
+
+def normalize_search_text(value):
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    normalized = "".join(
+        unicodedata.lookup(unicodedata.name(character).replace("CANDRABINDU", "ANUSVARA"))
+        if "CANDRABINDU" in unicodedata.name(character, "")
+        and _has_unicode_name(
+            unicodedata.name(character, "").replace("CANDRABINDU", "ANUSVARA")
+        )
+        else character
+        for character in normalized
+    )
+
+    latin_folded = []
+    last_base_is_latin = False
+    for character in unicodedata.normalize("NFD", normalized):
+        category = unicodedata.category(character)
+        name = unicodedata.name(character, "")
+        if category.startswith("M"):
+            if last_base_is_latin or (
+                ord(character) in range(0x0610, 0x061B)
+                or ord(character) in range(0x064B, 0x0660)
+                or ord(character) == 0x0670
+                or ord(character) in range(0x06D6, 0x06EE)
+            ):
+                continue
+        latin_folded.append(character)
+        if category.startswith("L"):
+            last_base_is_latin = "LATIN" in unicodedata.name(character, "")
+        elif not category.startswith("M"):
+            last_base_is_latin = False
+
+    normalized = unicodedata.normalize("NFC", "".join(latin_folded))
+    trailing = len(normalized)
+    while trailing and normalized[trailing - 1].isspace():
+        trailing -= 1
+    if trailing and "VIRAMA" in unicodedata.name(normalized[trailing - 1], ""):
+        normalized = normalized[:trailing - 1] + normalized[trailing:]
+    return normalized
+
+
+def _has_unicode_name(name):
+    try:
+        unicodedata.lookup(name)
+        return True
+    except KeyError:
+        return False
 
 
 def _transliterate_token(source_script, target_script, token):

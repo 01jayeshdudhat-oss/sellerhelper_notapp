@@ -48,7 +48,7 @@
                             </div>
                         {% endif %}
                         <div class="small mt-1 {% if item.marketplace_stock > 0 %}text-success{% else %}text-danger{% endif %}">
-                            {% if item.marketplace_stock > 0 %}{{ item.marketplace_stock }} available{% else %}Out of stock{% endif %}
+                            {% if item.marketplace_stock > 0 %}{{ item.marketplace_stock|floatformat:-4 }} available{% else %}Out of stock{% endif %}
                         </div>
                     </div>
                     <div class="card-footer bg-white border-0 pt-0">

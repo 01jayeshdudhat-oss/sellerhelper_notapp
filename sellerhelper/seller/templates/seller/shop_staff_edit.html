@@ -146,6 +146,13 @@ Edit Staff - {{ staff.user.username }}
                     </option>
 
                     <option
+                        value="PURCHASE_MANAGER"
+                        {% if staff.role == "PURCHASE_MANAGER" %}selected{% endif %}
+                    >
+                        Purchase Manager
+                    </option>
+
+                    <option
                         value="ORDER"
                         {% if staff.role == "ORDER" %}selected{% endif %}
                     >

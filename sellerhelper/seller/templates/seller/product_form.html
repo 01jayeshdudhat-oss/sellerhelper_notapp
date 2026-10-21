@@ -23,7 +23,106 @@
 document.addEventListener('DOMContentLoaded', function () {
     const categoryField = document.querySelector('[data-product-category-select="true"]');
     const nameField = document.querySelector('[data-product-name-select="true"]');
+    const autofillNameField = document.querySelector('[data-product-name-autofill="true"]');
     const imageField = document.querySelector('[data-product-image-url="true"]');
+
+    if (autofillNameField) {
+        const listedProductsElement = document.getElementById('product-listed-details');
+        const listedProducts = listedProductsElement
+            ? JSON.parse(listedProductsElement.textContent)
+            : [];
+        const status = document.getElementById("product-name-catalog-status");
+        const fields = {
+            product_category: document.getElementById("id_product_category"),
+            product_alias_name: document.getElementById("id_product_alias_name"),
+            product_title: document.getElementById("id_product_title"),
+            product_color: document.getElementById("id_product_color"),
+            product_size: document.getElementById("id_product_size"),
+            price: document.getElementById("id_price"),
+            unit_value: document.getElementById("id_unit_value"),
+            unit_text: document.getElementById("id_unit_text"),
+            image_url: imageField,
+            product_description: document.getElementById("id_product_description"),
+            hsn_code: document.getElementById("id_hsn_code"),
+            gst_rate: document.getElementById("id_gst_rate"),
+            shelf_life_days: document.getElementById("id_shelf_life_days"),
+            expiry_price_drop_percent: document.getElementById("id_expiry_price_drop_percent"),
+            expiry_management_enabled: document.getElementById("id_expiry_management_enabled"),
+            is_approximate_weight: document.getElementById("id_is_approximate_weight"),
+            is_active: document.getElementById("id_is_active"),
+            sku: document.getElementById("id_sku"),
+        };
+        const autofillListedProduct = () => {
+            const matches = listedProducts.filter(
+                (item) => item.product_name.toLocaleLowerCase()
+                    === autofillNameField.value.trim().toLocaleLowerCase()
+            );
+            const selectedCategory = fields.product_category?.value;
+            const matchingCategoryProducts = matches.filter(
+                (item) => item.product_category === selectedCategory
+            );
+            const product = matchingCategoryProducts.length === 1
+                ? matchingCategoryProducts[0]
+                : matches.length === 1
+                    ? matches[0]
+                    : null;
+            if (!product) {
+                if (status) {
+                    status.textContent = matches.length > 1
+                        ? "This name is listed in more than one category. Select the matching category before choosing the product."
+                        : "Enter a new product name, or choose a listed name to fill its details.";
+                }
+                if (fields.product_category) {
+                    fields.product_category.disabled = false;
+                }
+                document.getElementById("id-product-category-locked")?.remove();
+                return;
+            }
+            autofillNameField.value = product.product_name;
+            Object.entries(fields).forEach(([key, field]) => {
+                if (!field) return;
+                if (key === "product_category") {
+                    field.disabled = false;
+                }
+                if (field.type === "checkbox") {
+                    field.checked = Boolean(product[key]);
+                } else {
+                    field.value = product[key] ?? "";
+                }
+                field.dispatchEvent(new Event("change", { bubbles: true }));
+            });
+            if (fields.product_category) {
+                fields.product_category.disabled = true;
+                let lockedCategory = document.getElementById("id-product-category-locked");
+                if (!lockedCategory) {
+                    lockedCategory = document.createElement("input");
+                    lockedCategory.type = "hidden";
+                    lockedCategory.name = "product_category";
+                    lockedCategory.id = "id-product-category-locked";
+                    autofillNameField.form?.appendChild(lockedCategory);
+                }
+                lockedCategory.value = product.product_category;
+            }
+            if (status) {
+                status.textContent = `Details filled from listed product: ${product.product_name}. Review or edit them before saving.`;
+            }
+        };
+        autofillNameField.addEventListener("input", () => {
+            const isListedName = listedProducts.some(
+                (item) => item.product_name.toLocaleLowerCase()
+                    === autofillNameField.value.trim().toLocaleLowerCase()
+            );
+            if (!isListedName) {
+                if (fields.product_category) {
+                    fields.product_category.disabled = false;
+                }
+                document.getElementById("id-product-category-locked")?.remove();
+            }
+        });
+        autofillNameField.addEventListener("change", autofillListedProduct);
+        autofillNameField.addEventListener("input", autofillListedProduct);
+        return;
+    }
 
     if (!categoryField || !nameField) {
         return;
@@ -124,6 +223,9 @@ document.addEventListener('DOMContentLoaded', function () {
 </script>
 {{ form.catalog_data|json_script:"product-catalog-data" }}
 {{ form.catalog_defaults|json_script:"product-catalog-defaults" }}
+{% if purchase_manager_shop %}
+{{ form.catalog_products|json_script:"product-listed-details" }}
+{% endif %}
 
 <div class="container-fluid px-0 product-form-shell">
 
@@ -147,8 +249,8 @@ document.addEventListener('DOMContentLoaded', function () {
                     <i class="bi bi-tags me-1"></i>Manage shared catalog
                 </a>
             {% endif %}
-            <a href="{% url 'product_list' %}" class="btn btn-outline-secondary">
-                ← Products
+            <a href="{% if purchase_manager_shop %}{% url 'purchase_manager_dashboard' purchase_manager_shop.id %}?tab=purchase{% else %}{% url 'product_list' %}{% endif %}" class="btn btn-outline-secondary">
+                {% if purchase_manager_shop %}← Purchases{% else %}← Products{% endif %}
             </a>
         </div>
 
@@ -190,9 +292,20 @@ document.addEventListener('DOMContentLoaded', function () {
             <div class="card-body">
 
                 <div class="alert alert-light catalog-note small mb-4">
+                    {% if purchase_manager_shop %}
+                    <strong>Start here:</strong> type a new product name or select a listed product to fill in its details, then review the category, price, and sellable unit.
+                    {% else %}
                     <strong>Start here:</strong> choose the category and product, enter the price, then set the sellable unit (for example, 500 and gm).
+                    {% endif %}
                 </div>
 
+                {% if purchase_manager_shop %}
+                <datalist id="product-name-options">
+                    {% for listed_product in form.catalog_products %}
+                    <option value="{{ listed_product.product_name }}">{{ listed_product.product_category }}</option>
+                    {% endfor %}
+                </datalist>
+                {% endif %}
                 <div class="row g-3">
                     {% for field in form %}
                         {% if field.field.required or field.name == "product_category" or field.name == "unit_value" or field.name == "unit_text" %}
@@ -200,7 +313,6 @@ document.addEventListener('DOMContentLoaded', function () {
                         {% endif %}
                     {% endfor %}
                 </div>
-
                 <div class="border-top mt-4 pt-3">
                     <h6 class="fw-semibold mb-1">Additional product details</h6>
                     <p class="small text-muted mb-0">Optional listing, inventory, and display settings.</p>
@@ -585,10 +697,10 @@ document.addEventListener('DOMContentLoaded', function () {
         <div class="d-flex justify-content-end gap-2 mb-4">
 
             <a
-                href="{% url 'product_list' %}"
+                href="{% if purchase_manager_shop %}{% url 'purchase_manager_dashboard' purchase_manager_shop.id %}?tab=purchase{% else %}{% url 'product_list' %}{% endif %}"
                 class="btn btn-outline-secondary"
             >
-                Cancel
+                {% if purchase_manager_shop %}Cancel and return to purchases{% else %}Cancel{% endif %}
             </a>
 
             <button

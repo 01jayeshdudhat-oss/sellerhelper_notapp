@@ -4,6 +4,166 @@
 
 {% block content %}
 
+<style>
+.shop-order-row {
+    cursor: pointer;
+}
+.shop-orders-table thead button[data-sort-column] {
+    color: inherit;
+    font: inherit;
+    font-weight: inherit;
+    text-decoration: none;
+    white-space: nowrap;
+}
+.shop-orders-table thead button[data-sort-column]:hover {
+    color: var(--bs-primary);
+}
+.shop-order-number-column {
+    width: 1%;
+    max-width: 13rem;
+    white-space: nowrap;
+}
+.shop-order-status-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: thin;
+}
+.shop-order-status-tabs .nav-link {
+    align-items: center;
+    display: inline-flex;
+    gap: .35rem;
+    white-space: nowrap;
+}
+.shop-order-row td {
+    padding-top: .5rem;
+    padding-bottom: .5rem;
+}
+.abandoned-checkout-row > summary {
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+    padding: .75rem;
+    list-style-position: inside;
+    cursor: pointer;
+}
+.abandoned-checkout-summary {
+    display: grid;
+    grid-template-columns: minmax(130px, 1.2fr) minmax(100px, 1fr) minmax(135px, 1fr) auto auto;
+    align-items: center;
+    gap: .75rem;
+    width: 100%;
+}
+.abandoned-checkout-summary > span {
+    min-width: 0;
+}
+.abandoned-checkout-item-row {
+    display: grid;
+    grid-template-columns: 52px minmax(140px, 1fr) auto auto;
+    align-items: center;
+    gap: .65rem;
+    padding: .5rem;
+    border: 1px solid var(--bs-border-color);
+    border-radius: .5rem;
+    background: var(--bs-tertiary-bg);
+}
+@media (max-width: 767.98px) {
+    .abandoned-checkout-summary {
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+    .abandoned-checkout-summary .abandoned-checkout-shop,
+    .abandoned-checkout-summary .abandoned-checkout-time {
+        display: none;
+    }
+}
+@media (max-width: 575.98px) {
+    .abandoned-checkout-item-row {
+        grid-template-columns: 44px minmax(100px, 1fr) auto;
+    }
+    .abandoned-checkout-item-price {
+        grid-column: 2 / -1;
+    }
+}
+.shop-order-row .shop-order-display,
+.shop-order-row .shop-order-id {
+    direction: rtl;
+    text-align: right;
+}
+.shop-order-row .shop-order-display,
+.shop-order-row .shop-order-id,
+.shop-order-row .shop-order-time,
+.shop-order-row .shop-order-expanded-meta {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.shop-order-row.is-expanded .shop-order-display,
+.shop-order-row.is-expanded .shop-order-id,
+.shop-order-row.is-expanded .shop-order-time,
+.shop-order-row.is-expanded .shop-order-expanded-meta {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
+    word-break: break-word;
+}
+.shop-order-row .shop-order-expanded-meta {
+    display: none;
+    color: var(--bs-secondary-color);
+}
+.shop-order-row.is-expanded .shop-order-expanded-meta {
+    display: block;
+}
+.shop-order-row .shop-order-time {
+    min-width: 52px;
+}
+.order-assignment-controls {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: .35rem;
+    margin: 0 .35rem .25rem 0;
+    vertical-align: middle;
+}
+.order-assignment-controls form {
+    flex: 0 1 9rem;
+    min-width: 7rem;
+    margin: 0;
+}
+.order-assignment-controls .form-select {
+    min-width: 0;
+    white-space: nowrap;
+}
+.shop-order-actions {
+    white-space: nowrap;
+}
+@media (max-width: 767.98px) {
+    .shop-order-filter-card .card-body { padding: 10px; }
+    .shop-order-filter-card .row { --bs-gutter-y: .5rem; }
+    .shop-order-filter-card .form-label {
+        margin-bottom: .2rem;
+        font-size: .8rem;
+    }
+    .shop-order-filter-card .form-control,
+    .shop-order-filter-card .form-select {
+        min-height: 36px;
+        padding-top: .35rem;
+        padding-bottom: .35rem;
+        font-size: .875rem;
+    }
+    .shop-order-filter-card .form-text { display: none; }
+    .shop-order-row td {
+        padding-top: .35rem;
+        padding-bottom: .35rem;
+    }
+    .shop-order-row .shop-order-display,
+    .shop-order-row .shop-order-id,
+    .shop-order-row .shop-order-time {
+        max-width: 120px;
+    }
+}
+</style>
+
 <div class="container-fluid py-4">
 
     <!-- Header -->
@@ -21,13 +181,38 @@
 
         <div class="mt-2 mt-md-0">
             <span class="badge bg-primary fs-6">
-                {{ shop_orders|length }} Orders
+                {% if handover_view %}{{ handover_action_count }} pending handovers{% elif verified_view %}{{ verified_order_count }} Recently verified{% elif abandoned_view %}{{ abandoned_checkout_count }} abandoned checkouts{% else %}{{ shop_orders|length }} Orders{% endif %}
             </span>
         </div>
 
     </div>
 
-    {% if can_verify_rider_pickup_otp %}
+    <nav class="nav nav-pills gap-2 mb-4" aria-label="Shop order views">
+        <a class="nav-link {% if not verified_view and not handover_view and not abandoned_view %}active{% endif %}"
+           href="{% url 'shop_order_list' %}">
+            All orders
+        </a>
+        <a class="nav-link {% if verified_view %}active{% endif %}"
+           href="{% url 'shop_order_list' %}?view=verified">
+            <i class="bi bi-shield-check me-1"></i>Recently verified
+            <span class="badge rounded-pill ms-1 {% if verified_view %}text-bg-light{% else %}text-bg-secondary{% endif %}">{{ verified_order_count }}</span>
+        </a>
+        {% if can_verify_rider_pickup_otp or handover_action_count %}
+            <a class="nav-link {% if handover_view %}active{% endif %}"
+               href="{% url 'shop_order_list' %}?view=handover">
+                <i class="bi bi-person-check me-1"></i>Verify rider &amp; handover
+                <span class="badge rounded-pill ms-1 {% if handover_view %}text-bg-light{% else %}text-bg-secondary{% endif %}">{{ handover_action_count }}</span>
+            </a>
+        {% endif %}
+        <a class="nav-link {% if abandoned_view %}active{% endif %}"
+           href="{% url 'shop_order_list' %}?view=abandoned"
+           {% if abandoned_view %}aria-current="page"{% endif %}>
+            <i class="bi bi-cart-x me-1"></i>Abandoned checkouts
+            <span class="badge rounded-pill ms-1 {% if abandoned_view %}text-bg-light{% else %}text-bg-secondary{% endif %}">{{ abandoned_checkout_count }}</span>
+        </a>
+    </nav>
+
+    {% if handover_view and can_verify_rider_pickup_otp %}
         <div class="card border-0 shadow-sm mb-4">
             <div class="card-body">
                 <h5 class="card-title">Verify rider and confirm pickup</h5>
@@ -81,7 +266,7 @@
         </script>
     {% endif %}
 
-    {% if rider_cod_handover_groups %}
+    {% if handover_view and rider_cod_handover_groups %}
         <section class="card border-warning shadow-sm mb-4" aria-label="Rider COD handovers">
             <div class="card-body">
                 <h5 class="fw-bold mb-1">Rider COD handovers</h5>
@@ -152,16 +337,28 @@
         </script>
     {% endif %}
 
+    {% if handover_view and not can_verify_rider_pickup_otp and not handover_action_count %}
+        <div class="alert alert-info">
+            There are no rider verification or COD handover actions available to your account right now.
+        </div>
+    {% endif %}
+
+    {% if not handover_view %}
     <!-- Shop Filter -->
-    <div class="card border-0 shadow-sm mb-4">
+    <div class="card border-0 shadow-sm mb-4 shop-order-filter-card">
 
         <div class="card-body">
 
             <form method="get">
+                {% if verified_view %}
+                    <input type="hidden" name="view" value="verified">
+                {% elif abandoned_view %}
+                    <input type="hidden" name="view" value="abandoned">
+                {% endif %}
 
                 <div class="row g-3 align-items-end">
 
-                    <div class="col-12 col-md-6 col-xl-3">
+                    <div class="col-6 col-md-6 col-xl-3">
 
                         <label class="form-label fw-semibold">
                             Shop
@@ -193,7 +390,8 @@
                     </div>
 
 
-                    <div class="col-12 col-md-6 col-xl-2">
+                    {% if not verified_view and not abandoned_view %}
+                    <div class="col-6 col-md-6 col-xl-2">
 
                         <label class="form-label fw-semibold">
                             Status
@@ -205,75 +403,24 @@
                             onchange="this.form.submit()"
                         >
 
-                            <option value="">
+                            <option value="" {% if not selected_order_status %}selected{% endif %}>
                                 All Status
                             </option>
-                            <option value="pending"
-                                {% if request.GET.status == "pending" %}selected{% endif %}
-                            >
-                                Pending
-                            </option>
-
-                            <option value="PLACED"
-                                {% if request.GET.status == "PLACED" %}selected{% endif %}
-                            >
-                                Order Placed
-                            </option>
-
-                            <option value="CONFIRMED"
-                                {% if request.GET.status == "CONFIRMED" %}selected{% endif %}
-                            >
-                                Confirmed
-                            </option>
-
-                            <option value="PACKING"
-                                {% if request.GET.status == "PACKING" %}selected{% endif %}
-                            >
-                                Packing
-                            </option>
-
-                            <option value="READY"
-                                {% if request.GET.status == "READY" %}selected{% endif %}
-                            >
-                                Ready
-                            </option>
-
-                            <option value="RIDER_ASSIGNED"
-                                {% if request.GET.status == "RIDER_ASSIGNED" %}selected{% endif %}
-                            >
-                                Accepted by Rider
-                            </option>
-
-                            <option value="PICKED_UP"
-                                {% if request.GET.status == "PICKED_UP" %}selected{% endif %}
-                            >
-                                Picked Up
-                            </option>
-
-                            <option value="OUT_FOR_DELIVERY"
-                                {% if request.GET.status == "OUT_FOR_DELIVERY" %}selected{% endif %}
-                            >
-                                Out for Delivery
-                            </option>
-
-                            <option value="DELIVERED"
-                                {% if request.GET.status == "DELIVERED" %}selected{% endif %}
-                            >
-                                Delivered
-                            </option>
-
-                            <option value="CANCELLED"
-                                {% if request.GET.status == "CANCELLED" %}selected{% endif %}
-                            >
-                                Cancelled
-                            </option>
+                            {% for status_value, status_label in order_status_options %}
+                                <option value="{{ status_value }}"
+                                    {% if selected_order_status == status_value %}selected{% endif %}
+                                >
+                                    {{ status_label }}
+                                </option>
+                            {% endfor %}
 
                         </select>
 
                     </div>
+                    {% endif %}
 
-
-                    <div class="col-12 col-md-6 col-xl-2">
+                    {% if not abandoned_view %}
+                    <div class="col-6 col-md-6 col-xl-2">
                         <label class="form-label fw-semibold" for="orderDateFilter">Order date</label>
                         <input
                             class="form-control"
@@ -285,7 +432,7 @@
                         <div class="form-text">You can also search using DD-MM-YYYY.</div>
                     </div>
 
-                    <div class="col-12 col-md-6 col-xl-3">
+                    <div class="col-6 col-md-6 col-xl-3">
                         <label class="form-label fw-semibold" for="orderNumberFilter">Order number</label>
                         <input
                             class="form-control"
@@ -315,11 +462,13 @@
                         <a
                             href="{% url 'shop_order_list' %}"
                             class="btn btn-outline-secondary w-100"
+                            data-reset-order-filters
                         >
                             Reset
                         </a>
 
                     </div>
+                    {% endif %}
 
                 </div>
 
@@ -330,6 +479,128 @@
     </div>
 
 
+    {% if not verified_view and not handover_view and not abandoned_view %}
+        <nav class="nav nav-pills gap-2 mb-3 shop-order-status-tabs"
+             aria-label="Filter orders by status">
+            {% for tab in order_status_tabs %}
+                <a class="nav-link {% if selected_order_status == tab.value or not selected_order_status and not tab.value %}active{% endif %}"
+                   href="{{ tab.url }}"
+                   {% if selected_order_status == tab.value or not selected_order_status and not tab.value %}aria-current="page"{% endif %}>
+                    {{ tab.label }}
+                    <span class="badge rounded-pill {% if selected_order_status == tab.value or not selected_order_status and not tab.value %}text-bg-light{% else %}text-bg-secondary{% endif %}">
+                        {{ tab.count }}
+                    </span>
+                </a>
+            {% endfor %}
+        </nav>
+    {% endif %}
+
+    {% if abandoned_view %}
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body">
+            <h5 class="fw-bold mb-1">Checkout started, order not placed</h5>
+            <p class="small text-muted mb-3">Only checkout attempts inactive for at least {{ abandoned_checkout_timeout_minutes }} minutes are listed. An attempt disappears from this list after its order is placed.</p>
+            {% for attempt in abandoned_attempts %}
+                <details class="abandoned-checkout-row border rounded mb-2">
+                    <summary>
+                        <span class="abandoned-checkout-summary">
+                            <span>
+                                <strong>{{ attempt.customer.client_profile.name|default:attempt.customer.get_full_name|default:attempt.customer.username }}</strong>
+                                <span class="d-block small text-muted">
+                                    {% if attempt.customer.client_profile.contact_no %}
+                                        <a href="tel:{{ attempt.customer.client_profile.contact_no }}">{{ attempt.customer.client_profile.contact_no }}</a>
+                                    {% else %}
+                                        Mobile not provided
+                                    {% endif %}
+                                </span>
+                            </span>
+                            <span class="abandoned-checkout-shop text-muted">{{ attempt.shop.name }}</span>
+                            <span class="abandoned-checkout-time small text-muted">Last active {{ attempt.last_activity_at|date:"d M Y, h:i A" }}</span>
+                            <strong class="text-nowrap">₹{{ attempt.total_amount|floatformat:2 }}</strong>
+                            <span class="btn btn-sm btn-outline-primary text-nowrap">View {{ attempt.cart_items|length }} item{{ attempt.cart_items|length|pluralize }}</span>
+                        </span>
+                    </summary>
+                    <div class="px-3 pb-3">
+                    <ul class="list-unstyled small mb-2">
+                        {% for item in attempt.cart_items %}
+                            <li class="abandoned-checkout-item-row mb-2">
+                                {% if item.image_url %}
+                                    <img
+                                        src="{{ item.image_url }}"
+                                        data-image-candidates="{{ item.image_urls|join:'|' }}"
+                                        data-image-candidate-index="0"
+                                        alt="{{ item.product_name }}"
+                                        loading="lazy"
+                                        decoding="async"
+                                        onerror="sellerHelperTryNextAbandonedImage(this)"
+                                        style="width: 52px; height: 52px; object-fit: contain; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff;"
+                                    >
+                                    <span hidden class="d-inline-flex align-items-center justify-content-center text-muted" role="img" aria-label="Product image unavailable" style="width: 52px; height: 52px; border: 1px solid #e5e7eb; border-radius: 8px; background: #f8f9fa;">📦</span>
+                                {% else %}
+                                    <span class="d-inline-flex align-items-center justify-content-center text-muted" role="img" aria-label="Product image unavailable" style="width: 52px; height: 52px; border: 1px solid #e5e7eb; border-radius: 8px; background: #f8f9fa;">📦</span>
+                                {% endif %}
+                                <strong>{{ item.product_name }}</strong>
+                                <span class="text-nowrap">{{ item.quantity }} {{ item.unit }}</span>
+                                <span class="abandoned-checkout-item-price text-nowrap">₹{{ item.line_total }}</span>
+                            </li>
+                        {% endfor %}
+                    </ul>
+                    <div class="fw-semibold">Cart total: ₹{{ attempt.total_amount|floatformat:2 }}</div>
+                    {% if attempt.shop_remark %}
+                        <div class="alert alert-light border mt-3 mb-0">
+                            <strong>Shop remark:</strong> {{ attempt.shop_remark }}
+                            {% if attempt.remark_updated_by %}
+                                <div class="small text-muted mt-1">
+                                    Saved by {{ attempt.remark_updated_by.get_full_name|default:attempt.remark_updated_by.username }}
+                                    {% if attempt.remark_updated_at %}· {{ attempt.remark_updated_at|date:"d M Y, h:i A" }}{% endif %}
+                                </div>
+                            {% endif %}
+                        </div>
+                    {% endif %}
+                    <form method="post" action="{% url 'save_abandoned_checkout_remark' attempt.id %}" class="mt-3">
+                        {% csrf_token %}
+                        <label class="form-label small fw-semibold" for="checkout-remark-{{ attempt.id }}">Add or update remark</label>
+                        <textarea
+                            class="form-control form-control-sm"
+                            id="checkout-remark-{{ attempt.id }}"
+                            name="remark"
+                            rows="2"
+                            maxlength="1000"
+                            required
+                            placeholder="Add a note about this checkout"
+                        >{{ attempt.shop_remark }}</textarea>
+                        <button class="btn btn-outline-primary btn-sm mt-2" type="submit">
+                            <i class="bi bi-save me-1"></i>Save remark
+                        </button>
+                    </form>
+                    </div>
+                </details>
+            {% empty %}
+                <div class="text-center text-muted py-4">
+                    <i class="bi bi-cart-check fs-2 d-block mb-2"></i>
+                    No abandoned checkouts are waiting for this shop.
+                </div>
+            {% endfor %}
+        </div>
+    </div>
+    <script>
+        window.sellerHelperTryNextAbandonedImage = function (image) {
+            const candidates = (image.dataset.imageCandidates || "").split("|").filter(Boolean);
+            const nextIndex = Number(image.dataset.imageCandidateIndex || "0") + 1;
+            if (nextIndex < candidates.length) {
+                image.dataset.imageCandidateIndex = String(nextIndex);
+                image.src = candidates[nextIndex];
+                return;
+            }
+            image.hidden = true;
+            if (image.nextElementSibling) {
+                image.nextElementSibling.hidden = false;
+            }
+        };
+    </script>
+    {% endif %}
+
+    {% if not abandoned_view %}
     <!-- Orders -->
     <div class="card border-0 shadow-sm">
 
@@ -337,27 +608,59 @@
 
             <div class="table-responsive">
 
-                <table class="table table-hover align-middle mb-0">
+                <table class="table table-hover align-middle mb-0 shop-orders-table">
 
                     <thead class="table-light">
 
                         <tr>
 
-                            <th>Order</th>
+                            <th scope="col" class="shop-order-number-column" aria-sort="none">
+                                <button type="button" class="btn btn-link p-0" data-sort-column="0" data-sort-type="text">Order <span aria-hidden="true">↕</span></button>
+                            </th>
 
-                            <th>Shop</th>
+                            <th scope="col" aria-sort="none">
+                                <button type="button" class="btn btn-link p-0" data-sort-column="1" data-sort-type="text">Shop <span aria-hidden="true">↕</span></button>
+                            </th>
 
-                            <th>Customer</th>
+                            <th scope="col" aria-sort="none">
+                                <button type="button" class="btn btn-link p-0" data-sort-column="2" data-sort-type="number">Product Count <span aria-hidden="true">↕</span></button>
+                            </th>
 
-                            <th>Items</th>
+                            <th scope="col" aria-sort="none">
+                                <button type="button" class="btn btn-link p-0" data-sort-column="3" data-sort-type="number">Items <span aria-hidden="true">↕</span></button>
+                            </th>
 
-                            <th>Amount</th>
+                            <th scope="col" aria-sort="none">
+                                <button type="button" class="btn btn-link p-0" data-sort-column="4" data-sort-type="text">Customer <span aria-hidden="true">↕</span></button>
+                            </th>
 
-                            <th>Payment</th>
+                            <th scope="col" aria-sort="none">
+                                <button type="button" class="btn btn-link p-0" data-sort-column="5" data-sort-type="text">Contact <span aria-hidden="true">↕</span></button>
+                            </th>
 
-                            <th>Status</th>
+                            <th scope="col" aria-sort="none">
+                                <button type="button" class="btn btn-link p-0" data-sort-column="6" data-sort-type="text">Assigned Rider <span aria-hidden="true">↕</span></button>
+                            </th>
 
-                            <th>Order Time</th>
+                            <th scope="col" aria-sort="none">
+                                <button type="button" class="btn btn-link p-0" data-sort-column="7" data-sort-type="text">Rider Contact <span aria-hidden="true">↕</span></button>
+                            </th>
+
+                            <th scope="col" aria-sort="none">
+                                <button type="button" class="btn btn-link p-0" data-sort-column="8" data-sort-type="number">Amount <span aria-hidden="true">↕</span></button>
+                            </th>
+
+                            <th scope="col" aria-sort="none">
+                                <button type="button" class="btn btn-link p-0" data-sort-column="9" data-sort-type="text">Payment <span aria-hidden="true">↕</span></button>
+                            </th>
+
+                            <th scope="col" aria-sort="none">
+                                <button type="button" class="btn btn-link p-0" data-sort-column="10" data-sort-type="text">Status <span aria-hidden="true">↕</span></button>
+                            </th>
+
+                            <th scope="col" aria-sort="none">
+                                <button type="button" class="btn btn-link p-0" data-sort-column="11" data-sort-type="number">Order Time <span aria-hidden="true">↕</span></button>
+                            </th>
 
                             <th class="text-end">
                                 Action
@@ -372,24 +675,35 @@
 
                     {% for shop_order in shop_orders %}
 
-                        <tr>
+                        <tr class="shop-order-row"
+                            data-order-id="{{ shop_order.id }}"
+                            data-order-url="{% url 'shop_order_detail' shop_order.id %}"
+                            tabindex="0"
+                            aria-label="Order {{ shop_order.shop_order_number|default:shop_order.order.order_id }}"
+                            title="Double-click to open order details">
 
                             <!-- Order -->
-                            <td>
+                            <td class="shop-order-number-column" data-sort-value="{{ shop_order.shop_order_number|default:shop_order.order.order_id }}">
 
-                                <div class="fw-bold">
+                                <div class="fw-bold shop-order-display" dir="rtl">
                                     {{ shop_order.shop_order_number|default:shop_order.order.order_id }}
                                 </div>
 
-                                <small class="text-muted">
+                                <small class="text-muted shop-order-id" dir="rtl">
                                     #{{ shop_order.id }}
                                 </small>
+                                {% if verified_view %}
+                                    <div class="small text-success shop-order-expanded-meta">
+                                        <i class="bi bi-shield-check me-1"></i>
+                                        Pickup verified {{ shop_order.pickup_verified_at|date:"d M Y, h:i A" }}
+                                    </div>
+                                {% endif %}
 
                             </td>
 
 
                             <!-- Shop -->
-                            <td>
+                            <td data-sort-value="{{ shop_order.shop.name }}">
 
                                 <span class="badge bg-primary-subtle text-primary">
 
@@ -401,31 +715,20 @@
                             </td>
 
 
-                            <!-- Customer -->
-                            <td>
+                            <!-- Product count -->
+                            <td data-sort-value="{{ shop_order.distinct_product_count }}">
 
-                                <div class="fw-semibold">
+                                <span class="badge bg-secondary">
 
-                                    {{ shop_order.order.user|default:"Customer" }}
+                                    {{ shop_order.distinct_product_count }}
 
-                                </div>
-
-                                {% if shop_order.order.delivery_contact_no %}
-
-                                    <small class="text-muted">
-
-                                        📞
-                                        {{ shop_order.order.delivery_contact_no }}
-
-                                    </small>
-
-                                {% endif %}
+                                </span>
 
                             </td>
 
 
-                            <!-- Items -->
-                            <td>
+                            <!-- Item quantity -->
+                            <td data-sort-value="{{ shop_order.product_count }}">
 
                                 <span class="badge bg-secondary">
 
@@ -436,8 +739,52 @@
                             </td>
 
 
+                            <!-- Customer -->
+                            <td data-sort-value="{{ shop_order.order.user|default:'Customer' }}">
+
+                                <div class="fw-semibold">
+                                    {{ shop_order.order.user|default:"Customer" }}
+                                </div>
+
+                            </td>
+
+                            <!-- Contact -->
+                            <td data-sort-value="{{ shop_order.order.delivery_contact_no }}">
+                                {% if shop_order.order.delivery_contact_no %}
+                                    <a href="tel:{{ shop_order.order.delivery_contact_no|cut:' '|cut:'-'|cut:'('|cut:')'|cut:'.' }}"
+                                       aria-label="Call customer {{ shop_order.order.delivery_contact_no }}">
+                                        {{ shop_order.order.delivery_contact_no }}
+                                    </a>
+                                {% else %}
+                                    <span class="text-muted">—</span>
+                                {% endif %}
+
+                            </td>
+
+                            <!-- Assigned Rider -->
+                            <td data-sort-value="{{ shop_order.rider_display_name }}">
+                                {% if shop_order.rider_display_name %}
+                                    {{ shop_order.rider_display_name }}
+                                {% else %}
+                                    <span class="text-muted">Not assigned</span>
+                                {% endif %}
+                            </td>
+
+                            <!-- Rider Contact -->
+                            <td data-sort-value="{{ shop_order.rider_contact_display }}">
+                                {% if shop_order.rider_contact_display %}
+                                    <a class="text-nowrap"
+                                       href="tel:{{ shop_order.rider_contact_display|cut:' '|cut:'-'|cut:'('|cut:')'|cut:'.' }}"
+                                       aria-label="Call rider {{ shop_order.rider_display_name|default:'assigned rider' }}">
+                                        {{ shop_order.rider_contact_display }}
+                                    </a>
+                                {% else %}
+                                    <span class="text-muted">—</span>
+                                {% endif %}
+                            </td>
+
                             <!-- Amount -->
-                            <td>
+                            <td data-sort-value="{{ shop_order.total_amount }}">
 
                                 <strong class="text-success">
 
@@ -462,7 +809,7 @@
 
 
                             <!-- Payment -->
-                            <td>
+                            <td data-sort-value="{% if shop_order.order.is_payment_done %}Paid{% else %}Pending{% endif %}">
 
                                 {% if shop_order.order.is_payment_done %}
 
@@ -483,12 +830,20 @@
                                     </div>
                                     <small class="text-muted">₹{{ shop_order.cod_cash_handover_remaining|floatformat:2 }} remains of ₹{{ shop_order.cod_cash_collected|floatformat:2 }}</small>
                                 {% endif %}
+                                {% if shop_order.cod_payment_approval %}
+                                    <div class="small mt-1">
+                                        <a class="badge text-bg-danger text-decoration-none"
+                                           href="{% url 'shop_order_detail' shop_order.id %}">
+                                            COD UPI payment needs approval
+                                        </a>
+                                    </div>
+                                {% endif %}
 
                             </td>
 
 
                             <!-- Status -->
-                            <td>
+                            <td data-sort-value="{{ shop_order.status }}">
 
                                 {% if shop_order.status == "PLACED" %}
 
@@ -571,31 +926,87 @@
 
 
                             <!-- Time -->
-                            <td>
+                            <td data-sort-value="{{ shop_order.created_at|date:'U' }}">
 
-                                <small>
-
-                                    {{ shop_order.created_at|date:"d M Y" }}
-
-                                    <br>
-
-                                    <span class="text-muted">
-                                        {{ shop_order.created_at|date:"h:i A" }}
-                                    </span>
-
+                                <small class="shop-order-time">
+                                    {{ shop_order.created_at|date:"h:i A" }}
                                 </small>
+                                <div class="small text-muted shop-order-expanded-meta">
+                                    {{ shop_order.created_at|date:"d M Y" }}
+                                </div>
 
                             </td>
 
 
                             <!-- Action -->
-                            <td class="text-end">
-
-                                <a
-                                    href="{% url 'shop_order_detail' shop_order.id %}"
-                                    class="btn btn-sm btn-outline-primary"
-                                >
-                                    👁 View
+                            <td class="text-end shop-order-actions">
+                                {% if shop_order.can_manage_assignments %}
+                                    <div class="order-assignment-controls">
+                                        <form method="post"
+                                              action="{% url 'assign_packer' shop_order.id %}"
+                                              data-order-assignment-form>
+                                            {% csrf_token %}
+                                            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                                            <label class="visually-hidden" for="order-packer-{{ shop_order.id }}">Assign packer to order {{ shop_order.shop_order_number|default:shop_order.order.order_id }}</label>
+                                            <select class="form-select form-select-sm"
+                                                    id="order-packer-{{ shop_order.id }}"
+                                                    name="packer"
+                                                    aria-label="Assign packer"
+                                                    {% if not shop_order.available_packers %}disabled{% else %}onchange="this.form.requestSubmit()"{% endif %}>
+                                                {% if shop_order.assigned_packer %}
+                                                    <option value="{{ shop_order.assigned_packer.id }}" selected>
+                                                        Packer: {{ shop_order.assigned_packer.user.get_full_name|default:shop_order.assigned_packer.user.username }}
+                                                    </option>
+                                                {% else %}
+                                                    <option value="" selected disabled>Select packer</option>
+                                                {% endif %}
+                                                {% for packer in shop_order.available_packers %}
+                                                    {% if not shop_order.assigned_packer or shop_order.assigned_packer.id != packer.id %}
+                                                        <option value="{{ packer.id }}">
+                                                            {{ packer.user.get_full_name|default:packer.user.username }}
+                                                        </option>
+                                                    {% endif %}
+                                                {% endfor %}
+                                            </select>
+                                        </form>
+                                        <form method="post"
+                                              action="{% url 'assign_rider' shop_order.id %}"
+                                              data-order-assignment-form>
+                                            {% csrf_token %}
+                                            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                                            <label class="visually-hidden" for="order-rider-{{ shop_order.id }}">Assign rider to order {{ shop_order.shop_order_number|default:shop_order.order.order_id }}</label>
+                                            <select class="form-select form-select-sm"
+                                                    id="order-rider-{{ shop_order.id }}"
+                                                    name="rider"
+                                                    aria-label="Assign rider"
+                                                    {% if not shop_order.has_rider_assignment_options %}disabled{% else %}onchange="this.form.requestSubmit()"{% endif %}>
+                                                {% if shop_order.public_rider_network_requested and not shop_order.assigned_rider and not shop_order.public_rider_fallback_to_staff %}
+                                                    <option value="PUBLIC" selected>Public rider network</option>
+                                                {% elif shop_order.assigned_rider %}
+                                                    <option value="{{ shop_order.assigned_rider.id }}" selected>
+                                                        Rider: {{ shop_order.assigned_rider.user.get_full_name|default:shop_order.assigned_rider.user.username }}
+                                                    </option>
+                                                {% else %}
+                                                    <option value="" selected disabled>Select rider</option>
+                                                {% endif %}
+                                                {% if public_rider_service_enabled and shop_order.status == "READY" and shop_order.shop.public_rider_network_enabled and not shop_order.public_rider_network_requested %}
+                                                    <option value="PUBLIC">Public rider network</option>
+                                                {% endif %}
+                                                {% for rider in shop_order.available_riders %}
+                                                    {% if not shop_order.assigned_rider or shop_order.assigned_rider.id != rider.id %}
+                                                        <option value="{{ rider.id }}">
+                                                            {{ rider.user.get_full_name|default:rider.user.username }}
+                                                        </option>
+                                                    {% endif %}
+                                                {% endfor %}
+                                            </select>
+                                        </form>
+                                    </div>
+                                {% endif %}
+                                <a href="{% url 'shop_order_detail' shop_order.id %}"
+                                   class="btn btn-sm btn-outline-primary d-inline-flex align-items-center gap-1 text-nowrap">
+                                    <i class="bi bi-eye" aria-hidden="true"></i>
+                                    <span>View</span>
                                 </a>
 
                             </td>
@@ -607,7 +1018,7 @@
                         <tr>
 
                             <td
-                                colspan="9"
+                                colspan="12"
                                 class="text-center py-5"
                             >
 
@@ -640,6 +1051,137 @@
 
     </div>
 
+    {% endif %}
+    {% endif %}
+
 </div>
+
+<script>
+    (() => {
+        const statusTabs = document.querySelector('.shop-order-status-tabs');
+        if (statusTabs) {
+            const statusTabStorageKey = 'sellerhelper.shopOrders.statusTab';
+            const statusTabScrollStorageKey = 'sellerhelper.shopOrders.statusTabScrollLeft';
+            const savedScrollLeft = Number(
+                window.sessionStorage.getItem(statusTabScrollStorageKey) || 0,
+            );
+            window.requestAnimationFrame(() => {
+                statusTabs.scrollLeft = savedScrollLeft;
+            });
+            statusTabs.addEventListener('scroll', () => {
+                window.sessionStorage.setItem(
+                    statusTabScrollStorageKey,
+                    String(statusTabs.scrollLeft),
+                );
+            }, { passive: true });
+
+            const currentUrl = new URL(window.location.href);
+            if (currentUrl.searchParams.has('status')) {
+                const currentStatus = currentUrl.searchParams.get('status') || '__all__';
+                window.sessionStorage.setItem(statusTabStorageKey, currentStatus);
+            } else {
+                const rememberedStatus = window.sessionStorage.getItem(statusTabStorageKey);
+                if (rememberedStatus && rememberedStatus !== '__all__') {
+                    currentUrl.searchParams.set('status', rememberedStatus);
+                    window.location.replace(currentUrl.toString());
+                    return;
+                }
+            }
+
+            statusTabs.querySelectorAll('a[href]').forEach((tab) => {
+                tab.addEventListener('click', () => {
+                    const tabUrl = new URL(tab.href);
+                    window.sessionStorage.setItem(
+                        statusTabStorageKey,
+                        tabUrl.searchParams.get('status') || '__all__',
+                    );
+                });
+            });
+
+            document.querySelectorAll('[data-reset-order-filters]').forEach((reset) => {
+                reset.addEventListener('click', () => {
+                    window.sessionStorage.removeItem(statusTabStorageKey);
+                });
+            });
+        }
+
+        const rows = document.querySelectorAll('.shop-order-row');
+        rows.forEach((row) => {
+            const toggle = () => {
+                const isExpanded = row.classList.toggle('is-expanded');
+                row.setAttribute('aria-expanded', String(isExpanded));
+            };
+            row.addEventListener('click', (event) => {
+                if (event.target.closest('a,button,input,select,textarea,label')) return;
+                toggle();
+            });
+            row.addEventListener('dblclick', (event) => {
+                if (event.target.closest('a,button,input,select,textarea,label')) return;
+                const orderUrl = row.dataset.orderUrl;
+                if (orderUrl) window.location.assign(orderUrl);
+            });
+            row.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    toggle();
+                }
+            });
+        });
+
+        const table = document.querySelector('.shop-orders-table');
+        const body = table && table.tBodies[0];
+        if (!body) return;
+
+        let sortedColumn = -1;
+        let sortDirection = 1;
+        table.querySelectorAll('button[data-sort-column]').forEach((button) => {
+            button.addEventListener('click', () => {
+                const column = Number(button.dataset.sortColumn);
+                if (!Number.isInteger(column)) return;
+
+                if (sortedColumn === column) {
+                    sortDirection *= -1;
+                } else {
+                    sortedColumn = column;
+                    sortDirection = 1;
+                }
+
+                const header = button.closest('th');
+                const sortType = button.dataset.sortType;
+                const orderRows = Array.from(body.querySelectorAll('tr.shop-order-row'));
+                orderRows.sort((firstRow, secondRow) => {
+                    const firstValue = firstRow.cells[column].dataset.sortValue || '';
+                    const secondValue = secondRow.cells[column].dataset.sortValue || '';
+                    if (!firstValue) return secondValue ? 1 : 0;
+                    if (!secondValue) return -1;
+
+                    const comparison = sortType === 'number'
+                        ? Number(firstValue) - Number(secondValue)
+                        : firstValue.localeCompare(secondValue, undefined, {
+                            numeric: true,
+                            sensitivity: 'base',
+                        });
+                    return comparison * sortDirection;
+                });
+                orderRows.forEach((row) => body.appendChild(row));
+
+                table.querySelectorAll('th[aria-sort]').forEach((cell) => {
+                    cell.setAttribute('aria-sort', 'none');
+                });
+                if (header) {
+                    header.setAttribute(
+                        'aria-sort',
+                        sortDirection === 1 ? 'ascending' : 'descending',
+                    );
+                }
+                table.querySelectorAll('button[data-sort-column] span').forEach((icon) => {
+                    icon.textContent = '↕';
+                });
+                const icon = button.querySelector('span');
+                if (icon) icon.textContent = sortDirection === 1 ? '▲' : '▼';
+            });
+        });
+    })();
+</script>
 
 {% endblock %}

@@ -3,6 +3,7 @@
 {% block title %}Jobs{% endblock %}
 
 {% block content %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <div class="container py-4">
     <div class="d-flex justify-content-between align-items-center mb-4">
         <div>
@@ -17,14 +18,105 @@
         {% endif %}
     </div>
 
-    <div class="row g-4">
+    <section class="card shadow-sm border-0 mb-4" aria-labelledby="job-search-heading">
+        <div class="card-body">
+            <h3 class="h5" id="job-search-heading">Search openings</h3>
+            <form method="get" action="{% url 'job_openings' %}" class="row g-2">
+                <div class="col-md">
+                    <label class="visually-hidden" for="job-search">Search by title, role, employment type, location, shop, or description</label>
+                    <div class="input-group">
+                        <input id="job-search" class="form-control" type="search" name="q" value="{{ search_query }}"
+                               placeholder="Title, role, employment type, location, shop, or description">
+                        <button class="btn btn-outline-secondary" type="button" data-voice-search
+                                aria-label="Search by voice" title="Search by voice">
+                            <i class="bi bi-mic-fill" aria-hidden="true"></i>
+                        </button>
+                    </div>
+                    <div class="small text-muted mt-1" data-voice-search-status role="status" aria-live="polite"></div>
+                    <input type="hidden" name="tab" value="{{ job_tab }}">
+                    {% if selected_location %}
+                    <input type="hidden" name="lat" value="{{ selected_location.lat }}">
+                    <input type="hidden" name="lng" value="{{ selected_location.lng }}">
+                    <input type="hidden" name="radius_km" value="{{ radius_km }}">
+                    {% endif %}
+                </div>
+                <div class="col-md-auto">
+                    <button type="submit" class="btn btn-primary">Search</button>
+                </div>
+            </form>
+        </div>
+    </section>
+
+    <div class="btn-group w-100 mb-3" role="group" aria-label="Job listing filters">
+        <a class="btn {% if job_tab == 'all' %}btn-primary active{% else %}btn-outline-primary{% endif %}"
+           href="?tab=all{% if search_query %}&amp;q={{ search_query|urlencode }}{% endif %}{% if selected_location %}&amp;lat={{ selected_location.lat }}&amp;lng={{ selected_location.lng }}&amp;radius_km={{ radius_km }}{% endif %}"
+           {% if job_tab == 'all' %}aria-current="page"{% endif %}>All jobs</a>
+        <a class="btn {% if job_tab == 'nearby' %}btn-primary active{% else %}btn-outline-primary{% endif %}"
+           href="?tab=nearby{% if search_query %}&amp;q={{ search_query|urlencode }}{% endif %}{% if selected_location %}&amp;lat={{ selected_location.lat }}&amp;lng={{ selected_location.lng }}&amp;radius_km={{ radius_km }}{% endif %}"
+           {% if job_tab == 'nearby' %}aria-current="page"{% endif %}>Nearby jobs</a>
+    </div>
+
+    <section class="card shadow-sm border-0 mb-4" aria-labelledby="job-map-heading">
+        <div class="card-body">
+            <h3 class="h5 mb-0" id="job-map-heading">
+                <button class="btn btn-link link-dark text-decoration-none p-0 w-100 d-flex justify-content-between align-items-center"
+                        type="button" data-bs-toggle="collapse" data-bs-target="#jobs-map-panel"
+                        aria-expanded="false" aria-controls="jobs-map-panel">
+                    <span>Find jobs from map</span>
+                    <i class="bi bi-chevron-down" aria-hidden="true"></i>
+                </button>
+            </h3>
+            <p id="job-results-status" class="mb-2 mt-3" role="status" aria-live="polite" aria-atomic="true">
+                <span class="badge rounded-pill text-bg-primary fs-6">
+                    {{ openings|length }} opening{{ openings|length|pluralize }} found
+                </span>
+            </p>
+            <div class="collapse" id="jobs-map-panel">
+                <div class="pt-3">
+                    <p class="text-muted">Choose a point on the map or use your current location, then search within the radius.</p>
+                    {% for error in location_filter_errors %}
+                    <div class="alert alert-warning" role="alert">{{ error }}</div>
+                    {% endfor %}
+                    <div class="row align-items-end g-3 mb-3">
+                        <div class="col-sm-auto">
+                            <label for="nearby-radius" class="form-label">Nearby radius</label>
+                            <div class="input-group">
+                                <button type="button" id="decrease-nearby-radius" class="btn btn-outline-secondary"
+                                        aria-label="Decrease nearby radius by 0.1 km" title="Decrease by 0.1 km">-</button>
+                                <input id="nearby-radius" class="form-control" type="number" min="0.1" max="100"
+                                       step="any" value="{{ radius_km }}" inputmode="decimal" aria-describedby="nearby-radius-unit">
+                                <button type="button" id="increase-nearby-radius" class="btn btn-outline-secondary"
+                                        aria-label="Increase nearby radius by 0.1 km" title="Increase by 0.1 km">+</button>
+                                <span class="input-group-text" id="nearby-radius-unit">km</span>
+                            </div>
+                            <div class="form-text">Use +/- to adjust by 0.1 km, or enter a radius from 0.1 to 100 km.</div>
+                        </div>
+                        <div class="col-sm-auto d-flex flex-wrap gap-2">
+                            <button type="button" id="use-current-location" class="btn btn-outline-primary">
+                                <i class="bi bi-crosshair me-1" aria-hidden="true"></i>Use my current location
+                            </button>
+                            <button type="button" id="search-this-area" class="btn btn-primary">Search this area</button>
+                            <button type="button" id="clear-map-filter" class="btn btn-outline-secondary">Clear location filter</button>
+                        </div>
+                    </div>
+                    <div id="jobs-map" role="region" aria-label="Map for selecting a nearby jobs search location"
+                         style="height: 320px; border-radius: .5rem;"></div>
+                    <p id="map-status" class="small text-muted mt-2 mb-0" role="status" aria-live="polite" aria-atomic="true">
+                        Select a point on the map or use your current location.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <div class="row g-4" aria-label="Job openings">
         {% for opening in openings %}
         <div class="col-md-6">
-            <div class="card h-100 shadow-sm border-0">
+            <article class="card h-100 shadow-sm border-0">
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-start mb-2">
                         <div>
-                            <h5 class="mb-1">{{ opening.title }}</h5>
+                            <h4 class="h5 mb-1">{{ opening.title }}</h4>
                             <div class="text-muted">{{ opening.shop.name }}</div>
                         </div>
                         <span class="badge text-bg-success">{{ opening.employment_type }}</span>
@@ -36,13 +128,169 @@
                         {% if user.is_authenticated %}Apply now{% else %}Log in to apply{% endif %}
                     </a>
                 </div>
-            </div>
+            </article>
         </div>
         {% empty %}
         <div class="col-12">
-            <div class="alert alert-info">No active job openings available right now.</div>
+            <div class="alert alert-info">
+                {% if job_tab == 'nearby' and not selected_location %}
+                Choose a point on the map or use your current location, then select Search this area to find nearby jobs.
+                {% else %}
+                No openings match your search and location filters.
+                {% endif %}
+            </div>
         </div>
         {% endfor %}
     </div>
 </div>
+{{ map_openings|json_script:"job-map-openings" }}
+{{ selected_location|json_script:"selected-job-location" }}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(() => {
+    const status = document.getElementById("map-status");
+    const mapContainer = document.getElementById("jobs-map");
+    const radiusInput = document.getElementById("nearby-radius");
+    const decreaseRadiusButton = document.getElementById("decrease-nearby-radius");
+    const increaseRadiusButton = document.getElementById("increase-nearby-radius");
+    const applyButton = document.getElementById("search-this-area");
+    const currentLocationButton = document.getElementById("use-current-location");
+    const clearButton = document.getElementById("clear-map-filter");
+    const mapPanel = document.getElementById("jobs-map-panel");
+    const openings = JSON.parse(document.getElementById("job-map-openings").textContent);
+    const selectedLocation = JSON.parse(document.getElementById("selected-job-location").textContent);
+    if (!window.L) {
+        status.textContent = "The map could not be loaded. Text search is still available.";
+        return;
+    }
+
+    const map = L.map(mapContainer).setView([20.5937, 78.9629], 5);
+    mapPanel.addEventListener("shown.bs.collapse", () => map.invalidateSize({ pan: false }));
+    const streetLayer = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+        maxZoom: 20,
+        attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+        subdomains: "abcd"
+    });
+    const satelliteLayer = L.tileLayer(
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        {
+            maxZoom: 19,
+            attribution: "Tiles &copy; Esri"
+        }
+    );
+    satelliteLayer.addTo(map);
+    L.control.layers({
+        "Street map": streetLayer,
+        "Satellite": satelliteLayer
+    }, null, { position: "topright", collapsed: true }).addTo(map);
+
+    openings.forEach(opening => {
+        const popup = document.createElement("div");
+        popup.textContent = `${opening.title} — ${opening.shop}`;
+        L.marker([opening.lat, opening.lng])
+            .addTo(map)
+            .bindPopup(popup);
+    });
+
+    let selectedMarker = null;
+    let radiusCircle = null;
+    let pin = selectedLocation;
+    const radiusKm = () => Number(radiusInput.value);
+    const isRadiusValid = () => Number.isFinite(radiusKm()) && radiusKm() >= 0.1 && radiusKm() <= 100;
+    const radiusMeters = () => radiusKm() * 1000;
+    const radiusLabel = () => `${radiusInput.value} km`;
+    function adjustRadius(change) {
+        const currentRadius = Number.isFinite(radiusInput.valueAsNumber)
+            ? radiusInput.valueAsNumber
+            : Number(radiusInput.min);
+        const adjustedRadius = Math.max(
+            Number(radiusInput.min),
+            Math.min(Number(radiusInput.max), currentRadius + change)
+        );
+        radiusInput.value = Number(adjustedRadius.toFixed(10)).toString();
+        radiusInput.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+
+    decreaseRadiusButton.addEventListener("click", () => adjustRadius(-0.1));
+    increaseRadiusButton.addEventListener("click", () => adjustRadius(0.1));
+
+    function updatePin(latitude, longitude) {
+        pin = { lat: latitude, lng: longitude };
+        if (selectedMarker) map.removeLayer(selectedMarker);
+        if (radiusCircle) map.removeLayer(radiusCircle);
+        selectedMarker = L.marker([latitude, longitude], { draggable: true }).addTo(map);
+        radiusCircle = L.circle([latitude, longitude], {
+            radius: radiusMeters(),
+            color: "#0d6efd",
+            fillColor: "#0d6efd",
+            fillOpacity: 0.12
+        }).addTo(map);
+        selectedMarker.on("dragend", event => {
+            const position = event.target.getLatLng();
+            updatePin(position.lat, position.lng);
+        });
+        map.setView([latitude, longitude], Math.max(map.getZoom(), 13));
+        status.textContent = `Selected location: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}. Radius: ${radiusLabel()}. Select Search this area to filter openings.`;
+    }
+
+    if (pin) {
+        updatePin(pin.lat, pin.lng);
+    }
+    map.on("click", event => updatePin(event.latlng.lat, event.latlng.lng));
+    radiusInput.addEventListener("input", () => {
+        if (!isRadiusValid()) {
+            status.textContent = "Enter a nearby radius from 0.1 to 100 km.";
+            return;
+        }
+        if (radiusCircle) radiusCircle.setRadius(radiusMeters());
+        if (pin) status.textContent = `Selected location: ${pin.lat.toFixed(5)}, ${pin.lng.toFixed(5)}. Radius: ${radiusLabel()}. Select Search this area to filter openings.`;
+    });
+    applyButton.addEventListener("click", () => {
+        if (!pin) {
+            status.textContent = "Select a point on the map or use your current location first.";
+            return;
+        }
+        if (!isRadiusValid()) {
+            status.textContent = "Enter a nearby radius from 0.1 to 100 km.";
+            radiusInput.focus();
+            return;
+        }
+        const params = new URLSearchParams(window.location.search);
+        params.delete("lat");
+        params.delete("lng");
+        params.delete("radius_km");
+        params.set("lat", pin.lat);
+        params.set("lng", pin.lng);
+        params.set("radius_km", radiusInput.value);
+        params.set("tab", "nearby");
+        window.location.assign(`${window.location.pathname}?${params.toString()}`);
+    });
+    currentLocationButton.addEventListener("click", () => {
+        if (!navigator.geolocation) {
+            status.textContent = "Current location is not available in this browser.";
+            return;
+        }
+        status.textContent = "Finding your current location…";
+        navigator.geolocation.getCurrentPosition(
+            position => {
+                updatePin(position.coords.latitude, position.coords.longitude);
+                applyButton.click();
+            },
+            () => {
+                status.textContent = "Unable to get your current location. Check browser location permissions or select a point on the map.";
+            },
+            { enableHighAccuracy: true, timeout: 10000 }
+        );
+    });
+    clearButton.addEventListener("click", () => {
+        const params = new URLSearchParams(window.location.search);
+        params.delete("lat");
+        params.delete("lng");
+        params.delete("radius_km");
+        params.set("tab", "all");
+        const query = params.toString();
+        window.location.assign(`${window.location.pathname}${query ? `?${query}` : ""}`);
+    });
+})();
+</script>
 {% endblock %}

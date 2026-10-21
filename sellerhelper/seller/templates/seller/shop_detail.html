@@ -166,6 +166,9 @@
                 {% endif %}
 
                 {% if is_shop_owner %}
+                <a href="{% url 'purchase_manager_dashboard' shop.id %}" class="btn btn-outline-success">
+                    🧾 Purchases & Vendor Accounts
+                </a>
                 <a href="{% url 'shop_staff_create_shop' shop.id %}" class="btn btn-outline-primary">
                     ➕ Add Staff
                 </a>
@@ -364,7 +367,7 @@
                         </div>
 
                         <div class="stat-number">
-                            {{ total_stock }}
+                            {{ total_stock|floatformat:-4 }}
                         </div>
 
                         <small class="text-muted">
@@ -922,7 +925,7 @@
                             {% if assignment.stock > 0 %}
 
                             <span class="badge bg-success">
-                                {{ assignment.stock }}
+                                {{ assignment.stock|floatformat:-4 }}
                             </span>
 
                             {% else %}

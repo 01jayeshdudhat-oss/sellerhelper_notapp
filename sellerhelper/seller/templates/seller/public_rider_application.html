@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% load widget_tweaks %}
+
+{% block title %}Public rider application{% endblock %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 760px;">
+    <div class="card shadow-sm">
+        <div class="card-body p-4">
+            <h1 class="h3 mb-2">Become a public rider</h1>
+            <p class="text-muted">
+                Apply to deliver orders for shops that enable the public rider network.
+                Admin approval is required before you can sign in to the Rider workspace.
+            </p>
+
+            {% if application %}
+                {% if application.status == "PENDING" %}
+                    <div class="alert alert-info" role="status">
+                        Your application is awaiting admin review. You cannot use Rider login until it is approved.
+                    </div>
+                    <p class="mb-1"><strong>Application:</strong> {{ application.full_name }}</p>
+                    <p class="mb-0"><strong>Submitted:</strong> {{ application.created_at|date:"M j, Y" }}</p>
+                {% elif application.status == "APPROVED" %}
+                    <div class="alert alert-success" role="status">
+                        Your public rider application is approved. Sign in using the Rider workspace.
+                    </div>
+                    <a class="btn btn-primary" href="{% url 'rider_dashboard' %}">Open Rider dashboard</a>
+                {% elif application.status == "REJECTED" %}
+                    <div class="alert alert-warning" role="status">
+                        Your application was not approved. Update your information and submit it for review again.
+                    </div>
+                    {% if application.review_notes %}
+                        <p><strong>Admin note:</strong> {{ application.review_notes }}</p>
+                    {% endif %}
+                {% endif %}
+            {% endif %}
+
+            {% if form %}
+                <form method="post" enctype="multipart/form-data" novalidate>
+                    {% csrf_token %}
+                    {% if form.non_field_errors %}
+                        <div class="alert alert-danger">{{ form.non_field_errors }}</div>
+                    {% endif %}
+                    {% for field in form %}
+                        <div class="mb-3">
+                            {% if field.name == "consent_to_verification" %}
+                                <div class="form-check">
+                                    {{ field|add_class:"form-check-input" }}
+                                    <label class="form-check-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                                </div>
+                            {% else %}
+                                {{ field.label_tag }}
+                            {% endif %}
+                            {% if field.field.widget.input_type == "file" %}
+                                {{ field|add_class:"form-control" }}
+                                <div class="form-text">Private to the admin review workflow. PDF, PNG, or JPEG; maximum 5 MB.</div>
+                            {% elif field.name == "consent_to_verification" %}
+                                {# The consent checkbox already has its label above. #}
+                            {% elif field.name == "address" %}
+                                {{ field|add_class:"form-control" }}
+                            {% elif field.name == "vehicle_type" %}
+                                {{ field|add_class:"form-select" }}
+                            {% else %}
+                                {{ field|add_class:"form-control" }}
+                            {% endif %}
+                            {% if field.errors %}
+                                <div class="text-danger small">{{ field.errors|striptags }}</div>
+                            {% endif %}
+                        </div>
+                    {% endfor %}
+                    <button type="submit" class="btn btn-primary">
+                        {% if application %}Resubmit application{% else %}Submit application{% endif %}
+                    </button>
+                </form>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

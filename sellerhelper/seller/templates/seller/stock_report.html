@@ -50,7 +50,7 @@
                     <tr class="{% if entry.shortage > 0 %}table-warning{% endif %}">
                         <td class="fw-semibold">{{ entry.assignment.product.product_name }}</td>
                         <td>{{ entry.assignment.product.sku|default:'-' }}</td>
-                        <td>{{ entry.assignment.stock }}</td>
+                        <td>{{ entry.assignment.stock|floatformat:-4 }}</td>
                         <td>{{ entry.daily_average }}</td>
                         <td class="small">
                             {% for day, average in entry.weekday_average.items %}
@@ -60,7 +60,13 @@
                         <td>{{ entry.seasonal_average }}</td>
                         <td>{{ entry.festival_average }} <small class="text-muted">(peak-day proxy)</small></td>
                         <td>{{ entry.recommended_stock }}</td>
-                        <td>{% if entry.shortage > 0 %}<strong>{{ entry.shortage }}</strong>{% else %}0{% endif %}</td>
+                        <td>
+                            {% if entry.shortage > 0 %}
+                                <span class="badge text-bg-warning">Short by {{ entry.shortage }}</span>
+                            {% else %}
+                                <span class="badge text-bg-success">No shortage</span>
+                            {% endif %}
+                        </td>
                         <td>
                             {% if entry.assignment.product.expiry_management_enabled %}
                                 {% if entry.expires_at %}{{ entry.expires_at|date:"d M Y" }}{% else %}Not set{% endif %}

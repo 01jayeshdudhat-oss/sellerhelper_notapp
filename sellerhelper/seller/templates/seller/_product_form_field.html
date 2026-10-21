@@ -24,7 +24,7 @@
         <div class="text-danger small mt-1">{{ error }}</div>
     {% endfor %}
     {% if field.name == "product_name" %}
-        <div id="product-name-catalog-status" class="form-text" aria-live="polite">Choose a category first. Only products from that category will be available.</div>
+        <div id="product-name-catalog-status" class="form-text" aria-live="polite">{% if purchase_manager_shop %}Enter a new product name, or choose a listed name to fill its details.{% else %}Choose a category first. Only products from that category will be available.{% endif %}</div>
     {% elif field.name == "hsn_code" or field.name == "gst_rate" %}
         <div class="form-text">Editable. Leave blank to use the admin catalog default when available.</div>
     {% elif field.name == "image_url" %}

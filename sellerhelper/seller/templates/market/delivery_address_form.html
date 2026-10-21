@@ -217,21 +217,6 @@
             </div>
 
 
-            <div class="location-row">
-
-                <span class="location-label">
-                    Coordinates
-                </span>
-
-                <span
-                    class="location-value"
-                    id="displayCoordinates"
-                >
-                    —
-                </span>
-
-            </div>
-
         </div>
 
 
@@ -383,38 +368,8 @@
 
             <!-- LATITUDE / LONGITUDE -->
 
-            {% if form.latitude %}
-            <div class="row">
-
-                <div class="col-md-6 mb-3">
-
-                    <label
-                        class="form-label"
-                        for="{{ form.latitude.id_for_label }}"
-                    >
-                        Latitude
-                    </label>
-
-                    {{ form.latitude }}
-
-                </div>
-
-
-                <div class="col-md-6 mb-3">
-
-                    <label
-                        class="form-label"
-                        for="{{ form.longitude.id_for_label }}"
-                    >
-                        Longitude
-                    </label>
-
-                    {{ form.longitude }}
-
-                </div>
-
-            </div>
-            {% endif %}
+            {{ form.latitude }}
+            {{ form.longitude }}
 
 
             <!-- ACTIVE -->
@@ -702,16 +657,6 @@ document.addEventListener("DOMContentLoaded", function () {
                 lng.toFixed(7);
 
         }
-
-
-        /*
-        Display coordinates
-        */
-
-        document.getElementById(
-            "displayCoordinates"
-        ).textContent =
-            `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
 
 
         /*

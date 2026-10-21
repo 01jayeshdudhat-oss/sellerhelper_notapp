@@ -3,22 +3,110 @@ import re
 import secrets
 import uuid
 from decimal import Decimal, ROUND_HALF_UP
-from datetime import timedelta
+from datetime import date, time as datetime_time, timedelta
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from django.core.validators import MaxValueValidator, MinValueValidator, RegexValidator
+from django.core.validators import (
+    FileExtensionValidator,
+    MaxValueValidator,
+    MinValueValidator,
+    RegexValidator,
+)
 from django.db import models
 
-from .private_storage import PrivateOrderAudioStorage
+from .private_storage import PrivateOrderAudioStorage, PrivateRiderDocumentStorage
+from .road_routing import validate_road_network_geojson
 
 User = get_user_model()
+
+
+def public_rider_document_upload_to(instance, filename):
+    extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else "bin"
+    return f"riders/{instance.user_id}/{uuid.uuid4().hex}.{extension}"
+
 
 SHOP_STOREFRONT_RESERVED_SLUGS = frozenset({
     "www", "api", "admin", "accounts", "shop", "market", "static",
     "media", "mail", "support", "help", "app", "blog", "cdn",
 })
+
+
+def _sale_unit_ratio(sale_unit, stock_unit):
+    def unit_parts(unit):
+        match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(.*)", unit or "")
+        if not match:
+            return Decimal("1"), (unit or "").strip().casefold()
+        return Decimal(match.group(1)), match.group(2).strip().casefold()
+
+    unit_factors = {
+        "mg": ("mass", Decimal("0.001")),
+        "milligram": ("mass", Decimal("0.001")),
+        "milligrams": ("mass", Decimal("0.001")),
+        "g": ("mass", Decimal("1")),
+        "gm": ("mass", Decimal("1")),
+        "gms": ("mass", Decimal("1")),
+        "gram": ("mass", Decimal("1")),
+        "grams": ("mass", Decimal("1")),
+        "kg": ("mass", Decimal("1000")),
+        "kgs": ("mass", Decimal("1000")),
+        "kilo": ("mass", Decimal("1000")),
+        "kilos": ("mass", Decimal("1000")),
+        "kilogram": ("mass", Decimal("1000")),
+        "kilograms": ("mass", Decimal("1000")),
+        "lb": ("mass", Decimal("453.59237")),
+        "lbs": ("mass", Decimal("453.59237")),
+        "pound": ("mass", Decimal("453.59237")),
+        "pounds": ("mass", Decimal("453.59237")),
+        "oz": ("mass", Decimal("28.349523125")),
+        "ounce": ("mass", Decimal("28.349523125")),
+        "ounces": ("mass", Decimal("28.349523125")),
+        "ml": ("volume", Decimal("1")),
+        "milliliter": ("volume", Decimal("1")),
+        "millilitre": ("volume", Decimal("1")),
+        "l": ("volume", Decimal("1000")),
+        "lt": ("volume", Decimal("1000")),
+        "liter": ("volume", Decimal("1000")),
+        "litre": ("volume", Decimal("1000")),
+        "liters": ("volume", Decimal("1000")),
+        "litres": ("volume", Decimal("1000")),
+        "mm": ("length", Decimal("1")),
+        "cm": ("length", Decimal("10")),
+        "m": ("length", Decimal("1000")),
+        "meter": ("length", Decimal("1000")),
+        "metre": ("length", Decimal("1000")),
+        "pc": ("count", Decimal("1")),
+        "pcs": ("count", Decimal("1")),
+        "piece": ("count", Decimal("1")),
+        "pieces": ("count", Decimal("1")),
+        "each": ("count", Decimal("1")),
+        "ea": ("count", Decimal("1")),
+        "unit": ("count", Decimal("1")),
+        "units": ("count", Decimal("1")),
+    }
+    sale_value, sale_text = unit_parts(sale_unit)
+    stock_value, stock_text = unit_parts(stock_unit)
+    if not sale_text or not stock_text:
+        return Decimal("1")
+    sale_unit_info = unit_factors.get(
+        re.sub(r"[\s.]", "", sale_text),
+        (f"custom:{sale_text}", Decimal("1")),
+    )
+    stock_unit_info = unit_factors.get(
+        re.sub(r"[\s.]", "", stock_text),
+        (f"custom:{stock_text}", Decimal("1")),
+    )
+    if sale_unit_info[0] != stock_unit_info[0]:
+        raise ValueError(
+            f"Sale unit {sale_text!r} cannot be priced against stock unit "
+            f"{stock_text!r}."
+        )
+    return (
+        sale_value * sale_unit_info[1]
+        / (stock_value * stock_unit_info[1])
+    )
+
 
 INDIAN_GST_STATE_CHOICES = [
     ("01", "Jammu and Kashmir"),
@@ -212,6 +300,21 @@ class Shop(models.Model):
         default=""
     )
 
+    logo_image = models.ImageField(
+        upload_to="shop-images/logos/",
+        blank=True,
+        validators=[FileExtensionValidator(["jpg", "jpeg", "png", "webp"])],
+    )
+    cover_image = models.ImageField(
+        upload_to="shop-images/covers/",
+        blank=True,
+        validators=[FileExtensionValidator(["jpg", "jpeg", "png", "webp"])],
+    )
+    panorama_image = models.ImageField(
+        upload_to="shop-images/panoramas/",
+        blank=True,
+        validators=[FileExtensionValidator(["jpg", "jpeg", "png", "webp"])],
+    )
     logo_url = models.URLField(max_length=1000, blank=True, default="")
     cover_image_url = models.URLField(max_length=1000, blank=True, default="")
     allow_product_image_overrides = models.BooleanField(
@@ -221,6 +324,16 @@ class Shop(models.Model):
     allow_owner_create_shared_rider_groups = models.BooleanField(
         default=False,
         help_text="Allow this shop's owner to create and manage shared-rider groups.",
+    )
+    public_rider_network_enabled = models.BooleanField(
+        default=True,
+        help_text="Allow approved public riders to accept deliveries for this shop.",
+    )
+    rider_delivery_preference = models.CharField(
+        max_length=12,
+        choices=[("STAFF", "Shop staff riders"), ("PUBLIC", "Public rider network")],
+        default="PUBLIC",
+        help_text="Default rider source for this shop. Public network must also be enabled.",
     )
 
     owner = models.ForeignKey(
@@ -239,6 +352,11 @@ class Shop(models.Model):
     location = models.JSONField(
         blank=True,
         null=True
+    )
+    pickup_locations = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Additional pickup addresses. Product inventory remains shared across this shop's pickup addresses.",
     )
 
     # Multiple polygons
@@ -339,7 +457,6 @@ class Shop(models.Model):
             "the shop is closed and tell customers delivery will be scheduled."
         ),
     )
-
     share_riders_with_nearby_shops = models.BooleanField(
         default=False,
         help_text=(
@@ -445,6 +562,32 @@ class ShopStorefrontSettings(models.Model):
         return "Shop storefront settings"
 
 
+class SQLiteBackupSettings(models.Model):
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    interval_minutes = models.PositiveSmallIntegerField(
+        default=30,
+        validators=[MinValueValidator(1), MaxValueValidator(1440)],
+        help_text="Minutes between automatic SQLite database backups.",
+    )
+    retention_count = models.PositiveSmallIntegerField(
+        default=5,
+        validators=[MinValueValidator(1), MaxValueValidator(1000)],
+        help_text="Number of the most recent successful backups to keep.",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "SQLite backup settings"
+        verbose_name_plural = "SQLite backup settings"
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return "SQLite backup settings"
+
+
 class MarketplaceLayoutSettings(models.Model):
     id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
     products_per_row = models.PositiveSmallIntegerField(
@@ -495,11 +638,277 @@ class SiteBrandingSettings(models.Model):
         return "Site branding settings"
 
 
+class SiteThemeSettings(models.Model):
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    primary_color = models.CharField(max_length=7, default="#2563eb")
+    accent_color = models.CharField(max_length=7, default="#16a34a")
+    page_background = models.CharField(max_length=7, default="#f5f7fb")
+    surface_color = models.CharField(max_length=7, default="#ffffff")
+    text_color = models.CharField(max_length=7, default="#1f2937")
+    font_family = models.CharField(max_length=120, default="Inter, system-ui, sans-serif")
+    desktop_content_width = models.PositiveSmallIntegerField(
+        default=1280,
+        validators=[MinValueValidator(800), MaxValueValidator(1800)],
+    )
+    desktop_page_padding = models.PositiveSmallIntegerField(
+        default=24,
+        validators=[MaxValueValidator(64)],
+    )
+    mobile_page_padding = models.PositiveSmallIntegerField(
+        default=12,
+        validators=[MaxValueValidator(32)],
+    )
+    mobile_topbar_scroll_hide_enabled = models.BooleanField(default=False)
+    mobile_bottombar_scroll_hide_enabled = models.BooleanField(default=False)
+    mobile_app_customer_no_zoom_enabled = models.BooleanField(
+        default=False,
+        help_text="Use normal initial scale in the mobile app for the Customer portal.",
+    )
+    mobile_app_b2b_customer_no_zoom_enabled = models.BooleanField(
+        default=False,
+        help_text="Use normal initial scale in the mobile app for the B2B Customer portal.",
+    )
+    mobile_app_shop_owner_no_zoom_enabled = models.BooleanField(
+        default=False,
+        help_text="Use normal initial scale in the mobile app for the Shop Owner portal.",
+    )
+    mobile_app_shop_staff_no_zoom_enabled = models.BooleanField(
+        default=False,
+        help_text="Use normal initial scale in the mobile app for the Shop Staff portal.",
+    )
+    mobile_app_admin_no_zoom_enabled = models.BooleanField(
+        default=False,
+        help_text="Use normal initial scale in the mobile app for the Admin portal.",
+    )
+    mobile_app_content_zoom_enabled = models.BooleanField(
+        default=True,
+        help_text="Allow pinch-to-zoom within app page content.",
+    )
+    mobile_app_customer_content_zoom_enabled = models.BooleanField(
+        default=True,
+        help_text="Allow pinch-to-zoom for Customer page content in the mobile app.",
+    )
+    mobile_app_b2b_customer_content_zoom_enabled = models.BooleanField(
+        default=True,
+        help_text="Allow pinch-to-zoom for B2B Customer page content in the mobile app.",
+    )
+    mobile_app_shop_owner_content_zoom_enabled = models.BooleanField(
+        default=True,
+        help_text="Allow pinch-to-zoom for Shop Owner page content in the mobile app.",
+    )
+    mobile_app_shop_staff_content_zoom_enabled = models.BooleanField(
+        default=True,
+        help_text="Allow pinch-to-zoom for Shop Staff page content in the mobile app.",
+    )
+    mobile_app_desktop_view_enabled = models.BooleanField(
+        default=False,
+        help_text="Load the mobile app website in desktop-site mode.",
+    )
+    component_radius = models.PositiveSmallIntegerField(
+        default=12,
+        validators=[MaxValueValidator(32)],
+    )
+    header_padding = models.PositiveSmallIntegerField(
+        default=8,
+        validators=[MaxValueValidator(32)],
+    )
+    content_padding = models.PositiveSmallIntegerField(
+        default=25,
+        validators=[MaxValueValidator(80)],
+    )
+    footer_padding = models.PositiveSmallIntegerField(
+        default=18,
+        validators=[MaxValueValidator(64)],
+    )
+    header_margin = models.PositiveSmallIntegerField(
+        default=0,
+        validators=[MaxValueValidator(48)],
+    )
+    content_margin = models.PositiveSmallIntegerField(
+        default=0,
+        validators=[MaxValueValidator(48)],
+    )
+    footer_margin = models.PositiveSmallIntegerField(
+        default=0,
+        validators=[MaxValueValidator(48)],
+    )
+    desktop_layout_order = models.CharField(
+        max_length=40,
+        default="header,content,footer",
+    )
+    mobile_layout_order = models.CharField(
+        max_length=40,
+        default="header,content,footer",
+    )
+    homepage_hero_enabled = models.BooleanField(default=True)
+    homepage_features_enabled = models.BooleanField(default=True)
+    homepage_hero_badge = models.CharField(
+        max_length=120,
+        default="Local shops, all in one place",
+    )
+    homepage_hero_title = models.CharField(
+        max_length=180,
+        default="Your neighbourhood, delivered.",
+    )
+    homepage_hero_text = models.CharField(
+        max_length=350,
+        default="Discover trusted local shops, shop everyday essentials, and follow every order from checkout to your door.",
+    )
+    homepage_primary_cta = models.CharField(max_length=60, default="Sign in")
+    homepage_secondary_cta = models.CharField(
+        max_length=80,
+        default="Create customer account",
+    )
+    homepage_feature_1_title = models.CharField(max_length=100, default="Shop local")
+    homepage_feature_1_text = models.CharField(
+        max_length=240,
+        default="Browse nearby stores and products in one marketplace.",
+    )
+    homepage_feature_2_title = models.CharField(
+        max_length=100,
+        default="Track deliveries",
+    )
+    homepage_feature_2_text = models.CharField(
+        max_length=240,
+        default="See order progress and delivery updates in real time.",
+    )
+    homepage_feature_3_title = models.CharField(
+        max_length=100,
+        default="Grow your shop",
+    )
+    homepage_feature_3_text = models.CharField(
+        max_length=240,
+        default="Bring your local business online and manage orders simply.",
+    )
+    homepage_section_order = models.CharField(max_length=20, default="hero,features")
+    marketplace_hero_enabled = models.BooleanField(default=True)
+    marketplace_nearby_shops_enabled = models.BooleanField(default=True)
+    marketplace_category_nav_enabled = models.BooleanField(default=True)
+    marketplace_products_enabled = models.BooleanField(default=True)
+    marketplace_hero_title = models.CharField(max_length=120, default="Marketplace")
+    marketplace_hero_text = models.CharField(
+        max_length=240,
+        default="Find products from nearby shops",
+    )
+    marketplace_section_order = models.CharField(
+        max_length=100,
+        default="hero,search,nearby,category_nav,products",
+    )
+    marketplace_category_order = models.TextField(blank=True, default="")
+    marketplace_featured_product_ids = models.JSONField(default=list, blank=True)
+    marketplace_primary_color = models.CharField(max_length=7, default="#146c5b")
+    marketplace_accent_color = models.CharField(max_length=7, default="#16835f")
+    marketplace_header_start_color = models.CharField(max_length=7, default="#123b65")
+    marketplace_header_end_color = models.CharField(max_length=7, default="#208b72")
+    marketplace_card_radius = models.PositiveSmallIntegerField(
+        default=18,
+        validators=[MaxValueValidator(32)],
+    )
+    marketplace_section_gap = models.PositiveSmallIntegerField(
+        default=22,
+        validators=[MaxValueValidator(64)],
+    )
+    marketplace_product_gap = models.PositiveSmallIntegerField(
+        default=14,
+        validators=[MaxValueValidator(32)],
+    )
+    marketplace_content_width = models.PositiveSmallIntegerField(
+        default=2400,
+        validators=[MinValueValidator(800), MaxValueValidator(3000)],
+    )
+    marketplace_product_width = models.PositiveSmallIntegerField(
+        default=190,
+        validators=[MinValueValidator(120), MaxValueValidator(320)],
+    )
+    marketplace_desktop_padding = models.PositiveSmallIntegerField(
+        default=16,
+        validators=[MaxValueValidator(48)],
+    )
+    marketplace_mobile_padding = models.PositiveSmallIntegerField(
+        default=2,
+        validators=[MaxValueValidator(24)],
+    )
+    theme_revision_retention_days = models.PositiveSmallIntegerField(
+        default=0,
+        validators=[MaxValueValidator(3650)],
+        help_text="Automatically delete theme revisions older than this many days. Zero keeps history indefinitely.",
+    )
+    component_layouts = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "site theme settings"
+        verbose_name_plural = "site theme settings"
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return "Site theme settings"
+
+
+class SiteThemeRevision(models.Model):
+    ACTION_CHOICES = [
+        ("SAVE", "Saved changes"),
+        ("RESTORE", "Restored revision"),
+    ]
+
+    theme_settings = models.ForeignKey(
+        SiteThemeSettings,
+        on_delete=models.CASCADE,
+        related_name="revisions",
+    )
+    snapshot = models.JSONField()
+    action = models.CharField(max_length=10, choices=ACTION_CHOICES, default="SAVE")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="site_theme_revisions",
+    )
+    restored_from = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="restored_revisions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-pk"]
+
+    def __str__(self):
+        return f"{self.get_action_display()} at {self.created_at:%Y-%m-%d %H:%M}"
+
+
 class DeliverySharingSettings(models.Model):
     id = models.PositiveSmallIntegerField(
         primary_key=True,
         default=1,
         editable=False,
+    )
+    public_rider_service_enabled = models.BooleanField(
+        default=True,
+        help_text="Globally enable or disable the public rider network for every shop.",
+    )
+    max_additional_pickup_locations = models.PositiveSmallIntegerField(
+        default=3,
+        validators=[MinValueValidator(0), MaxValueValidator(20)],
+        help_text=(
+            "Maximum additional pickup addresses shop owners may configure "
+            "besides the shop's primary location."
+        ),
+    )
+    abandoned_checkout_timeout_minutes = models.PositiveSmallIntegerField(
+        default=3,
+        validators=[MinValueValidator(1), MaxValueValidator(1440)],
+        help_text=(
+            "Minutes without checkout activity before an unplaced checkout "
+            "appears in the shop order list. Set a value from 1 to 1440."
+        ),
     )
     shared_rider_radius_km = models.DecimalField(
         max_digits=5,
@@ -525,6 +934,71 @@ class DeliverySharingSettings(models.Model):
         help_text=(
             "Additional forward distance toward the customer for grouping "
             "same-order shop pickups."
+        ),
+    )
+    public_rider_batch_radius_km = models.DecimalField(
+        max_digits=3,
+        decimal_places=1,
+        default=Decimal("1.0"),
+        validators=[
+            MinValueValidator(Decimal("0.5")),
+            MaxValueValidator(Decimal("4.2")),
+        ],
+        help_text=(
+            "Maximum pickup-to-pickup and delivery-to-delivery distance for "
+            "additional public rider orders during the five-minute batch window. "
+            "Set a value between 0.5 and 4.2 km."
+        ),
+    )
+    public_rider_decline_cooldown_minutes = models.DecimalField(
+        max_digits=3,
+        decimal_places=1,
+        default=Decimal("1.5"),
+        validators=[
+            MinValueValidator(Decimal("0.5")),
+            MaxValueValidator(Decimal("60.0")),
+        ],
+        help_text=(
+            "Minutes before an order may be offered again to a public rider "
+            "who declined it. Set a value between 0.5 and 60 minutes."
+        ),
+    )
+    public_rider_offer_timeout_seconds = models.PositiveSmallIntegerField(
+        default=60,
+        validators=[MinValueValidator(15), MaxValueValidator(600)],
+        help_text=(
+            "Maximum seconds a public rider has to accept an offer. Each "
+            "offer is randomized from 12 seconds up to this value. Set a "
+            "value between 15 and 600 seconds."
+        ),
+    )
+    public_rider_offer_riders_per_round = models.PositiveSmallIntegerField(
+        default=5,
+        validators=[MinValueValidator(1), MaxValueValidator(100)],
+        help_text=(
+            "Maximum number of nearest eligible public riders tried before "
+            "the order retries from the nearest rider. Set a value from 1 to 100."
+        ),
+    )
+    public_rider_max_active_offers = models.PositiveSmallIntegerField(
+        default=2,
+        validators=[MinValueValidator(1), MaxValueValidator(20)],
+        help_text=(
+            "Maximum number of active public delivery offers shown to one "
+            "rider at a time. Set a value from 1 to 20."
+        ),
+    )
+    road_network_geojson = models.FileField(
+        upload_to="routing/road-networks/",
+        blank=True,
+        verbose_name="Legacy single road network file",
+        validators=[
+            FileExtensionValidator(["geojson"]),
+            validate_road_network_geojson,
+        ],
+        help_text=(
+            "Existing single-file compatibility field. Add new or additional "
+            "GeoJSON maps in the Road network GeoJSON files section below."
         ),
     )
     shared_rider_rate_per_km = models.DecimalField(
@@ -579,6 +1053,39 @@ class DeliverySharingSettings(models.Model):
 
     def __str__(self):
         return f"Shared rider radius: {self.shared_rider_radius_km} km"
+
+
+class RoadNetworkGeoJSON(models.Model):
+    delivery_settings = models.ForeignKey(
+        DeliverySharingSettings,
+        on_delete=models.CASCADE,
+        related_name="road_network_files",
+    )
+    label = models.CharField(
+        max_length=120,
+        blank=True,
+        help_text="Optional area name to help identify this road network file.",
+    )
+    geojson_file = models.FileField(
+        upload_to="routing/road-networks/",
+        validators=[
+            FileExtensionValidator(["geojson"]),
+            validate_road_network_geojson,
+        ],
+        help_text=(
+            "Upload a GeoJSON FeatureCollection containing local road "
+            "LineString or MultiLineString features in WGS84 coordinates."
+        ),
+    )
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["label", "id"]
+        verbose_name = "road network GeoJSON file"
+        verbose_name_plural = "road network GeoJSON files"
+
+    def __str__(self):
+        return self.label or self.geojson_file.name.rsplit("/", 1)[-1]
 
 
 class SharedRiderGroup(models.Model):
@@ -741,6 +1248,7 @@ class ShopStaff(models.Model):
     ROLE_CHOICES = [
         ("PACKER", "Packer"),
         ("MANAGER", "Manager"),
+        ("PURCHASE_MANAGER", "Purchase Manager"),
         ("ORDER", "Order Manager"),
         ("DELIVERY", "Delivery Staff"),
         ("RIDER", "Rider"),
@@ -752,10 +1260,10 @@ class ShopStaff(models.Model):
         related_name="staff_members"
     )
 
-    user = models.OneToOneField(
+    user = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
-        related_name="shop_staff"
+        related_name="shop_staff_memberships",
     )
 
     role = models.CharField(
@@ -798,6 +1306,10 @@ class ShopStaff(models.Model):
     is_active = models.BooleanField(
         default=True
     )
+    is_public_rider = models.BooleanField(
+        default=False,
+        help_text="This rider is participating through the public rider network.",
+    )
     can_manage_products = models.BooleanField(
         default=False
     )
@@ -825,6 +1337,14 @@ class ShopStaff(models.Model):
         auto_now=True
     )
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("shop", "user"),
+                name="uniq_shop_staff_user_per_shop",
+            ),
+        ]
+
     def __str__(self):
         return f"{self.user.username} - {self.shop.name}"
 
@@ -838,13 +1358,109 @@ class ShopStaff(models.Model):
             self.verification_otp = generate_otp_code()
         super().save(*args, **kwargs)
 
+
+class PublicRiderApplication(models.Model):
+    STATUS_PENDING = "PENDING"
+    STATUS_APPROVED = "APPROVED"
+    STATUS_REJECTED = "REJECTED"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending review"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_REJECTED, "Rejected"),
+    ]
+    VEHICLE_CHOICES = [
+        ("BICYCLE", "Bicycle"),
+        ("MOTORCYCLE", "Motorcycle / scooter"),
+        ("CAR", "Car"),
+        ("OTHER", "Other"),
+    ]
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="public_rider_application",
+    )
+    full_name = models.CharField(max_length=200)
+    phone = models.CharField(max_length=40)
+    address = models.TextField()
+    vehicle_type = models.CharField(max_length=20, choices=VEHICLE_CHOICES)
+    driving_license_number = models.CharField(max_length=80)
+    license_document = models.FileField(
+        upload_to=public_rider_document_upload_to,
+        blank=True,
+        storage=PrivateRiderDocumentStorage(),
+    )
+    identity_document = models.FileField(
+        upload_to=public_rider_document_upload_to,
+        blank=True,
+        storage=PrivateRiderDocumentStorage(),
+    )
+    work_area = models.JSONField(default=dict, blank=True)
+    work_areas = models.JSONField(default=list, blank=True, help_text="Multiple saved work-zone circles or polygons for this rider.")
+    home_area = models.JSONField(default=dict, blank=True, help_text="Home circle for the rider's return-home radius.")
+    return_home_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "During the configured daily schedule, offer only deliveries "
+            "whose customer drop-off is closer to home."
+        ),
+    )
+    return_home_after_minutes = models.PositiveIntegerField(
+        default=120,
+        validators=[MinValueValidator(5), MaxValueValidator(1440)],
+        help_text="Duration in minutes for the daily homeward-only offer window.",
+    )
+    return_home_start_time = models.TimeField(
+        default=datetime_time(13, 0),
+        help_text="Local daily start time for homeward-only delivery offers.",
+    )
+    is_online = models.BooleanField(
+        default=True,
+        help_text="Whether this approved public rider can receive new delivery offers.",
+    )
+    public_rider_offer_cooldown_until = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Do not send new public delivery offers before this time.",
+    )
+    public_rider_batch_accepting = models.BooleanField(default=False)
+    public_rider_batch_started_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(
+        max_length=12,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+        db_index=True,
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_public_rider_applications",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["status", "-created_at"]
+
+    def __str__(self):
+        return f"{self.full_name} - {self.get_status_display()}"
+
+
 class AdminProductCatalog(models.Model):
     product_category = models.CharField(
         max_length=80,
         default="OTHER",
     )
     product_name = models.CharField(max_length=200)
-    image_url = models.URLField(max_length=1000, blank=True, default="")
+    image_url = models.URLField(max_length=1000, blank=False, default="")
+    image_url_2 = models.URLField(max_length=1000, blank=True, default="")
+    image_url_3 = models.URLField(max_length=1000, blank=True, default="")
+    image_url_4 = models.URLField(max_length=1000, blank=True, default="")
+    image_url_5 = models.URLField(max_length=1000, blank=True, default="")
     hsn_code = models.CharField(max_length=8, blank=True, default="")
     gst_rate = models.DecimalField(
         max_digits=5,
@@ -866,6 +1482,20 @@ class AdminProductCatalog(models.Model):
 
     def __str__(self):
         return f"{self.product_name} ({self.product_category})"
+
+    @property
+    def image_urls(self):
+        return [
+            image_url
+            for image_url in (
+                self.image_url,
+                self.image_url_2,
+                self.image_url_3,
+                self.image_url_4,
+                self.image_url_5,
+            )
+            if image_url
+        ]
 
 
 class Product(models.Model):
@@ -1003,11 +1633,14 @@ class Product(models.Model):
                 )
                 if value and value.strip()
             ))
-            from .offline_keyword_dictionary import lookup_product_keywords
+            from .offline_keyword_dictionary import (
+                format_search_keywords_by_language,
+                lookup_product_keywords,
+            )
 
             keyword_matches = lookup_product_keywords(" ".join(source_keywords))
-            self.search_keywords = " ".join(
-                dict.fromkeys(source_keywords + keyword_matches.keywords)
+            self.search_keywords = format_search_keywords_by_language(
+                list(dict.fromkeys(source_keywords + keyword_matches.keywords))
             )
             self.search_keywords_translated = keyword_matches.dictionary_matched
             if kwargs.get("update_fields") is not None:
@@ -1085,43 +1718,229 @@ class ProductShop(models.Model):
         validators=[MinValueValidator(Decimal("0.00"))],
         help_text="Optional B2B bulk price per B2B bulk unit, before GST.",
     )
+    purchase_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    retail_margin_percent = models.DecimalField(
+        max_digits=7,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    retail_margin_fixed = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    bulk_margin_percent = models.DecimalField(
+        max_digits=7,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    bulk_margin_fixed = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    b2b_margin_percent = models.DecimalField(
+        max_digits=7,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    b2b_margin_fixed = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    b2b_bulk_margin_percent = models.DecimalField(
+        max_digits=7,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    b2b_purchase_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.00"))],
+        help_text="Optional supplier cost for inventory reserved for B2B customers.",
+    )
+    b2b_bulk_margin_fixed = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
     b2b_bulk_unit = models.CharField(max_length=40, blank=True, default="")
+    pricing_mode = models.CharField(
+        max_length=8,
+        choices=(("AUTO", "Margin-based"), ("MANUAL", "Manual")),
+        default="AUTO",
+    )
     bulk_min_quantity = models.PositiveSmallIntegerField(
         default=1,
         validators=[MinValueValidator(1)],
         help_text="Minimum number of bulk units per order, shared by B2C and B2B.",
     )
 
-    stock = models.PositiveIntegerField(default=0)
-    b2b_stock = models.PositiveIntegerField(
-        default=0,
+    stock = models.DecimalField(
+        max_digits=14,
+        decimal_places=4,
+        default=Decimal("0.0000"),
+        validators=[MinValueValidator(Decimal("0.0000"))],
+    )
+    b2b_stock = models.DecimalField(
+        max_digits=14,
+        decimal_places=4,
+        default=Decimal("0.0000"),
+        validators=[MinValueValidator(Decimal("0.0000"))],
         help_text="Inventory available to B2B customers, separate from regular stock.",
     )
     stocked_at = models.DateTimeField(null=True, blank=True)
     expires_at = models.DateTimeField(null=True, blank=True)
     image_url_override = models.URLField(max_length=1000, blank=True, default="")
+    image_url_override_2 = models.URLField(max_length=1000, blank=True, default="")
+    image_url_override_3 = models.URLField(max_length=1000, blank=True, default="")
+    image_url_override_4 = models.URLField(max_length=1000, blank=True, default="")
+    image_url_override_5 = models.URLField(max_length=1000, blank=True, default="")
 
     is_active = models.BooleanField(default=True)
 
+    def recalculate_prices_from_purchase_cost(self):
+        if self.purchase_price is not None:
+            price_rules = (
+                (
+                    "price",
+                    "retail_margin_percent",
+                    "retail_margin_fixed",
+                    Decimal("1"),
+                ),
+                (
+                    "bulk_price",
+                    "bulk_margin_percent",
+                    "bulk_margin_fixed",
+                    _sale_unit_ratio(self.bulk_unit or self.product.unit, self.product.unit),
+                ),
+            )
+            for price_field, percent_field, fixed_field, unit_ratio in price_rules:
+                unit_cost = self.purchase_price * unit_ratio
+                margin = (
+                    unit_cost
+                    * getattr(self, percent_field)
+                    / Decimal("100")
+                )
+                setattr(
+                    self,
+                    price_field,
+                    (
+                        unit_cost
+                        + margin
+                        + getattr(self, fixed_field)
+                    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+                )
+        b2b_match = re.fullmatch(
+            r"\s*(\d+(?:\.\d+)?)\s*(.*)", self.b2b_unit or ""
+        )
+        retail_match = re.fullmatch(
+            r"\s*(\d+(?:\.\d+)?)\s*(.*)", self.product.unit or ""
+        )
+        common_unit_text = retail_match.group(2).strip() if retail_match else ""
+        b2b_unit = (
+            f"{b2b_match.group(1)}{common_unit_text}"
+            if b2b_match and common_unit_text
+            else self.product.unit
+        )
+        if self.b2b_purchase_price is not None:
+            b2b_purchase_price = self.b2b_purchase_price
+            b2b_base_ratio = Decimal("1")
+        else:
+            b2b_purchase_price = self.purchase_price
+            if b2b_purchase_price is None:
+                return
+            b2b_base_ratio = _sale_unit_ratio(b2b_unit, self.product.unit)
+        for price_field, percent_field, fixed_field, unit_ratio in (
+            (
+                "b2b_price",
+                "b2b_margin_percent",
+                "b2b_margin_fixed",
+                b2b_base_ratio,
+            ),
+            (
+                "b2b_bulk_price",
+                "b2b_bulk_margin_percent",
+                "b2b_bulk_margin_fixed",
+                b2b_base_ratio * _sale_unit_ratio(
+                    self.b2b_bulk_unit or b2b_unit,
+                    b2b_unit,
+                ),
+            ),
+        ):
+            unit_cost = b2b_purchase_price * unit_ratio
+            margin = (
+                unit_cost
+                * getattr(self, percent_field)
+                / Decimal("100")
+            )
+            setattr(
+                self,
+                price_field,
+                (
+                    unit_cost
+                    + margin
+                    + getattr(self, fixed_field)
+                ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+            )
+
     @property
     def display_image_url(self):
-        if self.shop.allow_product_image_overrides and self.image_url_override:
-            return self.image_url_override
-        catalog_image = AdminProductCatalog.objects.filter(
-            product_category=self.product.product_category,
-            product_name=self.product.product_name,
-            is_active=True,
-        ).values_list("image_url", flat=True).first()
-        if catalog_image is not None:
-            return catalog_image
+        image_urls = self.display_image_urls
+        return image_urls[0] if image_urls else ""
 
-        legacy_catalog_image = Product.objects.filter(
+    @property
+    def display_image_urls(self):
+        image_urls = []
+        if self.shop.allow_product_image_overrides:
+            image_urls.extend(
+                image_url
+                for image_url in (
+                    self.image_url_override,
+                    self.image_url_override_2,
+                    self.image_url_override_3,
+                    self.image_url_override_4,
+                    self.image_url_override_5,
+                )
+                if image_url
+            )
+            if self.product.image_url:
+                image_urls.append(self.product.image_url)
+        catalog_product = AdminProductCatalog.objects.filter(
             product_category=self.product.product_category,
             product_name=self.product.product_name,
-            created_by__is_staff=True,
             is_active=True,
-        ).values_list("image_url", flat=True).first()
-        return legacy_catalog_image or ""
+        ).first()
+        if catalog_product:
+            image_urls.extend(catalog_product.image_urls)
+
+        if not image_urls:
+            legacy_catalog_image = Product.objects.filter(
+                product_category=self.product.product_category,
+                product_name=self.product.product_name,
+                created_by__is_staff=True,
+                is_active=True,
+            ).values_list("image_url", flat=True).first()
+            if legacy_catalog_image:
+                image_urls.append(legacy_catalog_image)
+        return list(dict.fromkeys(image_urls))
 
     ...
 
@@ -1160,9 +1979,21 @@ class ProductShop(models.Model):
             return self._price_after_expiry_markdown(base_price)
         return base_price
 
+    @property
+    def common_b2b_unit(self):
+        b2b_match = re.fullmatch(
+            r"\s*(\d+(?:\.\d+)?)\s*(.*)", self.b2b_unit or ""
+        )
+        retail_match = re.fullmatch(
+            r"\s*(\d+(?:\.\d+)?)\s*(.*)", self.product.unit or ""
+        )
+        if b2b_match and retail_match and retail_match.group(2).strip():
+            return f"{b2b_match.group(1)}{retail_match.group(2).strip()}"
+        return self.product.unit
+
     def unit_for_customer(self, *, is_b2b=False):
-        if is_b2b and self.shop.has_valid_gstin and self.b2b_unit:
-            return self.b2b_unit
+        if is_b2b and self.shop.has_valid_gstin:
+            return self.common_b2b_unit
         return self.product.unit
 
     def bulk_unit_for_customer(self, *, is_b2b=False):
@@ -1616,6 +2447,7 @@ class Order(models.Model):
     delivery_address = models.TextField(blank=True)
     delivery_location = models.CharField(max_length=255, blank=True)
     placed_location = models.JSONField(default=dict, blank=True)
+    customer_live_location = models.JSONField(default=dict, blank=True)
     delivery_contact_no = models.CharField(max_length=40, blank=True)
     is_valid_order = models.BooleanField(default=True)
     status = models.CharField(max_length=100, blank=True)
@@ -1673,6 +2505,11 @@ class ShopOrder(models.Model):
         on_delete=models.CASCADE,
         related_name="shop_orders"
     )
+    pickup_location = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Snapshot of the nearest pickup address selected for this order.",
+    )
     shop_order_number = models.CharField(
         max_length=160,
         unique=True,
@@ -1697,6 +2534,32 @@ class ShopOrder(models.Model):
         related_name="rider_assigned_orders"
     )
     rider_accepted_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    public_rider_network_requested = models.BooleanField(
+        default=False,
+        help_text="Offer this ready order to approved public riders instead of a named shop rider.",
+    )
+    public_rider_fallback_to_staff = models.BooleanField(
+        default=False,
+        help_text="Legacy flag for public offers manually switched to shop staff.",
+    )
+    public_rider_route_estimate = models.JSONField(default=dict, blank=True)
+    public_rider_offer_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="public_rider_order_offers",
+    )
+    public_rider_offer_expires_at = models.DateTimeField(null=True, blank=True)
+    public_rider_offer_retry_at = models.DateTimeField(null=True, blank=True)
+    public_rider_offer_attempted_user_ids = models.JSONField(
+        default=list,
+        blank=True,
+    )
+    public_rider_offer_declined_until = models.JSONField(
+        default=dict,
+        blank=True,
+    )
 
     rider_identity_otp = models.CharField(max_length=6, blank=True, default="")
     rider_identity_otp_expires_at = models.DateTimeField(null=True, blank=True)
@@ -2002,6 +2865,56 @@ class ShopOrder(models.Model):
 #             self.rider_eta_minutes = self.calculate_rider_eta_minutes(self.order.shop_location if self.order else None, self.order.delivery_location if self.order else None)
 #         super().save(*args, **kwargs)
 
+class CheckoutAttempt(models.Model):
+    customer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="checkout_attempts",
+    )
+    shop = models.ForeignKey(
+        Shop,
+        on_delete=models.CASCADE,
+        related_name="checkout_attempts",
+    )
+    checkout_key = models.CharField(max_length=32)
+    cart_items = models.JSONField(default=list, blank=True)
+    total_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    order = models.ForeignKey(
+        Order,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="checkout_attempts",
+    )
+    remark_updated_at = models.DateTimeField(null=True, blank=True)
+    remark_updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_checkout_remarks",
+    )
+    shop_remark = models.TextField(blank=True, default="")
+    started_at = models.DateTimeField(auto_now_add=True)
+    last_activity_at = models.DateTimeField(auto_now=True, db_index=True)
+
+    class Meta:
+        ordering = ["-last_activity_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["customer", "checkout_key", "shop"],
+                name="unique_checkout_attempt_per_shop",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Checkout attempt for {self.shop.name} by {self.customer}"
+
+
 class OrderVoiceInstruction(models.Model):
     RECIPIENT_SHOP = "SHOP"
     RECIPIENT_RIDER = "RIDER"
@@ -2306,6 +3219,66 @@ class ShopStaffWalletTransaction(models.Model):
         return f"{self.get_transaction_type_display()} · {self.shop_order} · ₹{self.amount}"
 
 
+class PublicRiderWallet(models.Model):
+    rider = models.OneToOneField(
+        PublicRiderApplication,
+        on_delete=models.PROTECT,
+        related_name="earnings_wallet",
+    )
+    balance = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.rider.full_name} earnings wallet · ₹{self.balance}"
+
+
+class PublicRiderWalletTransaction(models.Model):
+    DELIVERY_FARE = "DELIVERY_FARE"
+    TRANSACTION_TYPES = [
+        (DELIVERY_FARE, "Completed delivery fare"),
+        ("PAYOUT", "Rider payout"),
+        ("ADJUSTMENT", "Adjustment"),
+    ]
+
+    wallet = models.ForeignKey(
+        PublicRiderWallet,
+        on_delete=models.PROTECT,
+        related_name="transactions",
+    )
+    shop_order = models.ForeignKey(
+        ShopOrder,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="public_rider_wallet_transactions",
+    )
+    transaction_type = models.CharField(max_length=20, choices=TRANSACTION_TYPES)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    balance_after = models.DecimalField(max_digits=14, decimal_places=2)
+    description = models.CharField(max_length=250)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["shop_order"],
+                condition=models.Q(transaction_type="DELIVERY_FARE"),
+                name="unique_public_rider_fare_per_order",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.get_transaction_type_display()} · "
+            f"{self.shop_order or self.wallet.rider} · ₹{self.amount}"
+        )
+
+
 class CODBalancePayment(models.Model):
     shop_order = models.ForeignKey(
         ShopOrder,
@@ -2325,6 +3298,87 @@ class CODBalancePayment(models.Model):
 
     def __str__(self):
         return f"COD balance payment · {self.shop_order} · ₹{self.amount}"
+
+
+class CODPaymentApprovalRequest(models.Model):
+    STATUS_CHOICES = [
+        ("QR_READY", "UPI QR ready"),
+        ("PENDING", "Awaiting shop approval"),
+        ("APPROVED", "Approved"),
+        ("REJECTED", "Rejected"),
+        ("CANCELLED", "Cancelled"),
+    ]
+    ACTIVE_STATUSES = ("QR_READY", "PENDING")
+
+    shop_order = models.ForeignKey(
+        ShopOrder,
+        on_delete=models.PROTECT,
+        related_name="cod_payment_approval_requests",
+    )
+    shop = models.ForeignKey(
+        Shop,
+        on_delete=models.PROTECT,
+        related_name="cod_payment_approval_requests",
+    )
+    rider = models.ForeignKey(
+        ShopStaff,
+        on_delete=models.PROTECT,
+        related_name="cod_payment_approval_requests",
+    )
+    qr_amount = models.DecimalField(max_digits=14, decimal_places=2)
+    settlement_amount = models.DecimalField(max_digits=14, decimal_places=2)
+    original_cod_amount = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=0,
+    )
+    return_quantities = models.JSONField(default=dict, blank=True)
+    upi_id = models.CharField(max_length=255)
+    delivery_remark = models.TextField(blank=True, default="")
+    customer_rating = models.PositiveSmallIntegerField(null=True, blank=True)
+    status = models.CharField(
+        max_length=12,
+        choices=STATUS_CHOICES,
+        default="QR_READY",
+        db_index=True,
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_cod_payment_requests",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["shop", "qr_amount"],
+                condition=models.Q(status__in=["QR_READY", "PENDING"]),
+                name="uniq_active_cod_qr_amount_shop",
+            ),
+            models.UniqueConstraint(
+                fields=["shop_order"],
+                condition=models.Q(status__in=["QR_READY", "PENDING"]),
+                name="uniq_active_cod_qr_order",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["shop", "status", "created_at"],
+                name="cod_approval_shop_status_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"COD UPI approval · {self.shop_order} · "
+            f"₹{self.qr_amount} · {self.status}"
+        )
 
 
 class OrderItem(models.Model):
@@ -2531,7 +3585,7 @@ class StockMovement(models.Model):
 
     product_shop = models.ForeignKey(ProductShop, on_delete=models.CASCADE, related_name="stock_movements")
     movement_type = models.CharField(max_length=20, choices=MOVEMENT_CHOICES)
-    quantity = models.IntegerField()
+    quantity = models.DecimalField(max_digits=14, decimal_places=4)
     reference = models.CharField(max_length=200, blank=True, default="")
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -2544,6 +3598,261 @@ class ShopProductForecast(models.Model):
     festival_average = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     recommended_stock = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     calculated_at = models.DateTimeField(auto_now=True)
+
+
+class ShopVendor(models.Model):
+    shop = models.ForeignKey(
+        Shop,
+        on_delete=models.CASCADE,
+        related_name="vendors",
+    )
+    name = models.CharField(max_length=200)
+    contact_name = models.CharField(max_length=160, blank=True, default="")
+    phone = models.CharField(max_length=40, blank=True, default="")
+    email = models.EmailField(blank=True, default="")
+    tax_id = models.CharField(max_length=32, blank=True, default="")
+    address = models.TextField(blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("name", "pk")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("shop", "name"),
+                name="unique_vendor_name_per_shop",
+            ),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class VendorPurchase(models.Model):
+    COST_METHOD_CHOICES = (
+        ("AVERAGE", "Weighted average with existing stock"),
+        ("NEW", "Use latest purchase cost"),
+    )
+
+    shop = models.ForeignKey(
+        Shop,
+        on_delete=models.CASCADE,
+        related_name="vendor_purchases",
+    )
+    vendor = models.ForeignKey(
+        ShopVendor,
+        on_delete=models.PROTECT,
+        related_name="purchases",
+    )
+    invoice_number = models.CharField(max_length=100, blank=True, default="")
+    purchase_date = models.DateField(default=date.today)
+    due_date = models.DateField(null=True, blank=True)
+    cost_method = models.CharField(
+        max_length=8,
+        choices=COST_METHOD_CHOICES,
+        default="AVERAGE",
+    )
+    total_amount = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    subtotal_amount = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    gst_amount = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    delivery_expense = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    delivery_gst_rate = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    delivery_gst_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    notes = models.TextField(blank=True, default="")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="vendor_purchases_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-purchase_date", "-pk")
+
+    @property
+    def amount_paid(self):
+        return self.payments.aggregate(total=models.Sum("amount"))["total"] or Decimal("0.00")
+
+    @property
+    def balance_due(self):
+        return max(
+            Decimal("0.00"),
+            self.total_amount - self.amount_paid - self.credited_amount,
+        )
+
+    @property
+    def credited_amount(self):
+        return self.returns.aggregate(total=models.Sum("total_amount"))["total"] or Decimal("0.00")
+
+    @property
+    def payment_status(self):
+        paid = self.amount_paid
+        if self.total_amount <= 0 or paid + self.credited_amount >= self.total_amount:
+            return "PAID"
+        if paid <= 0 and self.credited_amount <= 0:
+            return "UNPAID"
+        return "PARTIAL"
+
+    def __str__(self):
+        return f"{self.vendor.name} · {self.invoice_number or self.pk}"
+
+
+class VendorPurchaseItem(models.Model):
+    STOCK_TYPE_CHOICES = (
+        ("RETAIL", "Retail"),
+        ("B2B", "B2B"),
+    )
+
+    purchase = models.ForeignKey(
+        VendorPurchase,
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+    product_shop = models.ForeignKey(
+        ProductShop,
+        on_delete=models.PROTECT,
+        related_name="purchase_items",
+    )
+    stock_type = models.CharField(
+        max_length=8,
+        choices=STOCK_TYPE_CHOICES,
+        default="RETAIL",
+    )
+    quantity = models.DecimalField(
+        max_digits=14,
+        decimal_places=4,
+        validators=[MinValueValidator(Decimal("0.0000"))],
+        help_text="Usable quantity added to inventory after recorded wastage.",
+    )
+    purchased_quantity = models.PositiveIntegerField(default=0)
+    wastage_quantity = models.DecimalField(
+        max_digits=14,
+        decimal_places=4,
+        default=Decimal("0.0000"),
+        validators=[MinValueValidator(Decimal("0.0000"))],
+    )
+    purchase_unit_value = models.DecimalField(
+        max_digits=10,
+        decimal_places=4,
+        default=Decimal("1.0000"),
+        validators=[MinValueValidator(Decimal("0.0001"))],
+    )
+    purchase_unit_text = models.CharField(max_length=30, blank=True, default="")
+    inventory_unit_value = models.DecimalField(
+        max_digits=10,
+        decimal_places=4,
+        default=Decimal("1.0000"),
+        validators=[MinValueValidator(Decimal("0.0001"))],
+    )
+    inventory_unit_text = models.CharField(max_length=30, blank=True, default="")
+    unit_cost = models.DecimalField(max_digits=12, decimal_places=2)
+    line_total = models.DecimalField(max_digits=14, decimal_places=2)
+    gst_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
+    gst_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+
+    class Meta:
+        ordering = ("pk",)
+
+
+class VendorPurchasePayment(models.Model):
+    METHOD_CHOICES = (
+        ("CASH", "Cash"),
+        ("BANK", "Bank transfer"),
+        ("UPI", "UPI"),
+        ("CARD", "Card"),
+        ("OTHER", "Other"),
+    )
+
+    purchase = models.ForeignKey(
+        VendorPurchase,
+        on_delete=models.CASCADE,
+        related_name="payments",
+    )
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    payment_method = models.CharField(
+        max_length=8,
+        choices=METHOD_CHOICES,
+        default="BANK",
+    )
+    reference = models.CharField(max_length=160, blank=True, default="")
+    paid_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="vendor_purchase_payments_created",
+    )
+
+
+class VendorPurchaseReturn(models.Model):
+    purchase = models.ForeignKey(
+        VendorPurchase,
+        on_delete=models.CASCADE,
+        related_name="returns",
+    )
+    subtotal_amount = models.DecimalField(max_digits=14, decimal_places=2)
+    gst_amount = models.DecimalField(max_digits=14, decimal_places=2)
+    total_amount = models.DecimalField(max_digits=14, decimal_places=2)
+    reason = models.CharField(max_length=240, blank=True, default="")
+    returned_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="vendor_purchase_returns_created",
+    )
+
+    class Meta:
+        ordering = ("-returned_at", "-pk")
+
+
+class VendorPurchaseReturnItem(models.Model):
+    purchase_return = models.ForeignKey(
+        VendorPurchaseReturn,
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+    purchase_item = models.ForeignKey(
+        VendorPurchaseItem,
+        on_delete=models.PROTECT,
+        related_name="returns",
+    )
+    quantity = models.DecimalField(
+        max_digits=14,
+        decimal_places=4,
+        validators=[MinValueValidator(Decimal("0.0000"))],
+    )
+    subtotal_amount = models.DecimalField(max_digits=14, decimal_places=2)
+    gst_amount = models.DecimalField(max_digits=14, decimal_places=2)
+
 
 class OrderStatusHistory(models.Model):
 

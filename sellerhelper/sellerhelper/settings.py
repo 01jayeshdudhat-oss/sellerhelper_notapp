@@ -33,11 +33,14 @@ SHOP_STOREFRONT_BASE_DOMAIN = os.getenv(
     "",
 ).strip().lower().strip(".")
 
-ALLOWED_HOSTS = [
-    host.strip()
-    for host in os.getenv('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1,192.168.1.12,192.168.1.8').split(',')
-    if host.strip()
-]
+# ALLOWED_HOSTS = [
+#     host.strip()
+#     for host in os.getenv('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1,192.168.1.22,192.168.1.8,192.168.1.4,10.0.2.2').split(',')
+#     if host.strip()
+# ]
+
+ALLOWED_HOSTS=['*']
+
 if SHOP_STOREFRONT_BASE_DOMAIN:
     ALLOWED_HOSTS.extend(
         (SHOP_STOREFRONT_BASE_DOMAIN, f".{SHOP_STOREFRONT_BASE_DOMAIN}")
@@ -108,6 +111,7 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'social_django.middleware.SocialAuthExceptionMiddleware',
+    'seller.middleware.AutomaticSQLiteBackupMiddleware',
 ]
 
 ROOT_URLCONF = 'sellerhelper.urls'

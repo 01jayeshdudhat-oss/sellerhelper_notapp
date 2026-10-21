@@ -13,7 +13,9 @@ from django.db.models import Q
 from .models import (
     AdminProductCatalog,
     MarketplaceLayoutSettings,
+    PublicRiderApplication,
     SiteBrandingSettings,
+    SiteThemeSettings,
     Order,
     Product,
     ProductCategory,
@@ -112,6 +114,72 @@ class CustomerSignupForm(UserCreationForm):
     )
 
 
+class PublicRiderApplicationForm(forms.ModelForm):
+    consent_to_verification = forms.BooleanField(
+        required=True,
+        label=(
+            "I consent to admin review of my rider application and the identity "
+            "documents I submit."
+        ),
+    )
+
+    class Meta:
+        model = PublicRiderApplication
+        fields = (
+            "full_name",
+            "phone",
+            "address",
+            "vehicle_type",
+            "driving_license_number",
+            "license_document",
+            "identity_document",
+        )
+        widgets = {
+            "full_name": forms.TextInput(attrs={"autocomplete": "name"}),
+            "phone": forms.TextInput(attrs={"autocomplete": "tel", "inputmode": "tel"}),
+            "address": forms.Textarea(attrs={"rows": 3, "autocomplete": "street-address"}),
+            "driving_license_number": forms.TextInput(attrs={"autocomplete": "off"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for field_name in ("license_document", "identity_document"):
+            self.fields[field_name].required = not bool(
+                getattr(self.instance, field_name)
+            )
+
+    def clean_license_document(self):
+        return self._validate_document(self.cleaned_data.get("license_document"))
+
+    def clean_identity_document(self):
+        return self._validate_document(self.cleaned_data.get("identity_document"))
+
+    def clean_phone(self):
+        phone = re.sub(r"[\s()-]", "", self.cleaned_data["phone"])
+        digits = phone.removeprefix("+")
+        if not digits.isascii() or not digits.isdigit() or not 8 <= len(digits) <= 15:
+            raise ValidationError("Enter a valid phone number.")
+        return phone
+
+    @staticmethod
+    def _validate_document(upload):
+        if not upload or not hasattr(upload, "read"):
+            return upload
+        if upload.size > 5 * 1024 * 1024:
+            raise ValidationError("Each document must be 5 MB or smaller.")
+
+        header = upload.read(8)
+        upload.seek(0)
+        valid = (
+            header.startswith(b"%PDF-")
+            or header.startswith(b"\x89PNG\r\n\x1a\n")
+            or header.startswith(b"\xff\xd8\xff")
+        )
+        if not valid:
+            raise ValidationError("Upload a PDF, PNG, or JPEG document.")
+        return upload
+
+
 class ShopForm(forms.ModelForm):
     accept_legal_documents = forms.BooleanField(
         required=True,
@@ -141,6 +209,8 @@ class ShopForm(forms.ModelForm):
             "market_category",
             "shop_category",
             "alias_name",
+            "logo_image",
+            "cover_image",
             "logo_url",
             "cover_image_url",
             "contact_no",
@@ -192,6 +262,14 @@ class ShopForm(forms.ModelForm):
                 "placeholder": "Alias name"
             }),
 
+            "logo_image": forms.ClearableFileInput(attrs={
+                "class": "form-control",
+                "accept": "image/jpeg,image/png,image/webp",
+            }),
+            "cover_image": forms.ClearableFileInput(attrs={
+                "class": "form-control",
+                "accept": "image/jpeg,image/png,image/webp",
+            }),
             "logo_url": forms.URLInput(attrs={"class": "form-control", "placeholder": "Shop logo URL"}),
             "cover_image_url": forms.URLInput(attrs={"class": "form-control", "placeholder": "Shop cover image URL"}),
 
@@ -262,6 +340,12 @@ class ShopForm(forms.ModelForm):
                 "placeholder": "Additional shop information"
             }),
         }
+        for field_name, configured_widget in widgets.items():
+            field_widget = self.fields[field_name].widget
+            field_widget.attrs.update(configured_widget.attrs)
+            configured_input_type = getattr(configured_widget, "input_type", None)
+            if configured_input_type:
+                field_widget.input_type = configured_input_type
 
     def clean_storefront_slug(self):
         slug = (self.cleaned_data.get("storefront_slug") or "").strip().lower()
@@ -885,14 +969,17 @@ class ProductShopAssignmentForm(forms.Form):
         label="Shop Price"
     )
 
-    stock = forms.IntegerField(
+    stock = forms.DecimalField(
         required=False,
         min_value=0,
+        max_digits=14,
+        decimal_places=4,
         initial=0,
         widget=forms.NumberInput(
             attrs={
                 "class": "form-control",
-                "min": "0"
+                "min": "0",
+                "step": "0.0001",
             }
         )
     )
@@ -946,22 +1033,26 @@ class StorefrontProductEditForm(forms.ModelForm):
         }),
         label="Price at this shop",
     )
-    stock = forms.IntegerField(
+    stock = forms.DecimalField(
         min_value=0,
+        max_digits=14,
+        decimal_places=4,
         widget=forms.NumberInput(attrs={
             "class": "form-control",
             "min": "0",
-            "step": "1",
+            "step": "0.0001",
         }),
         label="Available stock",
     )
-    b2b_stock = forms.IntegerField(
+    b2b_stock = forms.DecimalField(
         required=False,
         min_value=0,
+        max_digits=14,
+        decimal_places=4,
         widget=forms.NumberInput(attrs={
             "class": "form-control",
             "min": "0",
-            "step": "1",
+            "step": "0.0001",
         }),
         label="B2B available stock",
         help_text="Separate inventory used for B2B customer orders.",
@@ -1092,7 +1183,32 @@ class StorefrontProductEditForm(forms.ModelForm):
         required=False,
         max_length=1000,
         widget=forms.URLInput(attrs={"class": "form-control"}),
-        label="Product image URL for this shop",
+        label="Main product image URL for this shop",
+        help_text="Shown first for this shop. Leave blank to use the admin catalog images.",
+    )
+    shop_image_url_2 = forms.URLField(
+        required=False,
+        max_length=1000,
+        widget=forms.URLInput(attrs={"class": "form-control"}),
+        label="Additional product image URL 2",
+    )
+    shop_image_url_3 = forms.URLField(
+        required=False,
+        max_length=1000,
+        widget=forms.URLInput(attrs={"class": "form-control"}),
+        label="Additional product image URL 3",
+    )
+    shop_image_url_4 = forms.URLField(
+        required=False,
+        max_length=1000,
+        widget=forms.URLInput(attrs={"class": "form-control"}),
+        label="Additional product image URL 4",
+    )
+    shop_image_url_5 = forms.URLField(
+        required=False,
+        max_length=1000,
+        widget=forms.URLInput(attrs={"class": "form-control"}),
+        label="Additional product image URL 5",
     )
 
     class Meta:
@@ -1134,11 +1250,23 @@ class StorefrontProductEditForm(forms.ModelForm):
         self.fields["unit_value"].initial = unit_value
         self.fields["unit_text"].initial = unit_text
         if product_shop.shop.allow_product_image_overrides:
-            self.fields["shop_image_url"].initial = (
-                product_shop.image_url_override or product_shop.display_image_url
-            )
+            for field_name, model_field in (
+                ("shop_image_url", "image_url_override"),
+                ("shop_image_url_2", "image_url_override_2"),
+                ("shop_image_url_3", "image_url_override_3"),
+                ("shop_image_url_4", "image_url_override_4"),
+                ("shop_image_url_5", "image_url_override_5"),
+            ):
+                self.fields[field_name].initial = getattr(product_shop, model_field)
         else:
-            self.fields.pop("shop_image_url")
+            for field_name in (
+                "shop_image_url",
+                "shop_image_url_2",
+                "shop_image_url_3",
+                "shop_image_url_4",
+                "shop_image_url_5",
+            ):
+                self.fields.pop(field_name)
         self.fields["shop_price"].initial = (
             product_shop.price
             if product_shop.price is not None
@@ -1212,7 +1340,14 @@ class StorefrontProductEditForm(forms.ModelForm):
         )
         product = super().save(commit=commit)
         if self.product_shop.shop.allow_product_image_overrides:
-            self.product_shop.image_url_override = self.cleaned_data["shop_image_url"]
+            for field_name, model_field in (
+                ("shop_image_url", "image_url_override"),
+                ("shop_image_url_2", "image_url_override_2"),
+                ("shop_image_url_3", "image_url_override_3"),
+                ("shop_image_url_4", "image_url_override_4"),
+                ("shop_image_url_5", "image_url_override_5"),
+            ):
+                setattr(self.product_shop, model_field, self.cleaned_data[field_name])
         return product
 
 
@@ -1360,6 +1495,337 @@ class SiteBrandingSettingsForm(forms.ModelForm):
         }
 
 
+class SiteThemeSettingsForm(forms.ModelForm):
+    desktop_layout_order = forms.CharField(widget=forms.HiddenInput)
+    mobile_layout_order = forms.CharField(widget=forms.HiddenInput)
+    component_layouts = forms.JSONField(
+        required=False,
+        widget=forms.HiddenInput,
+    )
+    marketplace_featured_product_ids = forms.MultipleChoiceField(
+        choices=(),
+        required=False,
+        widget=forms.SelectMultiple(attrs={
+            "class": "form-select",
+            "size": 8,
+        }),
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.marketplace_category_choices = get_product_category_choices(
+            include_inactive=True,
+        )
+        self.fields["marketplace_featured_product_ids"].choices = [
+            (str(product.pk), f"{product.product_name} · {product.product_category}")
+            for product in AdminProductCatalog.objects.order_by(
+                "product_category",
+                "product_name",
+            )
+        ]
+        if not self.is_bound:
+            current_category_order = self.instance.marketplace_category_order
+            default_category_order = ",".join(
+                name for name, _label in self.marketplace_category_choices
+            )
+            self.initial.setdefault(
+                "marketplace_category_order",
+                current_category_order or default_category_order,
+            )
+            self.initial.setdefault(
+                "marketplace_featured_product_ids",
+                self.instance.marketplace_featured_product_ids or [],
+            )
+
+    class Meta:
+        model = SiteThemeSettings
+        fields = (
+            "primary_color",
+            "accent_color",
+            "page_background",
+            "surface_color",
+            "text_color",
+            "font_family",
+            "desktop_content_width",
+            "desktop_page_padding",
+            "mobile_page_padding",
+            "mobile_topbar_scroll_hide_enabled",
+            "mobile_bottombar_scroll_hide_enabled",
+            "mobile_app_desktop_view_enabled",
+            "component_radius",
+            "header_padding",
+            "content_padding",
+            "footer_padding",
+            "header_margin",
+            "content_margin",
+            "footer_margin",
+            "desktop_layout_order",
+            "mobile_layout_order",
+            "homepage_hero_enabled",
+            "homepage_features_enabled",
+            "homepage_hero_badge",
+            "homepage_hero_title",
+            "homepage_hero_text",
+            "homepage_primary_cta",
+            "homepage_secondary_cta",
+            "homepage_feature_1_title",
+            "homepage_feature_1_text",
+            "homepage_feature_2_title",
+            "homepage_feature_2_text",
+            "homepage_feature_3_title",
+            "homepage_feature_3_text",
+            "homepage_section_order",
+            "marketplace_hero_enabled",
+            "marketplace_nearby_shops_enabled",
+            "marketplace_category_nav_enabled",
+            "marketplace_products_enabled",
+            "marketplace_hero_title",
+            "marketplace_hero_text",
+            "marketplace_section_order",
+            "marketplace_category_order",
+            "marketplace_featured_product_ids",
+            "marketplace_primary_color",
+            "marketplace_accent_color",
+            "marketplace_header_start_color",
+            "marketplace_header_end_color",
+            "marketplace_card_radius",
+            "marketplace_section_gap",
+            "marketplace_product_gap",
+            "marketplace_content_width",
+            "marketplace_product_width",
+            "marketplace_desktop_padding",
+            "marketplace_mobile_padding",
+            "theme_revision_retention_days",
+            "component_layouts",
+        )
+        widgets = {
+            "primary_color": forms.TextInput(attrs={"type": "color", "class": "form-control form-control-color"}),
+            "accent_color": forms.TextInput(attrs={"type": "color", "class": "form-control form-control-color"}),
+            "page_background": forms.TextInput(attrs={"type": "color", "class": "form-control form-control-color"}),
+            "surface_color": forms.TextInput(attrs={"type": "color", "class": "form-control form-control-color"}),
+            "text_color": forms.TextInput(attrs={"type": "color", "class": "form-control form-control-color"}),
+            "font_family": forms.TextInput(attrs={"class": "form-control"}),
+            "desktop_content_width": forms.NumberInput(attrs={"class": "form-control", "min": 800, "max": 1800, "step": 10}),
+            "desktop_page_padding": forms.NumberInput(attrs={"class": "form-control", "min": 0, "max": 64, "step": 1}),
+            "mobile_page_padding": forms.NumberInput(attrs={"class": "form-control", "min": 0, "max": 32, "step": 1}),
+            "mobile_topbar_scroll_hide_enabled": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "mobile_bottombar_scroll_hide_enabled": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "mobile_app_desktop_view_enabled": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "component_radius": forms.NumberInput(attrs={"class": "form-control", "min": 0, "max": 32, "step": 1}),
+            "header_padding": forms.NumberInput(attrs={"class": "form-control", "min": 0, "max": 32, "step": 1}),
+            "content_padding": forms.NumberInput(attrs={"class": "form-control", "min": 0, "max": 80, "step": 1}),
+            "footer_padding": forms.NumberInput(attrs={"class": "form-control", "min": 0, "max": 64, "step": 1}),
+            "header_margin": forms.NumberInput(attrs={"class": "form-control", "min": 0, "max": 48, "step": 1}),
+            "content_margin": forms.NumberInput(attrs={"class": "form-control", "min": 0, "max": 48, "step": 1}),
+            "footer_margin": forms.NumberInput(attrs={"class": "form-control", "min": 0, "max": 48, "step": 1}),
+            "homepage_hero_enabled": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "homepage_features_enabled": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "homepage_hero_badge": forms.TextInput(attrs={"class": "form-control"}),
+            "homepage_hero_title": forms.TextInput(attrs={"class": "form-control"}),
+            "homepage_hero_text": forms.Textarea(attrs={"class": "form-control", "rows": 3}),
+            "homepage_primary_cta": forms.TextInput(attrs={"class": "form-control"}),
+            "homepage_secondary_cta": forms.TextInput(attrs={"class": "form-control"}),
+            "homepage_feature_1_title": forms.TextInput(attrs={"class": "form-control"}),
+            "homepage_feature_1_text": forms.Textarea(attrs={"class": "form-control", "rows": 2}),
+            "homepage_feature_2_title": forms.TextInput(attrs={"class": "form-control"}),
+            "homepage_feature_2_text": forms.Textarea(attrs={"class": "form-control", "rows": 2}),
+            "homepage_feature_3_title": forms.TextInput(attrs={"class": "form-control"}),
+            "homepage_feature_3_text": forms.Textarea(attrs={"class": "form-control", "rows": 2}),
+            "homepage_section_order": forms.HiddenInput(),
+            "marketplace_hero_enabled": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "marketplace_nearby_shops_enabled": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "marketplace_category_nav_enabled": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "marketplace_products_enabled": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "marketplace_hero_title": forms.TextInput(attrs={"class": "form-control"}),
+            "marketplace_hero_text": forms.TextInput(attrs={"class": "form-control"}),
+            "marketplace_section_order": forms.HiddenInput(),
+            "marketplace_category_order": forms.HiddenInput(),
+            "marketplace_primary_color": forms.TextInput(attrs={"type": "color", "class": "form-control form-control-color"}),
+            "marketplace_accent_color": forms.TextInput(attrs={"type": "color", "class": "form-control form-control-color"}),
+            "marketplace_header_start_color": forms.TextInput(attrs={"type": "color", "class": "form-control form-control-color"}),
+            "marketplace_header_end_color": forms.TextInput(attrs={"type": "color", "class": "form-control form-control-color"}),
+            "marketplace_card_radius": forms.NumberInput(attrs={"class": "form-control", "min": 0, "max": 32}),
+            "marketplace_section_gap": forms.NumberInput(attrs={"class": "form-control", "min": 0, "max": 64}),
+            "marketplace_product_gap": forms.NumberInput(attrs={"class": "form-control", "min": 0, "max": 32}),
+            "marketplace_content_width": forms.NumberInput(attrs={"class": "form-control", "min": 800, "max": 3000, "step": 10}),
+            "marketplace_product_width": forms.NumberInput(attrs={"class": "form-control", "min": 120, "max": 320, "step": 10}),
+            "marketplace_desktop_padding": forms.NumberInput(attrs={"class": "form-control", "min": 0, "max": 48}),
+            "marketplace_mobile_padding": forms.NumberInput(attrs={"class": "form-control", "min": 0, "max": 24}),
+            "theme_revision_retention_days": forms.NumberInput(attrs={"class": "form-control", "min": 0, "max": 3650}),
+            "component_layouts": forms.HiddenInput(),
+        }
+
+    def clean(self):
+        cleaned_data = super().clean()
+        component_names = {
+            "site_header",
+            "site_content",
+            "site_footer",
+            "home_content",
+            "home_hero",
+            "home_features",
+            "home_feature_card",
+            "marketplace_page",
+            "marketplace_hero",
+            "marketplace_search",
+            "marketplace_nearby",
+            "marketplace_category_nav",
+            "marketplace_products",
+            "marketplace_category",
+            "marketplace_product_row",
+            "marketplace_product",
+            "marketplace_product_image",
+        }
+        layout_properties = {
+            "width",
+            "height",
+            "min_width",
+            "max_width",
+            "min_height",
+            "max_height",
+            "margin_x",
+            "margin_y",
+            "margin_top",
+            "margin_right",
+            "margin_bottom",
+            "margin_left",
+            "padding_x",
+            "padding_y",
+            "padding_top",
+            "padding_right",
+            "padding_bottom",
+            "padding_left",
+            "gap_x",
+            "gap_y",
+            "border_radius",
+            "visible",
+            "object_fit",
+        }
+        component_layouts = cleaned_data.get("component_layouts") or {}
+        if not isinstance(component_layouts, dict):
+            self.add_error(
+                "component_layouts",
+                "Component layout settings must be a JSON object.",
+            )
+        else:
+            normalized_layouts = {}
+            for component_name, breakpoints in component_layouts.items():
+                if component_name not in component_names or not isinstance(breakpoints, dict):
+                    self.add_error(
+                        "component_layouts",
+                        "Component layout settings contain an unknown component or invalid breakpoint data.",
+                    )
+                    continue
+                normalized_breakpoints = {}
+                for breakpoint, values in breakpoints.items():
+                    if breakpoint not in {"desktop", "mobile"} or not isinstance(values, dict):
+                        self.add_error(
+                            "component_layouts",
+                            "Component layout settings must use desktop or mobile values.",
+                        )
+                        continue
+                    normalized_values = {}
+                    for property_name, value in values.items():
+                        if property_name == "visible" and isinstance(value, bool):
+                            normalized_values[property_name] = value
+                            continue
+                        if property_name == "object_fit":
+                            if (
+                                isinstance(value, str)
+                                and value in {"contain", "cover", "fill", "scale-down"}
+                            ):
+                                normalized_values[property_name] = value
+                            else:
+                                self.add_error(
+                                    "component_layouts",
+                                    "Product image fit must be contain, cover, fill, or scale-down.",
+                                )
+                            continue
+                        if (
+                            property_name not in layout_properties
+                            or isinstance(value, bool)
+                            or not isinstance(value, int)
+                            or not 0 <= value <= 3000
+                        ):
+                            self.add_error(
+                                "component_layouts",
+                                "Component layout values must be whole pixels between 0 and 3000.",
+                            )
+                            continue
+                        normalized_values[property_name] = value
+                    if normalized_values:
+                        normalized_breakpoints[breakpoint] = normalized_values
+                if normalized_breakpoints:
+                    normalized_layouts[component_name] = normalized_breakpoints
+            cleaned_data["component_layouts"] = normalized_layouts
+
+        expected = {"header", "content", "footer"}
+        for field_name in ("desktop_layout_order", "mobile_layout_order"):
+            raw_order = cleaned_data.get(field_name, "")
+            order = [part.strip() for part in raw_order.split(",")]
+            if len(order) != len(expected) or set(order) != expected:
+                self.add_error(
+                    field_name,
+                    "Arrange header, main content, and footer exactly once.",
+                )
+        homepage_order = [
+            part.strip()
+            for part in self.cleaned_data.get("homepage_section_order", "").split(",")
+        ]
+        if len(homepage_order) != 2 or set(homepage_order) != {"hero", "features"}:
+            self.add_error(
+                "homepage_section_order",
+                "Arrange the welcome banner and feature cards exactly once.",
+            )
+        marketplace_sections = {"hero", "search", "nearby", "category_nav", "products"}
+        marketplace_order = [
+            part.strip()
+            for part in cleaned_data.get("marketplace_section_order", "").split(",")
+        ]
+        if (
+            len(marketplace_order) != len(marketplace_sections)
+            or set(marketplace_order) != marketplace_sections
+        ):
+            self.add_error(
+                "marketplace_section_order",
+                "Arrange all marketplace sections exactly once.",
+            )
+        allowed_categories = {
+            name for name, _label in self.marketplace_category_choices
+        }
+        category_order = [
+            part.strip()
+            for part in cleaned_data.get("marketplace_category_order", "").split(",")
+            if part.strip()
+        ]
+        if category_order and (
+            len(category_order) != len(set(category_order))
+            or not set(category_order).issubset(allowed_categories)
+        ):
+            self.add_error(
+                "marketplace_category_order",
+                "Choose marketplace categories from the available category list.",
+            )
+        for field_name in (
+            "primary_color",
+            "accent_color",
+            "page_background",
+            "surface_color",
+            "text_color",
+            "marketplace_primary_color",
+            "marketplace_accent_color",
+            "marketplace_header_start_color",
+            "marketplace_header_end_color",
+        ):
+            color = cleaned_data.get(field_name, "")
+            if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+                self.add_error(field_name, "Enter a six-digit hexadecimal color.")
+        font_family = cleaned_data.get("font_family", "")
+        if not re.fullmatch(r"[A-Za-z0-9 ,\-]{1,120}", font_family):
+            self.add_error("font_family", "Use a plain CSS font-family list.")
+        return cleaned_data
+
+
 class SharedRiderGroupCreateForm(forms.ModelForm):
     class Meta:
         model = SharedRiderGroup
@@ -1407,6 +1873,10 @@ class AdminProductCatalogForm(forms.ModelForm):
             "product_category",
             "product_name",
             "image_url",
+            "image_url_2",
+            "image_url_3",
+            "image_url_4",
+            "image_url_5",
             "hsn_code",
             "gst_rate",
             "is_active",
@@ -1418,6 +1888,22 @@ class AdminProductCatalogForm(forms.ModelForm):
                 "maxlength": 200,
             }),
             "image_url": forms.URLInput(attrs={
+                "class": "form-control",
+                "placeholder": "https://...",
+            }),
+            "image_url_2": forms.URLInput(attrs={
+                "class": "form-control",
+                "placeholder": "https://...",
+            }),
+            "image_url_3": forms.URLInput(attrs={
+                "class": "form-control",
+                "placeholder": "https://...",
+            }),
+            "image_url_4": forms.URLInput(attrs={
+                "class": "form-control",
+                "placeholder": "https://...",
+            }),
+            "image_url_5": forms.URLInput(attrs={
                 "class": "form-control",
                 "placeholder": "https://...",
             }),
@@ -1437,6 +1923,10 @@ class AdminProductCatalogForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.fields["image_url"].required = True
+        self.fields["image_url"].label = "Image URL 1 (required)"
+        for field_name in ("image_url_2", "image_url_3", "image_url_4", "image_url_5"):
+            self.fields[field_name].label = f"Image URL {field_name[-1]} (optional)"
         category_choices = get_product_category_choices()
         current_category = getattr(self.instance, "product_category", "")
         if current_category and current_category not in dict(category_choices):
@@ -1507,6 +1997,10 @@ class ProductForm(forms.ModelForm):
 
     def __init__(self, *args, user=None, **kwargs):
         product_name_readonly = kwargs.pop("product_name_readonly", False)
+        self.allow_custom_product_name = kwargs.pop(
+            "allow_custom_product_name",
+            False,
+        )
         self.user = user
         super().__init__(*args, **kwargs)
         self.order_fields([
@@ -1532,7 +2026,18 @@ class ProductForm(forms.ModelForm):
 
         self.catalog_data = self.get_catalog_map()
         self.catalog_defaults = self.get_catalog_defaults()
+        self.catalog_products = (
+            self.get_catalog_products()
+            if self.allow_custom_product_name
+            else []
+        )
         category_choices = get_product_category_choices()
+        known_categories = dict(category_choices)
+        for product in self.catalog_products:
+            product_category = product["product_category"]
+            if product_category and product_category not in known_categories:
+                category_choices.append((product_category, product_category))
+                known_categories[product_category] = product_category
         current_category = (
             self.instance.product_category
             if self.instance and self.instance.pk
@@ -1549,6 +2054,19 @@ class ProductForm(forms.ModelForm):
         ]
         self.fields["gst_rate"].required = False
         self.fields["product_name"].choices = self.get_product_name_choices(category)
+        if self.allow_custom_product_name:
+            self.fields["product_name"] = forms.CharField(
+                required=True,
+                max_length=200,
+                label="Product name",
+                help_text="Enter a new name, or select a listed product to fill its details.",
+                widget=forms.TextInput(attrs={
+                    "class": "form-control",
+                    "list": "product-name-options",
+                    "autocomplete": "off",
+                    "data-product-name-autofill": "true",
+                }),
+            )
 
         if self.instance and self.instance.pk and self.instance.product_name:
             self.fields["product_name"].initial = self.instance.product_name
@@ -1607,6 +2125,77 @@ class ProductForm(forms.ModelForm):
                 "gst_rate": str(row["gst_rate"]),
             }
         return catalog
+
+    def get_catalog_products(self):
+        products = {}
+        product_fields = (
+            "sku",
+            "product_category",
+            "product_name",
+            "product_alias_name",
+            "product_title",
+            "product_color",
+            "product_size",
+            "price",
+            "unit",
+            "image_url",
+            "product_description",
+            "hsn_code",
+            "gst_rate",
+            "shelf_life_days",
+            "expiry_price_drop_percent",
+            "expiry_management_enabled",
+            "is_approximate_weight",
+            "is_active",
+        )
+        for row in self.get_catalog_queryset().filter(
+            is_active=True,
+        ).values(*product_fields):
+            row["price"] = str(row["price"])
+            row["gst_rate"] = str(row["gst_rate"])
+            row["expiry_price_drop_percent"] = str(row["expiry_price_drop_percent"])
+            row["unit_value"], row["unit_text"] = _split_product_unit(row["unit"])
+            products[(row["product_category"], row["product_name"])] = row
+
+        for row in AdminProductCatalog.objects.filter(
+            is_active=True,
+        ).values(
+            "product_category",
+            "product_name",
+            "image_url",
+            "hsn_code",
+            "gst_rate",
+        ):
+            key = (row["product_category"], row["product_name"])
+            details = products.setdefault(
+                key,
+                {
+                    "sku": "",
+                    "product_category": row["product_category"],
+                    "product_name": row["product_name"],
+                    "product_alias_name": "",
+                    "product_title": "",
+                    "product_color": "",
+                    "product_size": "",
+                    "price": "",
+                    "unit": "",
+                    "unit_value": "",
+                    "unit_text": "",
+                    "image_url": "",
+                    "product_description": "",
+                    "hsn_code": "",
+                    "gst_rate": "0.00",
+                    "shelf_life_days": "",
+                    "expiry_price_drop_percent": "0.00",
+                    "expiry_management_enabled": False,
+                    "is_approximate_weight": False,
+                    "is_active": True,
+                },
+            )
+            details["image_url"] = row["image_url"] or details["image_url"]
+            details["hsn_code"] = row["hsn_code"] or details["hsn_code"]
+            details["gst_rate"] = str(row["gst_rate"])
+        return list(products.values())
 
     def get_catalog_map(self):
         catalog = {}
@@ -1701,6 +2290,18 @@ class ProductForm(forms.ModelForm):
             self.add_error("unit_text", "Enter the unit when setting a unit value.")
         category = cleaned_data.get("product_category")
         product_name = cleaned_data.get("product_name")
+        if self.allow_custom_product_name and product_name:
+            matching_categories = {
+                item["product_category"]
+                for item in self.catalog_products
+                if item["product_name"].strip().casefold()
+                == product_name.strip().casefold()
+            }
+            if matching_categories and category not in matching_categories:
+                self.add_error(
+                    "product_category",
+                    "This listed product belongs to a different category. Select the product again to fill its category.",
+                )
         defaults = self.catalog_defaults.get(category, {}).get(product_name)
 
         if defaults:
@@ -1724,6 +2325,8 @@ class ProductForm(forms.ModelForm):
                 category
             ).get(product_name, "")
 
+        if cleaned_data.get("gst_rate") is None:
+            cleaned_data["gst_rate"] = Decimal("0.00")
         if cleaned_data.get("gst_rate") and not cleaned_data.get("hsn_code"):
             self.add_error("hsn_code", "HSN code is required when GST applies.")
         return cleaned_data
@@ -1864,6 +2467,7 @@ class ProductForm(forms.ModelForm):
             ),
         }
 
+
 from django import forms
 from .models import ProductShop
 
@@ -1951,14 +2555,17 @@ class ProductShopAssignmentForm(forms.Form):
         label="Minimum bulk quantity",
     )
 
-    stock = forms.IntegerField(
+    stock = forms.DecimalField(
         required=False,
         min_value=0,
+        max_digits=14,
+        decimal_places=4,
         initial=0,
         widget=forms.NumberInput(
             attrs={
                 "class": "form-control",
-                "min": "0"
+                "min": "0",
+                "step": "0.0001",
             }
         )
     )
@@ -2042,21 +2649,9 @@ class ClientDeliveryAddressForm(forms.ModelForm):
                 }
             ),
 
-            "latitude": forms.NumberInput(
-                attrs={
-                    "class": "form-control",
-                    "step": "any",
-                    "readonly": "readonly",
-                }
-            ),
+            "latitude": forms.HiddenInput(),
 
-            "longitude": forms.NumberInput(
-                attrs={
-                    "class": "form-control",
-                    "step": "any",
-                    "readonly": "readonly",
-                }
-            ),
+            "longitude": forms.HiddenInput(),
 
             "is_active": forms.CheckboxInput(
                 attrs={

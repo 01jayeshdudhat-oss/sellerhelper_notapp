@@ -40,8 +40,11 @@
                             ₹{{ item.effective_price|floatformat:2 }}
                             {% if item.product.unit %}<small class="fs-6 text-muted">/ {{ item.product.unit }}</small>{% endif %}
                         </div>
-                        <div class="small mt-2 {% if item.storefront_stock > 0 %}text-success{% else %}text-danger{% endif %}">
-                            {% if item.storefront_stock > 0 %}{{ item.storefront_stock }} available{% else %}Out of stock{% endif %}
+                        <div class="small mt-2 {% if item.storefront_total_stock > 0 %}text-success{% else %}text-muted{% endif %}">
+                            Available stock:
+                            Retail {{ item.stock|floatformat:-4 }}
+                            · B2B {{ item.b2b_stock|floatformat:-4 }}
+                            · Total {{ item.storefront_total_stock|floatformat:-4 }}
                         </div>
                         {% if not item.is_active or not item.product.is_active %}
                             <span class="badge text-bg-secondary mt-2">Not published</span>

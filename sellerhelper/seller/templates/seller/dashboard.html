@@ -216,13 +216,13 @@
                 <div class="list-group list-group-flush">
                     {% for assignment in low_stock_products %}
                         <a class="list-group-item list-group-item-action d-flex justify-content-between align-items-center"
-                           href="{% url 'product_list' %}?shop={{ assignment.shop_id }}">
+                           href="{% url 'product_list' %}?shop={{ assignment.shop_id }}&amp;focus_product={{ assignment.product_id }}&amp;focus_shop={{ assignment.shop_id }}">
                             <span>
                                 <strong>{{ assignment.product.product_name }}</strong>
                                 <span class="small text-muted d-block">{{ assignment.shop.name }}</span>
                             </span>
                             <span class="badge {% if assignment.stock == 0 %}text-bg-danger{% else %}text-bg-warning{% endif %}">
-                                {{ assignment.stock }} left
+                                {{ assignment.stock|floatformat:-4 }} left
                             </span>
                         </a>
                     {% empty %}
@@ -442,7 +442,7 @@
                                                         "
                                                     >
                                                         Stock:
-                                                        {{ assignment.stock }}
+                                                        {{ assignment.stock|floatformat:-4 }}
                                                     </span>
 
 

@@ -65,14 +65,27 @@
         flex: 0 0 92%;
         width: 92%;
         max-width: 92%;
-        scroll-snap-align: center;
+        scroll-snap-align: start;
         scroll-snap-stop: always;
     }
     .packer-order-slide .card-body { padding: 10px; }
     .packer-order-slide .mb-3 { margin-bottom: 9px !important; }
     .packer-order-slide .border.rounded { padding: 8px !important; }
     .packer-order-slide .btn { min-height: 38px; }
+    .packer-item-image {
+        width: 48px;
+        height: 48px;
+        flex: 0 0 48px;
+    }
 }
+.packer-item-image {
+    width: 56px;
+    height: 56px;
+    flex: 0 0 56px;
+    object-fit: cover;
+    background: #f8f9fa;
+}
+.packer-items-summary { cursor: pointer; }
 </style>
 
 <div class="packer-dashboard">
@@ -87,95 +100,6 @@
         <i class="bi bi-bell me-1"></i> Notifications
     </a>
 </div>
-
-<div class="row g-3 mb-4 packer-stat-grid">
-    <div class="col-sm-6 col-xl-3">
-        <div class="card border-0 shadow-sm h-100">
-            <div class="card-body d-flex align-items-center gap-3">
-                <span class="rounded-circle bg-primary-subtle text-primary d-inline-flex align-items-center justify-content-center"
-                      style="width: 48px; height: 48px;">
-                    <i class="bi bi-inbox fs-4"></i>
-                </span>
-                <div>
-                    <div class="small text-muted">Available to pack</div>
-                    <div class="h3 fw-bold mb-0">{{ available_order_count }}</div>
-                </div>
-            </div>
-        </div>
-    </div>
-    <div class="col-sm-6 col-xl-3">
-        <div class="card border-0 shadow-sm h-100">
-            <div class="card-body d-flex align-items-center gap-3">
-                <span class="rounded-circle bg-warning-subtle text-warning-emphasis d-inline-flex align-items-center justify-content-center"
-                      style="width: 48px; height: 48px;">
-                    <i class="bi bi-box-seam fs-4"></i>
-                </span>
-                <div>
-                    <div class="small text-muted">My active packing</div>
-                    <div class="h3 fw-bold mb-0">{{ active_order_count }}</div>
-                </div>
-            </div>
-        </div>
-    </div>
-    <div class="col-sm-6 col-xl-3">
-        <div class="card border-0 shadow-sm h-100">
-            <div class="card-body d-flex align-items-center gap-3">
-                <span class="rounded-circle bg-success-subtle text-success d-inline-flex align-items-center justify-content-center"
-                      style="width: 48px; height: 48px;">
-                    <i class="bi bi-check2-circle fs-4"></i>
-                </span>
-                <div>
-                    <div class="small text-muted">Ready for pickup</div>
-                    <div class="h3 fw-bold mb-0">{{ ready_order_count }}</div>
-                </div>
-            </div>
-        </div>
-    </div>
-    <div class="col-sm-6 col-xl-3">
-        <div class="card border-0 shadow-sm h-100">
-            <div class="card-body d-flex align-items-center gap-3">
-                <span class="rounded-circle bg-info-subtle text-info-emphasis d-inline-flex align-items-center justify-content-center"
-                      style="width: 48px; height: 48px;">
-                    <i class="bi bi-clock-history fs-4"></i>
-                </span>
-                <div>
-                    <div class="small text-muted">Packing history</div>
-                    <div class="h3 fw-bold mb-0">{{ packing_history_count }}</div>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-
-<section class="card border-0 shadow-sm mb-4" aria-label="Packer performance">
-    <div class="card-body">
-        <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
-            <div>
-                <h5 class="fw-bold mb-1">My packing performance · last 30 days</h5>
-                <div class="small text-muted">
-                    Rank {{ efficiency.rank|default:"—" }} of {{ efficiency.team_size }} packer{{ efficiency.team_size|pluralize }} · based on order value/hour, quantity/hour, then completed order count.
-                </div>
-            </div>
-            <div class="text-md-end">
-                <div class="small text-muted">Suggested monthly salary</div>
-                {% if efficiency.salary_policy_configured %}
-                    <div class="h4 fw-bold mb-0">₹{{ efficiency.salary_suggestion|floatformat:2 }}</div>
-                    <div class="small text-muted">Base ₹{{ efficiency.base_salary|floatformat:2 }} + {{ efficiency.completed_order_count }} orders × ₹{{ efficiency.order_bonus|floatformat:2 }}</div>
-                {% else %}
-                    <div class="small fw-semibold">Salary policy not configured by admin</div>
-                {% endif %}
-            </div>
-        </div>
-        <div class="row g-3 mt-2">
-            <div class="col-6 col-lg-2"><div class="small text-muted">Completed orders</div><strong>{{ efficiency.completed_order_count }}</strong></div>
-            <div class="col-6 col-lg-2"><div class="small text-muted">Order value</div><strong>₹{{ efficiency.total_order_value|floatformat:2 }}</strong></div>
-            <div class="col-6 col-lg-2"><div class="small text-muted">Units packed</div><strong>{{ efficiency.total_quantity }}</strong></div>
-            <div class="col-6 col-lg-2"><div class="small text-muted">Average packing time</div><strong>{% if efficiency.average_minutes %}{{ efficiency.average_minutes|floatformat:1 }} min{% else %}—{% endif %}</strong></div>
-            <div class="col-6 col-lg-2"><div class="small text-muted">Value / hour</div><strong>₹{{ efficiency.value_per_hour|floatformat:2 }}</strong></div>
-            <div class="col-6 col-lg-2"><div class="small text-muted">Units / hour</div><strong>{{ efficiency.quantity_per_hour|floatformat:2 }}</strong></div>
-        </div>
-    </div>
-</section>
 
 <nav class="nav nav-pills flex-wrap gap-2 mb-4 packer-dashboard-tabs" aria-label="Packing order tabs">
     <a href="{% url 'packer_dashboard' %}?view=available"
@@ -258,26 +182,50 @@
                         </div>
                     {% endif %}
 
-                    <div class="border rounded p-3 mb-3">
-                        <div class="small text-muted text-uppercase fw-semibold mb-2">
+                    <details class="border rounded p-3 mb-3 packer-order-items">
+                        <summary class="small text-muted text-uppercase fw-semibold packer-items-summary">
                             {% if history_view %}Items packed{% else %}Items to pack{% endif %}
-                        </div>
-                        {% for item in order.order_items.all %}
-                            <div class="d-flex justify-content-between align-items-start gap-3 py-2 {% if not forloop.first %}border-top{% endif %}">
-                                <div class="min-w-0">
-                                    <div class="fw-semibold">{{ item.product_name }}</div>
-                                    {% if item.sku %}
-                                        <div class="small text-muted">SKU: {{ item.sku }}</div>
-                                    {% endif %}
+                            ({{ order.order_items.all|length }})
+                        </summary>
+                        <div class="mt-2">
+                            {% for item in order.order_items.all %}
+                                <div class="d-flex justify-content-between align-items-center gap-2 py-2 {% if not forloop.first %}border-top{% endif %}">
+                                    <div class="d-flex align-items-center gap-2 min-w-0">
+                                        {% if item.product_shop and item.product_shop.display_image_url %}
+                                            <img src="{{ item.product_shop.display_image_url }}"
+                                                 alt="{{ item.product_name }}"
+                                                 class="packer-item-image rounded border"
+                                                 loading="lazy"
+                                                 decoding="async">
+                                        {% elif item.product and item.product.image_url %}
+                                            <img src="{{ item.product.image_url }}"
+                                                 alt="{{ item.product_name }}"
+                                                 class="packer-item-image rounded border"
+                                                 loading="lazy"
+                                                 decoding="async">
+                                        {% else %}
+                                            <div class="packer-item-image rounded border d-flex align-items-center justify-content-center text-muted"
+                                                 role="img"
+                                                 aria-label="No image available for {{ item.product_name }}">
+                                                <i class="bi bi-image"></i>
+                                            </div>
+                                        {% endif %}
+                                        <div class="min-w-0">
+                                            <div class="fw-semibold">{{ item.product_name }}</div>
+                                            {% if item.sku %}
+                                                <div class="small text-muted">SKU: {{ item.sku }}</div>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                    <span class="badge text-bg-light border text-dark text-nowrap">
+                                        Qty {{ item.quantity }}
+                                    </span>
                                 </div>
-                                <span class="badge text-bg-light border text-dark text-nowrap">
-                                    Qty {{ item.quantity }}
-                                </span>
-                            </div>
-                        {% empty %}
-                            <div class="small text-muted">No order items found.</div>
-                        {% endfor %}
-                    </div>
+                            {% empty %}
+                                <div class="small text-muted">No order items found.</div>
+                            {% endfor %}
+                        </div>
+                    </details>
 
                     <div class="d-flex justify-content-between align-items-center mb-3">
                         <span class="text-muted">Order total</span>
@@ -357,5 +305,47 @@
         </div>
     {% endfor %}
 </div>
+
+<details class="card border-0 shadow-sm mt-3 mb-4">
+    <summary class="card-body fw-semibold" style="cursor: pointer;">
+        <i class="bi bi-bar-chart me-2 text-primary" aria-hidden="true"></i>
+        Dashboard overview and performance
+    </summary>
+    <div class="card-body pt-0">
+        <div class="row g-2 mb-3 packer-stat-grid">
+            <div class="col-6 col-xl-3"><div class="p-2 rounded bg-light"><div class="small text-muted">Available to pack</div><strong>{{ available_order_count }}</strong></div></div>
+            <div class="col-6 col-xl-3"><div class="p-2 rounded bg-light"><div class="small text-muted">My active packing</div><strong>{{ active_order_count }}</strong></div></div>
+            <div class="col-6 col-xl-3"><div class="p-2 rounded bg-light"><div class="small text-muted">Ready for pickup</div><strong>{{ ready_order_count }}</strong></div></div>
+            <div class="col-6 col-xl-3"><div class="p-2 rounded bg-light"><div class="small text-muted">Packing history</div><strong>{{ packing_history_count }}</strong></div></div>
+        </div>
+        <section aria-label="Packer performance">
+            <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+                <div>
+                    <h5 class="fw-bold mb-1">My packing performance · last 30 days</h5>
+                    <div class="small text-muted">
+                        Rank {{ efficiency.rank|default:"—" }} of {{ efficiency.team_size }} packer{{ efficiency.team_size|pluralize }} · based on order value/hour, quantity/hour, then completed order count.
+                    </div>
+                </div>
+                <div class="text-md-end">
+                    <div class="small text-muted">Suggested monthly salary</div>
+                    {% if efficiency.salary_policy_configured %}
+                        <div class="h4 fw-bold mb-0">₹{{ efficiency.salary_suggestion|floatformat:2 }}</div>
+                        <div class="small text-muted">Base ₹{{ efficiency.base_salary|floatformat:2 }} + {{ efficiency.completed_order_count }} orders × ₹{{ efficiency.order_bonus|floatformat:2 }}</div>
+                    {% else %}
+                        <div class="small fw-semibold">Salary policy not configured by admin</div>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="row g-3 mt-2">
+                <div class="col-6 col-lg-2"><div class="small text-muted">Completed orders</div><strong>{{ efficiency.completed_order_count }}</strong></div>
+                <div class="col-6 col-lg-2"><div class="small text-muted">Order value</div><strong>₹{{ efficiency.total_order_value|floatformat:2 }}</strong></div>
+                <div class="col-6 col-lg-2"><div class="small text-muted">Units packed</div><strong>{{ efficiency.total_quantity }}</strong></div>
+                <div class="col-6 col-lg-2"><div class="small text-muted">Average packing time</div><strong>{% if efficiency.average_minutes %}{{ efficiency.average_minutes|floatformat:1 }} min{% else %}—{% endif %}</strong></div>
+                <div class="col-6 col-lg-2"><div class="small text-muted">Value / hour</div><strong>₹{{ efficiency.value_per_hour|floatformat:2 }}</strong></div>
+                <div class="col-6 col-lg-2"><div class="small text-muted">Units / hour</div><strong>{{ efficiency.quantity_per_hour|floatformat:2 }}</strong></div>
+            </div>
+        </section>
+    </div>
+</details>
  </div>
 {% endblock %}

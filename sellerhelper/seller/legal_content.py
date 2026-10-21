@@ -82,6 +82,7 @@ LEGAL_PAGES = {
                     "Order, item, payment-status, wallet, cancellation, refund, and customer-service records.",
                     "Delivery address and location information when you provide it or use a location-enabled feature.",
                     "Shop, staff, rider, device, and notification information needed to operate the selected workspace and requested features.",
+                    "If you apply to become a public rider, your application may include contact and address details, vehicle information, a driving-license number, and uploaded license/identity documents for admin verification.",
                     "Technical and security information generated when using the service, such as session and diagnostic records.",
                 ],
             },
@@ -97,6 +98,7 @@ LEGAL_PAGES = {
                 "paragraphs": [
                     "Location access is used only for features that need it, such as selecting a delivery location or coordinating delivery. Device permissions can be managed in your device settings.",
                     "Records are retained for as long as reasonably needed for service, accounting, safety, dispute-resolution, and legal purposes. Appropriate safeguards are used, but no online service can guarantee absolute security.",
+                    "Public-rider application documents are stored separately from public media and are available to authorized administrators for application review.",
                 ],
             },
             {

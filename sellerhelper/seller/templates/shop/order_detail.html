@@ -87,6 +87,12 @@ Order {{ shop_order.shop_order_number|default:shop_order.order.order_id }}
 
 
     <div class="d-flex flex-wrap gap-2">
+        {% if is_assigned_rider %}
+            <a href="{% url 'rider_dashboard' %}?view=active#order-{{ shop_order.id }}"
+               class="btn btn-success">
+                <i class="bi bi-bicycle me-1"></i>Delivery actions
+            </a>
+        {% endif %}
         {% if can_edit_order_items %}
             <a href="{% url 'shop_edit_order_items' shop_order.id %}" class="btn btn-outline-primary">
                 <i class="bi bi-pencil me-1"></i>Edit items
@@ -228,6 +234,60 @@ Order {{ shop_order.shop_order_number|default:shop_order.order.order_id }}
                     {% else %}
                         Ask the shop owner or a staff member with stock-management permission to confirm the handoff.
                     {% endif %}
+                </div>
+            {% endif %}
+
+            {% if cod_payment_approval %}
+                <div class="card border-warning mt-3">
+                    <div class="card-body">
+                        <h6 class="fw-bold mb-2">Shop UPI COD confirmation</h6>
+                        {% if cod_payment_approval.status == "QR_READY" %}
+                            <div class="alert alert-info mb-0">
+                                The rider has prepared a unique ₹{{ cod_payment_approval.qr_amount|floatformat:2 }} QR for the ₹{{ cod_payment_approval.settlement_amount|floatformat:2 }} balance. Approval will be available after the rider reports that the customer paid.
+                            </div>
+                        {% elif cod_payment_approval.status == "PENDING" %}
+                            <div class="mb-2">
+                                <div>QR payment reported: <strong>₹{{ cod_payment_approval.qr_amount|floatformat:2 }}</strong></div>
+                                <div>COD balance to settle: <strong>₹{{ cod_payment_approval.settlement_amount|floatformat:2 }}</strong></div>
+                                <div>Rider: {{ cod_payment_approval.rider.user.get_full_name|default:cod_payment_approval.rider.user.username }}</div>
+                                <div class="small text-muted">
+                                    The QR amount is unique among this shop's pending payments. Verify the payment in your UPI app before approving; approval settles the full revised balance after returns.
+                                </div>
+                            </div>
+                            {% if can_review_cod_payment %}
+                                <div class="d-flex flex-wrap gap-2">
+                                    <form method="post" action="{% url 'approve_cod_payment' cod_payment_approval.id %}">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-success">
+                                            Approve payment and complete delivery
+                                        </button>
+                                    </form>
+                                    <form method="post" action="{% url 'reject_cod_payment' cod_payment_approval.id %}">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-outline-danger">
+                                            Reject payment confirmation
+                                        </button>
+                                    </form>
+                                </div>
+                            {% else %}
+                                <div class="small text-muted">
+                                    Only the shop owner, an active manager, or an order manager can approve this payment.
+                                </div>
+                            {% endif %}
+                        {% elif cod_payment_approval.status == "APPROVED" %}
+                            <div class="alert alert-success mb-0">
+                                ₹{{ cod_payment_approval.qr_amount|floatformat:2 }} payment approved by {{ cod_payment_approval.reviewed_by.get_full_name|default:cod_payment_approval.reviewed_by.username|default:"shop staff" }}. The full ₹{{ cod_payment_approval.settlement_amount|floatformat:2 }} balance was settled and delivery completed.
+                            </div>
+                        {% elif cod_payment_approval.status == "REJECTED" %}
+                            <div class="alert alert-danger mb-0">
+                                The ₹{{ cod_payment_approval.qr_amount|floatformat:2 }} payment confirmation was rejected by {{ cod_payment_approval.reviewed_by.get_full_name|default:cod_payment_approval.reviewed_by.username|default:"shop staff" }}.
+                            </div>
+                        {% elif cod_payment_approval.status == "CANCELLED" %}
+                            <div class="alert alert-secondary mb-0">
+                                The rider cancelled this unused UPI QR.
+                            </div>
+                        {% endif %}
+                    </div>
                 </div>
             {% endif %}
 
@@ -393,7 +453,7 @@ Order {{ shop_order.shop_order_number|default:shop_order.order.order_id }}
             {% if cod_balance_payments %}
                 <div class="card border-0 bg-light mt-3">
                     <div class="card-body">
-                        <h6 class="fw-bold">Later COD payments recorded</h6>
+                        <h6 class="fw-bold">COD payments recorded</h6>
                         <div class="list-group list-group-flush">
                             {% for payment in cod_balance_payments %}
                                 <div class="list-group-item bg-transparent px-0 d-flex flex-wrap justify-content-between gap-2">
@@ -419,7 +479,7 @@ Order {{ shop_order.shop_order_number|default:shop_order.order.order_id }}
                         {% for item in approximate_items %}
                             <div class="mb-3">
                                 <label class="form-label" for="final-weight-{{ item.id }}">
-                                    {{ item.product_name }} · final packed weight ({{ item.weight_display_unit }}) · price ₹{{ item.price }}/{{ item.unit|default:item.product.unit|default:"unit" }}
+                                    {{ item.product_name }} · final packed weight ({{ item.weight_display_unit }}) · price ₹{{ item.price }}/{{ item.price_unit }}
                                 </label>
                                 <input class="form-control" id="final-weight-{{ item.id }}"
                                        type="number" name="final_weight_{{ item.id }}"
@@ -452,6 +512,112 @@ Order {{ shop_order.shop_order_number|default:shop_order.order.order_id }}
             </div>
 
         </div>
+
+
+        <!-- STATUS -->
+
+        <div class="order-box">
+
+            <h5>
+                Order Status
+            </h5>
+
+            <div class="mt-3">
+
+                <span
+                    class="badge bg-primary fs-6"
+                >
+
+                    {% if shop_order.status == "RIDER_ASSIGNED" %}Accepted by Rider{% elif shop_order.status == "PICKED_UP" %}Picked Up{% elif shop_order.status == "OUT_FOR_DELIVERY" %}Out for Delivery{% else %}{{ shop_order.status }}{% endif %}
+
+                </span>
+
+            </div>
+
+
+            <hr>
+
+
+            {% if shop_order.status == "DELIVERED" or shop_order.status == "CANCELLED" %}
+            <p class="small text-muted mb-0">
+                {% if shop_order.status == "DELIVERED" %}This order has been delivered.{% else %}This order has been cancelled.{% endif %}
+                Its status is final and cannot be changed.
+            </p>
+            {% elif can_change_order_status %}
+            <form method="post" action="{% url 'shop_order_status' shop_order.id %}">
+
+                {% csrf_token %}
+
+
+                <label class="form-label">
+
+                    Change Status
+
+                </label>
+                <div class="small text-muted mb-2">
+                    The rider confirms parcel pickup. Out for delivery starts automatically after the rider collects every accepted parcel.
+                </div>
+
+
+                <select
+                    name="status"
+                    id="orderStatusSelect"
+                    class="form-select mb-3"
+                    aria-label="Change order status"
+                    onchange="this.form.requestSubmit()"
+                >
+
+                    <option value="PLACED" {% if shop_order.status == "PLACED" %}selected{% endif %}>
+                        Placed
+                    </option>
+
+                    <option value="CONFIRMED" {% if shop_order.status == "CONFIRMED" %}selected{% endif %}>
+                        Confirmed
+                    </option>
+
+                    <option value="PACKING" {% if shop_order.status == "PACKING" %}selected{% endif %}>
+                        Packing
+                    </option>
+
+                    <option value="READY" {% if shop_order.status == "READY" %}selected{% endif %}>
+                        Ready for Pickup
+                    </option>
+
+                    {% if shop_order.status == "RIDER_ASSIGNED" %}
+                    <option value="RIDER_ASSIGNED" selected disabled>
+                        Accepted by Rider
+                    </option>
+                    {% endif %}
+
+                    <option value="PICKED_UP" {% if shop_order.status == "PICKED_UP" %}selected{% endif %} disabled>
+                        Picked Up
+                    </option>
+
+                    <option value="OUT_FOR_DELIVERY" {% if shop_order.status == "OUT_FOR_DELIVERY" %}selected{% endif %} disabled>
+                        Out for Delivery
+                    </option>
+
+                    <option value="DELIVERED" {% if shop_order.status == "DELIVERED" %}selected{% endif %}>
+                        Delivered
+                    </option>
+
+                    <option value="CANCELLED" {% if shop_order.status == "CANCELLED" %}selected{% endif %}>
+                        Cancelled
+                    </option>
+
+                </select>
+
+
+                <noscript><button class="btn btn-primary w-100">Update Status</button></noscript>
+
+            </form>
+            {% else %}
+            <p class="small text-muted mb-0">Your staff permissions do not allow changing this order’s status.</p>
+            {% endif %}
+
+        </div>
+
+
 
 
         <!-- CUSTOMER -->
@@ -587,105 +753,6 @@ Order {{ shop_order.shop_order_number|default:shop_order.order.order_id }}
     <div class="col-lg-4">
 
 
-        <!-- STATUS -->
-
-        <div class="order-box">
-
-            <h5>
-                Order Status
-            </h5>
-
-            <div class="mt-3">
-
-                <span
-                    class="badge bg-primary fs-6"
-                >
-
-                    {% if shop_order.status == "RIDER_ASSIGNED" %}Accepted by Rider{% elif shop_order.status == "PICKED_UP" %}Picked Up{% elif shop_order.status == "OUT_FOR_DELIVERY" %}Out for Delivery{% else %}{{ shop_order.status }}{% endif %}
-
-                </span>
-
-            </div>
-
-
-            <hr>
-
-
-            {% if can_change_order_status %}
-            <form method="post" action="{% url 'shop_order_status' shop_order.id %}">
-
-                {% csrf_token %}
-
-
-                <label class="form-label">
-
-                    Change Status
-
-                </label>
-                <div class="small text-muted mb-2">
-                    The rider confirms parcel pickup. Out for delivery starts automatically after the rider collects every accepted parcel.
-                </div>
-
-
-                <select
-                    name="status"
-                    id="orderStatusSelect"
-                    class="form-select mb-3"
-                    aria-label="Change order status"
-                    onchange="this.form.requestSubmit()"
-                >
-
-                    <option value="PLACED" {% if shop_order.status == "PLACED" %}selected{% endif %}>
-                        Placed
-                    </option>
-
-                    <option value="CONFIRMED" {% if shop_order.status == "CONFIRMED" %}selected{% endif %}>
-                        Confirmed
-                    </option>
-
-                    <option value="PACKING" {% if shop_order.status == "PACKING" %}selected{% endif %}>
-                        Packing
-                    </option>
-
-                    <option value="READY" {% if shop_order.status == "READY" %}selected{% endif %}>
-                        Ready for Pickup
-                    </option>
-
-                    {% if shop_order.status == "RIDER_ASSIGNED" %}
-                    <option value="RIDER_ASSIGNED" selected disabled>
-                        Accepted by Rider
-                    </option>
-                    {% endif %}
-
-                    <option value="PICKED_UP" {% if shop_order.status == "PICKED_UP" %}selected{% endif %} disabled>
-                        Picked Up
-                    </option>
-
-                    <option value="OUT_FOR_DELIVERY" {% if shop_order.status == "OUT_FOR_DELIVERY" %}selected{% endif %} disabled>
-                        Out for Delivery
-                    </option>
-
-                    <option value="DELIVERED" {% if shop_order.status == "DELIVERED" %}selected{% endif %}>
-                        Delivered
-                    </option>
-
-                    <option value="CANCELLED" {% if shop_order.status == "CANCELLED" %}selected{% endif %}>
-                        Cancelled
-                    </option>
-
-                </select>
-
-
-                <noscript><button class="btn btn-primary w-100">Update Status</button></noscript>
-
-            </form>
-            {% else %}
-            <p class="small text-muted mb-0">Your staff permissions do not allow changing this order’s status.</p>
-            {% endif %}
-
-        </div>
-
-
         <!-- SHOP -->
 
         <div class="order-box">
@@ -745,17 +812,24 @@ Order {{ shop_order.shop_order_number|default:shop_order.order.order_id }}
                 <form method="post" action="{% url 'assign_packer' shop_order.id %}" class="mt-3">
                     {% csrf_token %}
                     <label class="form-label">Assign packer</label>
-                    <select name="packer" class="form-select mb-3">
-                        <option value="">Select packer</option>
+                    <select name="packer" class="form-select"
+                            aria-label="Assign packer"
+                            {% if available_packers %}onchange="this.form.requestSubmit()"{% else %}disabled{% endif %}>
+                        {% if shop_order.assigned_packer %}
+                            <option value="{{ shop_order.assigned_packer.id }}" selected>
+                                {{ shop_order.assigned_packer.user.get_full_name|default:shop_order.assigned_packer.user.username }}
+                            </option>
+                        {% else %}
+                            <option value="" selected disabled>Select packer to assign</option>
+                        {% endif %}
                         {% for packer in available_packers %}
-                            <option value="{{ packer.id }}" {% if shop_order.assigned_packer and shop_order.assigned_packer.id == packer.id %}selected{% endif %}>
+                            {% if not shop_order.assigned_packer or shop_order.assigned_packer.id != packer.id %}
+                            <option value="{{ packer.id }}">
                                 {{ packer.user.get_full_name|default:packer.user.username }}{% if packer.mobile_no %} · {{ packer.mobile_no }}{% endif %}
                             </option>
-                        {% empty %}
-                            <option value="" disabled>No active packers available</option>
+                            {% endif %}
                         {% endfor %}
                     </select>
-                    <button type="submit" class="btn btn-warning w-100">Assign Packer</button>
                 </form>
             {% endif %}
 
@@ -793,32 +867,58 @@ Order {{ shop_order.shop_order_number|default:shop_order.order.order_id }}
                 {% endif %}
             </div>
 
-            {% if can_confirm_rider_pickup and shop_order.status == "RIDER_ASSIGNED" and shop_order.assigned_rider %}
+            {% if show_rider_order_qr %}
                 <div class="alert alert-warning small mt-3 mb-2">
-                    Check the rider matches the person collecting this parcel, then enter the OTP shown on their rider dashboard.
+                    After confirming the rider's OTP and handing over the parcel, the rider can scan the QR below on this screen or on the printed slip to verify this order is in their active list. Scanning does not change its status.
                 </div>
                 <div class="border rounded p-3">
                     <div><strong>Shop:</strong> {{ shop_order.shop.name }}</div>
                     <div><strong>Order:</strong> {{ shop_order.shop_order_number|default:shop_order.order.order_id }}</div>
-                    <div><strong>Expected rider:</strong> {{ shop_order.assigned_rider.user.get_full_name|default:shop_order.assigned_rider.user.username }}</div>
-                    <div class="small text-muted mb-3">
-                        This OTP is valid for five minutes and is tied to this rider, shop, and order.
+                    <div><strong>Expected rider:</strong>
+                        {% if shop_order.assigned_rider %}
+                            {{ shop_order.assigned_rider.user.get_full_name|default:shop_order.assigned_rider.user.username }}
+                        {% elif rider_order_is_accepted %}
+                            {{ shop_order.order.assigned_rider }}
+                        {% endif %}
                     </div>
-                    <form method="post" action="{% url 'rider_pickup_order' shop_order.id %}">
-                        {% csrf_token %}
-                        <label class="form-label small" for="pickupOtp">Rider's six-digit pickup OTP</label>
-                        <input type="text" class="form-control mb-2" id="pickupOtp" name="pickup_otp"
-                               data-pickup-otp-input
-                               inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
-                               autocomplete="one-time-code" required>
-                        <button type="button" class="btn btn-outline-secondary w-100 mb-2"
-                                data-sellerhelper-scan-order="pickup-otp">
-                            <i class="bi bi-qr-code-scan me-1"></i> Scan rider OTP QR
-                        </button>
-                        <button type="submit" class="btn btn-warning w-100">
-                            <i class="bi bi-box-seam me-1"></i> Verify rider and confirm parcel pickup
-                        </button>
-                    </form>
+                    {% if order_qr_data_uri %}
+                        <div class="d-flex flex-wrap align-items-center gap-3 mt-3 mb-3">
+                            <img src="{{ order_qr_data_uri }}"
+                                 alt="Order QR for {{ shop_order.shop_order_number|default:shop_order.order.order_id }}"
+                                 width="180" height="180"
+                                 class="img-fluid border rounded p-1">
+                            <div class="small">
+                                <strong>Rider: scan this QR to verify the parcel is in your active orders</strong>
+                                <div class="text-muted mt-1">
+                                    This is the same QR printed on the packing slip. Scanning verifies active-order membership only and does not change order status.
+                                </div>
+                                <a href="{% url 'packing_slip' shop_order.id %}" target="_blank" rel="noopener"
+                                   class="btn btn-sm btn-outline-primary mt-2">
+                                    <i class="bi bi-printer me-1"></i>Print slip with order QR
+                                </a>
+                            </div>
+                        </div>
+                    {% endif %}
+                    {% if shop_order.assigned_rider %}
+                        <div class="small text-muted mb-3">
+                            Staff may instead use the six-digit OTP shown on the rider's dashboard.
+                        </div>
+                        <form method="post" action="{% url 'rider_pickup_order' shop_order.id %}">
+                            {% csrf_token %}
+                            <label class="form-label small" for="pickupOtp">Rider's six-digit pickup OTP</label>
+                            <input type="text" class="form-control mb-2" id="pickupOtp" name="pickup_otp"
+                                   data-pickup-otp-input
+                                   inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+                                   autocomplete="one-time-code" required>
+                            <button type="button" class="btn btn-outline-secondary w-100 mb-2"
+                                    data-sellerhelper-scan-order="pickup-otp">
+                                <i class="bi bi-qr-code-scan me-1"></i> Scan rider OTP QR
+                            </button>
+                            <button type="submit" class="btn btn-warning w-100">
+                                <i class="bi bi-box-seam me-1"></i> Verify rider and confirm parcel pickup
+                            </button>
+                        </form>
+                    {% endif %}
                 </div>
             {% endif %}
 
@@ -826,17 +926,56 @@ Order {{ shop_order.shop_order_number|default:shop_order.order.order_id }}
                 <form method="post" action="{% url 'assign_rider' shop_order.id %}" class="mt-3">
                     {% csrf_token %}
                     <label class="form-label">Assign rider</label>
-                    <select name="rider" class="form-select mb-3">
-                        <option value="">Select rider</option>
+                    <select name="rider" class="form-select"
+                            aria-label="Assign rider"
+                            {% if available_riders or shop_order.status == "READY" and shop_order.shop.public_rider_network_enabled %}onchange="this.form.requestSubmit()"{% else %}disabled{% endif %}>
+                        {% if shop_order.public_rider_network_requested and not shop_order.assigned_rider and not shop_order.public_rider_fallback_to_staff %}
+                            <option value="PUBLIC" selected>Public rider network (offer to nearby riders)</option>
+                        {% elif shop_order.assigned_rider %}
+                            <option value="{{ shop_order.assigned_rider.id }}" selected>
+                                {{ shop_order.assigned_rider.user.get_full_name|default:shop_order.assigned_rider.user.username }}
+                            </option>
+                        {% else %}
+                            <option value="" selected disabled>Select rider to assign</option>
+                        {% endif %}
+                        {% if shop_order.status == "READY" and shop_order.shop.public_rider_network_enabled %}
+                            {% if not shop_order.public_rider_network_requested or shop_order.public_rider_fallback_to_staff %}
+                            <option value="PUBLIC">
+                                Public rider network (offer to nearby riders)
+                            </option>
+                            {% endif %}
+                        {% endif %}
                         {% for rider in available_riders %}
-                            <option value="{{ rider.id }}" {% if shop_order.assigned_rider and shop_order.assigned_rider.id == rider.id %}selected{% endif %}>
+                            {% if not shop_order.assigned_rider or shop_order.assigned_rider.id != rider.id %}
+                            <option value="{{ rider.id }}">
                                 {{ rider.user.get_full_name|default:rider.user.username }}{% if rider.mobile_no %} · {{ rider.mobile_no }}{% endif %}
                             </option>
-                        {% empty %}
-                            <option value="" disabled>No active riders available</option>
+                            {% endif %}
                         {% endfor %}
                     </select>
-                    <button type="submit" class="btn btn-warning w-100">Assign Rider</button>
+                    {% if shop_order.public_rider_network_requested and not shop_order.assigned_rider %}
+                        <div class="small text-muted mt-2">
+                            This order remains in the public rider retry queue. To stop public offers and assign a shop rider, select that rider above.
+                        </div>
+                    {% endif %}
+                </form>
+            {% endif %}
+            {% if can_assign_rider and shop_order.assigned_rider and shop_order.status == "RIDER_ASSIGNED" %}
+                <form method="post"
+                      action="{% url 'cancel_rider_assignment' shop_order.id %}"
+                      class="mt-3 border-top pt-3"
+                      onsubmit="return confirm('Cancel the current rider assignment? The order will remain ready for pickup.');">
+                    {% csrf_token %}
+                    <label class="form-label small" for="cancelRiderAssignmentReason">
+                        Reason for cancelling assignment (optional)
+                    </label>
+                    <input class="form-control mb-2"
+                           id="cancelRiderAssignmentReason"
+                           name="reason"
+                           maxlength="240">
+                    <button type="submit" class="btn btn-outline-danger w-100">
+                        <i class="bi bi-person-x me-1"></i>Cancel rider assignment
+                    </button>
                 </form>
             {% endif %}
 

@@ -4,7 +4,67 @@
 
 {% block content %}
 
-<div class="container-fluid py-3">
+<style>
+    @media (max-width: 575.98px) {
+        .cart-page-shell {
+            padding-left: .5rem;
+            padding-right: .5rem;
+        }
+        .cart-item-card {
+            margin-bottom: .5rem !important;
+        }
+        .cart-item-card > .card-body {
+            padding: .65rem;
+        }
+        .cart-item-row {
+            display: grid;
+            grid-template-columns: 52px minmax(0, 1fr) auto;
+            grid-template-areas:
+                "image details total"
+                "image quantity remove";
+            align-items: center;
+            gap: .3rem .6rem;
+            margin: 0;
+        }
+        .cart-item-row > [class*="col-"] {
+            width: auto;
+            max-width: none;
+            padding: 0;
+            margin-top: 0 !important;
+        }
+        .cart-image-column { grid-area: image; }
+        .cart-details-column { grid-area: details; min-width: 0; }
+        .cart-quantity-column { grid-area: quantity; }
+        .cart-total-column { grid-area: total; text-align: right; }
+        .cart-remove-column { grid-area: remove; justify-self: end; }
+        .cart-product-image,
+        .cart-product-placeholder {
+            width: 52px !important;
+            height: 52px !important;
+        }
+        .cart-quantity-form {
+            width: fit-content;
+        }
+        .cart-quantity-form button {
+            width: 32px;
+            height: 32px;
+            padding: 0;
+        }
+        .cart-quantity-form [data-cart-quantity-display] {
+            min-width: 34px;
+            justify-content: center;
+            padding-left: .5rem !important;
+            padding-right: .5rem !important;
+        }
+        .cart-details-column strong {
+            display: block;
+            line-height: 1.2;
+            overflow-wrap: anywhere;
+        }
+    }
+</style>
+
+<div class="container-fluid py-3 cart-page-shell">
 
     <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
 
@@ -24,6 +84,29 @@
 
     </div>
 
+    {% if delivery_addresses %}
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body">
+            <form method="post" action="{% url 'cart_select_delivery_address' %}" class="row g-2 align-items-end">
+                {% csrf_token %}
+                <input type="hidden" name="next" value="cart">
+                <div class="col-md-8">
+                    <label class="form-label fw-semibold" for="cartDeliveryAddress">Cart for delivery address</label>
+                    <select class="form-select" id="cartDeliveryAddress" name="address_id" required>
+                        {% for address in delivery_addresses %}
+                        <option value="{{ address.id }}" {% if active_delivery_address.id == address.id %}selected{% endif %}>
+                            {{ address.label }}{% if address.is_default %} (Default){% endif %} — {{ address.address|truncatechars:70 }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <button class="btn btn-outline-primary w-100" type="submit">View this address's cart</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    {% endif %}
 
     {% if items %}
 
@@ -35,19 +118,19 @@
 
             {% for item in items %}
 
-            <div class="card border-0 shadow-sm mb-3" data-cart-line="{{ item.line_key }}">
+            <div class="card border-0 shadow-sm mb-3 cart-item-card" data-cart-line="{{ item.line_key }}">
 
                 <div class="card-body">
 
-                    <div class="row align-items-center">
+                    <div class="row align-items-center cart-item-row">
 
-                        <div class="col-3 col-md-2">
+                        <div class="col-3 col-md-2 cart-image-column">
 
                             {% if item.assignment.display_image_url %}
 
                                 <img
                                     src="{{ item.assignment.display_image_url }}"
-                                    class="img-fluid rounded"
+                                    class="img-fluid rounded cart-product-image"
                                     style="height:80px;width:80px;object-fit:contain;"
                                 >
 
@@ -56,7 +139,7 @@
                                 <div
                                     class="bg-light rounded d-flex
                                            align-items-center
-                                           justify-content-center"
+                                           justify-content-center cart-product-placeholder"
                                     style="height:80px;width:80px;"
                                 >
                                     📦
@@ -67,7 +150,7 @@
                         </div>
 
 
-                        <div class="col-9 col-md-4">
+                        <div class="col-9 col-md-4 cart-details-column">
 
                             <div class="small text-muted">
                                 🏪 {{ item.assignment.shop.name }}
@@ -76,6 +159,11 @@
                             <strong>
                                 {{ item.assignment.product.product_name }}
                             </strong>
+                            {% if not item.available_for_delivery %}
+                                <div class="small fw-semibold text-danger mt-1">
+                                    {{ item.availability_label }}
+                                </div>
+                            {% endif %}
                             {% if item.is_bulk_order %}
                                 <div class="small text-primary fw-semibold">
                                     Bulk order · minimum {{ item.bulk_minimum_unit }}
@@ -90,7 +178,7 @@
                         </div>
 
 
-                        <div class="col-6 col-md-3 mt-3 mt-md-0">
+                        <div class="col-6 col-md-3 mt-3 mt-md-0 cart-quantity-column">
 
                             <form
                                 method="post"
@@ -108,6 +196,7 @@
                                         data-cart-quantity="{{ item.quantity|add:'-1' }}"
                                         class="btn btn-outline-secondary"
                                         aria-label="Decrease {{ item.assignment.product.product_name }}"
+                                        {% if not item.available_for_delivery %}disabled{% endif %}
                                     >−</button>
                                 {% else %}
                                     <button class="btn btn-outline-secondary" type="button" data-cart-quantity="{{ item.quantity|add:'-1' }}" disabled aria-label="Quantity is zero">−</button>
@@ -128,7 +217,7 @@
                                     data-cart-quantity="{{ item.quantity|add:'1' }}"
                                     class="btn btn-outline-secondary"
                                     aria-label="Increase {{ item.assignment.product.product_name }}"
-                                    {% if item.quantity >= item.max_quantity %}disabled{% endif %}
+                                    {% if item.quantity >= item.max_quantity or not item.available_for_delivery %}disabled{% endif %}
                                 >
                                     +
                                 </button>
@@ -138,7 +227,7 @@
                         </div>
 
 
-                        <div class="col-4 col-md-2 mt-3 mt-md-0">
+                        <div class="col-4 col-md-2 mt-3 mt-md-0 cart-total-column">
 
                             <strong data-cart-line-total>
                                 ₹{{ item.total|floatformat:2 }}
@@ -147,7 +236,7 @@
                         </div>
 
 
-                        <div class="col-2 col-md-1 mt-3 mt-md-0">
+                        <div class="col-2 col-md-1 mt-3 mt-md-0 cart-remove-column">
 
                             <form
                                 method="post"

@@ -19,6 +19,11 @@ urlpatterns = [
         name="admin_catalog_dashboard",
     ),
     path(
+        "admin-panel/theme-builder/",
+        views.admin_site_theme_builder,
+        name="admin_site_theme_builder",
+    ),
+    path(
         "admin-panel/catalog/products/new/",
         views.admin_catalog_product_create,
         name="admin_catalog_product_create",
@@ -96,6 +101,11 @@ urlpatterns = [
         views.cart,
         name="cart"
     ),
+    path(
+        "cart/select-address/",
+        views.cart_select_delivery_address,
+        name="cart_select_delivery_address",
+    ),
 
     path(
         "cart/add/<int:product_shop_id>/",
@@ -144,6 +154,16 @@ urlpatterns = [
         "orders/<str:order_id>/tracking/updates/",
         views.order_tracking_updates,
         name="order_tracking_updates",
+    ),
+    path(
+        "mobile/location/session/",
+        views.mobile_location_session,
+        name="mobile_location_session",
+    ),
+    path(
+        "mobile/location/update/",
+        views.mobile_live_location_update,
+        name="mobile_live_location_update",
     ),
     path("orders/<str:order_id>/cancel/", views.customer_cancel_order, name="customer_cancel_order"),
     path("orders/<str:order_id>/reorder/", views.customer_reorder, name="customer_reorder"),
@@ -207,6 +227,11 @@ urlpatterns = [
         name="shop_order_list"
     ),
     path(
+        "shop/orders/abandoned/<int:attempt_id>/remark/",
+        views.save_abandoned_checkout_remark,
+        name="save_abandoned_checkout_remark",
+    ),
+    path(
         "shop/orders/verify-rider-pickup-otp/",
         views.verify_rider_pickup_otp,
         name="verify_rider_pickup_otp",
@@ -216,6 +241,12 @@ urlpatterns = [
         "shop/orders/<int:shop_order_id>/",
         views.shop_order_detail,
         name="shop_order_detail"
+    ),
+    # QR-triggered shop order actions (requires login and staff/owner permission)
+    path(
+        "shop/orders/<int:shop_order_id>/action/<str:action>/",
+        views.shop_order_action,
+        name="shop_order_action",
     ),
     path(
         "shop/order-instructions/<int:instruction_id>/audio/",
@@ -261,6 +292,11 @@ urlpatterns = [
         views.assign_rider,
         name="assign_rider"
     ),
+    path(
+        "shop/orders/<int:shop_order_id>/cancel-rider-assignment/",
+        views.cancel_rider_assignment,
+        name="cancel_rider_assignment",
+    ),
 
     path(
         "shop/orders/<int:shop_order_id>/accept-rider/",
@@ -273,9 +309,19 @@ urlpatterns = [
         name="rider_pickup_order",
     ),
     path(
+        "rider/scan-pickup-order/",
+        views.rider_scan_pickup_qr,
+        name="rider_scan_pickup_qr",
+    ),
+    path(
         "rider/start-active-deliveries/",
         views.rider_start_active_deliveries,
         name="rider_start_active_deliveries",
+    ),
+    path(
+        "rider/stop-public-batch-offers/",
+        views.stop_public_rider_batch_offers,
+        name="stop_public_rider_batch_offers",
     ),
 
     path(
@@ -308,6 +354,26 @@ urlpatterns = [
         "shop/orders/<int:shop_order_id>/confirm-cash-handover/",
         views.confirm_rider_cash_handover,
         name="confirm_rider_cash_handover",
+    ),
+    path(
+        "rider/cod-upi/<int:payment_request_id>/request-approval/",
+        views.request_cod_payment_approval,
+        name="request_cod_payment_approval",
+    ),
+    path(
+        "rider/cod-upi/<int:payment_request_id>/cancel/",
+        views.cancel_cod_payment_qr,
+        name="cancel_cod_payment_qr",
+    ),
+    path(
+        "shop/cod-upi/<int:payment_request_id>/approve/",
+        views.approve_cod_payment,
+        name="approve_cod_payment",
+    ),
+    path(
+        "shop/cod-upi/<int:payment_request_id>/reject/",
+        views.reject_cod_payment,
+        name="reject_cod_payment",
     ),
     path(
         "shop/<int:shop_id>/riders/<int:rider_id>/confirm-cod-handover/",
@@ -388,6 +454,21 @@ urlpatterns = [
         views.update_rider_location,
         name="update_rider_location",
     ),
+    path(
+        "shop/rider/location/",
+        views.update_public_rider_location,
+        name="update_public_rider_location",
+    ),
+    path(
+        "shop/rider/availability/",
+        views.set_public_rider_availability,
+        name="set_public_rider_availability",
+    ),
+    path(
+        "shop/rider/work-area/",
+        views.save_public_rider_work_area,
+        name="save_public_rider_work_area",
+    ),
 
     path("notifications/", views.notifications, name="notifications"),
     path("notifications/api/", views.notifications_api, name="notifications_api"),
@@ -421,7 +502,18 @@ urlpatterns = [
     ),
     path('dashboard/statement/', views.owner_statement, name='owner_statement'),
     path('staff-dashboard/', views.staff_dashboard, name='staff_dashboard'),
+    path(
+        "staff/purchase-manager/<int:shop_id>/",
+        views.purchase_manager_dashboard,
+        name="purchase_manager_dashboard",
+    ),
+    path(
+        "staff/purchase-manager/<int:shop_id>/products/add/",
+        views.purchase_manager_add_product,
+        name="purchase_manager_add_product",
+    ),
     path('signup/', views.signup, name='signup'),
+    path("rider/apply/", views.public_rider_apply, name="public_rider_apply"),
     path('accounts/logout/', views.logout_view, name='logout'),
     path(
         "accounts/login/",

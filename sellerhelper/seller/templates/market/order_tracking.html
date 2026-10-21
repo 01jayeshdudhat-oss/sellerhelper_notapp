@@ -63,6 +63,30 @@ Order Tracking - {{ order.tracking_code|default:order.order_id }}
 
             {% endif %}
 
+            {% if order.customer_location_sharing_active %}
+                <div class="alert alert-info mt-3 mb-0">
+                    <div class="fw-semibold">Share live location with your assigned rider</div>
+                    <div class="small">
+                        Sharing is optional. In the SellerHelper app, your location is shared only while this order is active
+                        and stops after delivery or cancellation.
+                    </div>
+                    <div class="d-flex flex-wrap gap-2 mt-2">
+                        <button class="btn btn-sm btn-primary" type="button"
+                                data-background-location-start
+                                data-role="customer"
+                                data-order-id="{{ order.tracking_code|default:order.order_id }}"
+                                data-session-url="{% url 'mobile_location_session' %}">
+                            Share live location
+                        </button>
+                        <button class="btn btn-sm btn-outline-secondary" type="button"
+                                data-background-location-stop hidden>
+                            Stop sharing
+                        </button>
+                    </div>
+                    <div class="small mt-2" data-background-location-status role="status" aria-live="polite"></div>
+                </div>
+            {% endif %}
+
             <div class="row mt-3 g-3">
                 <div class="col-md-6">
                     <div class="border rounded p-3 bg-light">
@@ -102,6 +126,12 @@ Order Tracking - {{ order.tracking_code|default:order.order_id }}
                 </span>
 
             </div>
+            {% if shop_order.pickup_location_data %}
+                <div class="small text-muted mt-1">
+                    Pickup: {{ shop_order.pickup_location_data.name|default:shop_order.shop.name }}
+                    {% if shop_order.pickup_location_data.address %}· {{ shop_order.pickup_location_data.address }}{% endif %}
+                </div>
+            {% endif %}
             {% if shop_order.is_scheduled_delivery %}
                 <div class="alert alert-warning py-2 mt-2 mb-0" role="status">
                     <strong>Scheduled delivery</strong> — this order was placed while the shop was closed.
@@ -341,6 +371,95 @@ Order Tracking - {{ order.tracking_code|default:order.order_id }}
     const tracker = document.getElementById("order-tracking-live");
     if (!tracker) return;
     const csrfToken = tracker.querySelector('input[name="csrfmiddlewaretoken"]')?.value || "";
+    tracker.querySelectorAll("[data-background-location-start]").forEach((button) => {
+        button.addEventListener("click", async () => {
+            const status = tracker.querySelector("[data-background-location-status]");
+            if (!window.ReactNativeWebView) {
+                if (status) status.textContent = "Open this order in the SellerHelper app to share location in the background.";
+                return;
+            }
+            button.disabled = true;
+            if (status) status.textContent = "Preparing secure location sharing…";
+            try {
+                const response = await fetch(button.dataset.sessionUrl, {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: {
+                        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                        "X-CSRFToken": csrfToken,
+                    },
+                    body: new URLSearchParams({
+                        role: button.dataset.role || "",
+                        order_id: button.dataset.orderId || "",
+                        consent: "true",
+                    }).toString(),
+                });
+                const session = await response.json();
+                if (!response.ok) throw new Error(session.error || `Request failed (${response.status}).`);
+                window.dispatchEvent(new CustomEvent("sellerhelper:start-background-location", {
+                    detail: session,
+                }));
+                if (status) status.textContent = "Confirm location access in the app prompt to start sharing.";
+            } catch (error) {
+                console.error("Could not start customer background location sharing.", error);
+                if (status) status.textContent = error instanceof Error ? error.message : "Could not start location sharing.";
+            } finally {
+                button.disabled = false;
+            }
+        });
+    });
+    tracker.querySelectorAll("[data-background-location-stop]").forEach((button) => {
+        button.addEventListener("click", () => {
+            window.dispatchEvent(new CustomEvent("sellerhelper:stop-background-location"));
+            const status = tracker.querySelector("[data-background-location-status]");
+            if (status) status.textContent = "Location sharing stopped on this device.";
+            tracker.querySelector("[data-background-location-start]")?.removeAttribute("hidden");
+            button.hidden = true;
+        });
+    });
+    window.addEventListener("sellerhelper:background-location-status", (event) => {
+        const detail = event.detail || {};
+        const startButton = tracker.querySelector("[data-background-location-start]");
+        const stopButton = tracker.querySelector("[data-background-location-stop]");
+        const status = tracker.querySelector("[data-background-location-status]");
+        if (startButton) startButton.hidden = Boolean(detail.active);
+        if (stopButton) stopButton.hidden = !detail.active;
+        if (status && detail.message) status.textContent = detail.message;
+    });
+    const customerStartButton = tracker.querySelector(
+        '[data-background-location-start][data-role="customer"]',
+    );
+    if (customerStartButton && window.ReactNativeWebView) {
+        const promptKey = `sellerhelper-location-prompt-${customerStartButton.dataset.orderId}`;
+        let alreadyPrompted = false;
+        try {
+            alreadyPrompted = window.sessionStorage.getItem(promptKey) === "shown";
+        } catch (error) {
+            console.warn("Could not read the customer location prompt state.", error);
+        }
+        if (!alreadyPrompted) {
+            try {
+                window.sessionStorage.setItem(promptKey, "shown");
+            } catch (error) {
+                console.warn("Could not save the customer location prompt state.", error);
+            }
+            window.setTimeout(() => {
+                const accepted = window.confirm(
+                    "Share your live location with the rider assigned to this active order? " +
+                    "Sharing continues in the background until delivery or cancellation. " +
+                    "Your phone will ask you to allow location access.",
+                );
+                if (accepted) {
+                    customerStartButton.click();
+                } else {
+                    const status = tracker.querySelector("[data-background-location-status]");
+                    if (status) {
+                        status.textContent = "Location sharing is off. You can enable it here at any time while this order is active.";
+                    }
+                }
+            }, 500);
+        }
+    }
     const deadlines = new Map();
     const elapsedClocks = new Map();
 

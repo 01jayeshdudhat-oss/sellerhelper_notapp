@@ -71,11 +71,30 @@
                 </div>
             </section>
 
+            {% if product_shop.shop.allow_product_image_overrides %}
+            <section class="rounded border p-3 p-md-4 mb-4 bg-light" aria-labelledby="product-images-heading">
+                <h2 class="h5 fw-bold mb-1" id="product-images-heading">Product images</h2>
+                <p class="text-muted small mb-3">The main shop image is tried first, followed by additional shop images and then the admin catalog images if an image fails to load. Leave fields blank to use catalog images.</p>
+                <div class="row g-3">
+                    {% for field in form %}
+                        {% if field.name == "shop_image_url" or field.name == "shop_image_url_2" or field.name == "shop_image_url_3" or field.name == "shop_image_url_4" or field.name == "shop_image_url_5" %}
+                            <div class="{% if field.name == 'shop_image_url' %}col-12{% else %}col-md-6{% endif %}">
+                                <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                                {{ field }}
+                                {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+                                {% for error in field.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
+                            </div>
+                        {% endif %}
+                    {% endfor %}
+                </div>
+            </section>
+            {% endif %}
+
             <section class="mb-2" aria-labelledby="stock-heading">
                 <h2 class="h5 fw-bold mb-3" id="stock-heading">Stock and order settings</h2>
                 <div class="row g-3">
                     {% for field in form %}
-                        {% if field.name == "stock" or field.name == "b2b_stock" or field.name == "bulk_min_quantity" or field.name == "shop_image_url" %}
+                        {% if field.name == "stock" or field.name == "b2b_stock" or field.name == "bulk_min_quantity" %}
                             <div class="col-md-6">
                                 <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
                                 {{ field }}

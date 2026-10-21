@@ -9,6 +9,7 @@
         background: linear-gradient(180deg, #f8fbff 0%, #eef4ff 100%);
         border-radius: 28px;
         padding: 22px;
+        max-width: 1480px;
     }
     .checkout-card {
         background: rgba(255,255,255,0.96);
@@ -17,12 +18,18 @@
         box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
     }
     .checkout-summary {
-        position: sticky;
-        top: 20px;
         border-radius: 22px;
         background: linear-gradient(135deg, #0f172a 0%, #1d4ed8 100%);
         color: white;
         box-shadow: 0 18px 40px rgba(29, 78, 216, 0.25);
+    }
+    .checkout-sidebar {
+        min-width: 0;
+    }
+    #razorpayFeeRow[hidden],
+    #walletAppliedRow[hidden],
+    #razorpayCredentialsWarning[hidden] {
+        display: none !important;
     }
     .checkout-item {
         border-bottom: 1px solid #edf2f7;
@@ -36,22 +43,179 @@
         display: block;
         transition: all 0.2s ease;
     }
+    .checkout-address-label.is-selected {
+        border-color: #16a34a;
+        background: #f0fdf4;
+        box-shadow: 0 0 0 2px rgba(22, 163, 74, .14);
+    }
     .checkout-address-label:hover {
         border-color: #93c5fd;
         transform: translateY(-1px);
+    }
+    .checkout-collapsible > summary {
+        cursor: pointer;
+        list-style: none;
+        padding: 1rem 1.25rem;
+        font-weight: 700;
+    }
+    .checkout-collapsible > summary::-webkit-details-marker {
+        display: none;
+    }
+    .checkout-collapsible > summary::after {
+        content: "+";
+        float: right;
+        color: #64748b;
+        font-size: 1.25rem;
+        line-height: 1;
+    }
+    .checkout-collapsible[open] > summary::after {
+        content: "−";
+    }
+    .checkout-collapsible .checkout-collapsible-body {
+        padding: 0 1.25rem 1.25rem;
+    }
+    .checkout-page-header {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 24px;
+    }
+    .checkout-progress {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: #64748b;
+        font-size: .875rem;
+        font-weight: 600;
+    }
+    .checkout-progress-step {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        white-space: nowrap;
+    }
+    .checkout-progress-number {
+        display: grid;
+        width: 30px;
+        height: 30px;
+        place-items: center;
+        border: 1px solid #cbd5e1;
+        border-radius: 50%;
+        background: #fff;
+        color: #64748b;
+        font-size: .8rem;
+    }
+    .checkout-progress-step.is-complete,
+    .checkout-progress-step.is-current {
+        color: #1d4ed8;
+    }
+    .checkout-progress-step.is-complete .checkout-progress-number {
+        border-color: #16a34a;
+        background: #16a34a;
+        color: #fff;
+    }
+    .checkout-progress-step.is-current .checkout-progress-number {
+        border-color: #2563eb;
+        background: #2563eb;
+        color: #fff;
+        box-shadow: 0 0 0 4px rgba(37, 99, 235, .12);
+    }
+    .checkout-progress-separator {
+        width: 34px;
+        height: 1px;
+        background: #cbd5e1;
+    }
+    .checkout-address-label {
+        min-height: 100%;
+    }
+    .checkout-address-options > summary {
+        display: inline-block;
+        padding: .6rem .15rem .1rem;
+        font-weight: 600;
+        cursor: pointer;
+    }
+    .checkout-summary h5 {
+        font-size: 1.15rem;
+        letter-spacing: .01em;
+    }
+    .checkout-summary hr {
+        border-color: rgba(255, 255, 255, .25);
+        opacity: 1;
+    }
+    .checkout-summary .btn-success {
+        min-height: 52px;
+        font-weight: 700;
+        box-shadow: 0 8px 20px rgba(22, 163, 74, .24);
+    }
+    .checkout-item:last-child {
+        border-bottom: 0;
+    }
+    @media (min-width: 992px) {
+        .checkout-shell {
+            padding: 36px;
+        }
+        .checkout-sidebar {
+            position: sticky;
+            top: 92px;
+            align-self: flex-start;
+        }
+        .checkout-card {
+            border-radius: 18px;
+        }
+        .checkout-collapsible > summary {
+            padding: 1.15rem 1.5rem;
+        }
+        .checkout-collapsible .checkout-collapsible-body {
+            padding: 0 1.5rem 1.5rem;
+        }
+    }
+    @media (max-width: 767.98px) {
+        .checkout-page-header {
+            align-items: flex-start;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .checkout-progress {
+            width: 100%;
+            justify-content: space-between;
+            gap: 4px;
+            font-size: .72rem;
+        }
+        .checkout-progress-number {
+            width: 26px;
+            height: 26px;
+        }
+        .checkout-progress-separator {
+            flex: 1 1 auto;
+            max-width: 24px;
+        }
     }
 </style>
 
 <div class="container py-4 checkout-shell">
 
-    <div class="mb-4">
-        <h2 class="fw-bold mb-1 text-primary">
-            Checkout
-        </h2>
-
-        <p class="text-muted mb-0">
-            Review your order and select a delivery address.
-        </p>
+    <div class="checkout-page-header mb-4">
+        <div>
+            <span class="badge rounded-pill text-bg-primary-subtle text-primary mb-2">SECURE CHECKOUT</span>
+            <h2 class="fw-bold mb-1 text-primary">Checkout</h2>
+            <p class="text-muted mb-0">Review your items, delivery address, and payment method.</p>
+        </div>
+        <div class="checkout-progress" aria-label="Checkout progress">
+            <div class="checkout-progress-step is-complete">
+                <span class="checkout-progress-number" aria-hidden="true"><i class="bi bi-check-lg"></i></span>
+                <span>Cart</span>
+            </div>
+            <span class="checkout-progress-separator" aria-hidden="true"></span>
+            <div class="checkout-progress-step is-current" aria-current="step">
+                <span class="checkout-progress-number" aria-hidden="true">2</span>
+                <span>Checkout</span>
+            </div>
+            <span class="checkout-progress-separator" aria-hidden="true"></span>
+            <div class="checkout-progress-step">
+                <span class="checkout-progress-number" aria-hidden="true">3</span>
+                <span>Confirmation</span>
+            </div>
+        </div>
     </div>
 
 
@@ -60,7 +224,7 @@
         {% csrf_token %}
         <input type="hidden" name="use_wallet_balance" value="0">
 
-        <div class="row g-4">
+        <div class="row g-4 g-xl-5">
 
             <!-- LEFT -->
             <div class="col-lg-8">
@@ -87,75 +251,88 @@
                         </div>
 
 
-                        {% for address in addresses %}
-
-                        <label
-                            class="checkout-address-label mb-2 d-block"
-                            style="cursor:pointer;"
-                        >
-
+                        {% if selected_address %}
+                        <label class="checkout-address-label is-selected mb-0 d-block" style="cursor:pointer;">
                             <div class="d-flex">
-
-                                <input
-                                    type="radio"
-                                    name="address"
-                                    value="{{ address.id }}"
-                                    class="form-check-input me-3"
-                                    {% if selected_address.id == address.id %}
-                                        checked
-                                    {% endif %}
-                                    required
-                                >
-
+                                <input type="radio" name="address" value="{{ selected_address.id }}"
+                                       class="form-check-input me-3" checked required>
                                 <div>
-
-                                    <strong>
-                                        {{ address.label }}
-                                    </strong>
-
-                                    {% if address.is_default %}
-
-                                        <span class="badge bg-success ms-2">
-                                            Default
-                                        </span>
-
+                                    <strong>{{ selected_address.label }}</strong>
+                                    {% if selected_address.is_default %}
+                                        <span class="badge bg-success ms-2">Default</span>
                                     {% endif %}
-
-                                    <div class="text-muted mt-1">
-                                        {{ address.address }}
-                                    </div>
-
-                                    {% if address.pincode %}
-
-                                        <small class="text-muted">
-                                            PIN: {{ address.pincode }}
-                                        </small>
-
+                                    <div class="text-muted mt-1">{{ selected_address.address }}</div>
+                                    {% if selected_address.pincode %}
+                                        <small class="text-muted">PIN: {{ selected_address.pincode }}</small>
                                     {% endif %}
-                                    {% if address.state_code %}
-                                        <small class="text-muted ms-2">State: {{ address.state_code }}</small>
+                                    {% if selected_address.state_code %}
+                                        <small class="text-muted ms-2">State: {{ selected_address.state_code }}</small>
                                     {% endif %}
-
                                 </div>
-
                             </div>
-
                         </label>
-
-                        {% empty %}
-
+                        {% if addresses|length > 1 %}
+                        <details class="checkout-address-options mt-2">
+                            <summary class="small text-primary">Choose another saved address</summary>
+                            <div class="pt-2">
+                                {% for address in addresses %}
+                                    {% if address.id != selected_address.id %}
+                                    <label class="checkout-address-label mb-2 d-block" style="cursor:pointer;">
+                                        <div class="d-flex">
+                                            <input type="radio" name="address" value="{{ address.id }}"
+                                                   class="form-check-input me-3" required>
+                                            <div>
+                                                <strong>{{ address.label }}</strong>
+                                                {% if address.is_default %}
+                                                    <span class="badge bg-success ms-2">Default</span>
+                                                {% endif %}
+                                                <div class="text-muted mt-1">{{ address.address }}</div>
+                                                {% if address.pincode %}
+                                                    <small class="text-muted">PIN: {{ address.pincode }}</small>
+                                                {% endif %}
+                                                {% if address.state_code %}
+                                                    <small class="text-muted ms-2">State: {{ address.state_code }}</small>
+                                                {% endif %}
+                                            </div>
+                                        </div>
+                                    </label>
+                                    {% endif %}
+                                {% endfor %}
+                            </div>
+                        </details>
+                        {% endif %}
+                        {% elif addresses %}
+                            {% for address in addresses %}
+                            <label class="checkout-address-label mb-2 d-block" style="cursor:pointer;">
+                                <div class="d-flex">
+                                    <input type="radio" name="address" value="{{ address.id }}"
+                                           class="form-check-input me-3" {% if forloop.first %}checked{% endif %} required>
+                                    <div>
+                                        <strong>{{ address.label }}</strong>
+                                        <div class="text-muted mt-1">{{ address.address }}</div>
+                                        {% if address.pincode %}
+                                            <small class="text-muted">PIN: {{ address.pincode }}</small>
+                                        {% endif %}
+                                        {% if address.state_code %}
+                                            <small class="text-muted ms-2">State: {{ address.state_code }}</small>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </label>
+                            {% endfor %}
+                        {% else %}
                         <div class="alert alert-warning">
-
                             No delivery address found.
-
                             <a href="{% url 'delivery_address_list' %}">
                                 Add an address
                             </a>
-
                         </div>
-
-                        {% endfor %}
-
+                        {% endif %}
+                        {% if addresses|length > 1 %}
+                        <div class="form-text mt-3">
+                            Each saved address has a separate cart. Selecting a different address loads that cart and refreshes the order total before checkout.
+                        </div>
+                        {% endif %}
                     </div>
 
                 </div>
@@ -163,52 +340,48 @@
 
                 <!-- ORDER ITEMS -->
 
-                <div class="card border-0 checkout-card">
-                    <div class="card-body">
-                        <h5 class="fw-bold mb-3">
-                            🛒 Your Items
-                        </h5>
+                {% if scheduled_delivery_shop_names %}
+                    <div class="alert alert-warning" role="alert">
+                        <strong>Scheduled delivery:</strong>
+                        {% for shop_name in scheduled_delivery_shop_names %}{{ shop_name }}{% if not forloop.last %}, {% endif %}{% endfor %}
+                        {% if scheduled_delivery_shop_names|length == 1 %}is{% else %}are{% endif %} currently closed. The shop will confirm the delivery timing after you place the order.
+                    </div>
+                {% endif %}
+                {% if delivery_issues %}
+                    <div class="alert alert-danger" role="alert">
+                        <strong>Delivery unavailable at this address:</strong>
+                        {{ delivery_issues|join:", " }}. Select another delivery address or remove these shops' products from your cart.
+                    </div>
+                {% endif %}
 
-                        {% if scheduled_delivery_shop_names %}
-                            <div class="alert alert-warning" role="alert">
-                                <strong>Scheduled delivery:</strong>
-                                {% for shop_name in scheduled_delivery_shop_names %}{{ shop_name }}{% if not forloop.last %}, {% endif %}{% endfor %}
-                                {% if scheduled_delivery_shop_names|length == 1 %}is{% else %}are{% endif %} currently closed. The shop will confirm the delivery timing after you place the order.
-                            </div>
-                        {% endif %}
-
+                <details class="card border-0 checkout-card checkout-collapsible">
+                    <summary>
+                        🛒 Your Items · {{ items|length }} item{{ items|length|pluralize }}
+                        <span class="small fw-normal text-muted ms-2">View order details</span>
+                    </summary>
+                    <div class="checkout-collapsible-body">
                         {% for item in items %}
-
                         <div class="d-flex align-items-center checkout-item">
-
                             {% if item.assignment.display_image_url %}
-
                                 <img
                                     src="{{ item.assignment.display_image_url }}"
                                     width="70"
                                     height="70"
                                     class="rounded object-fit-cover me-3"
                                 >
-
                             {% else %}
-
                                 <div
                                     class="bg-light rounded d-flex align-items-center justify-content-center me-3"
                                     style="width:70px;height:70px;"
                                 >
                                     📦
                                 </div>
-
                             {% endif %}
-
-
                             <div class="flex-grow-1">
-
                                 <div class="fw-semibold">
                                     {{ item.assignment.product.product_name }}
                                     {% if item.is_bulk_order %}<span class="badge text-bg-primary ms-1">Bulk</span>{% endif %}
                                 </div>
-
                                 <small class="text-muted">
                                     {{ item.assignment.shop.name }}
                                 </small>
@@ -217,31 +390,22 @@
                                         Delivery timing will be scheduled with this shop.
                                     </div>
                                 {% endif %}
-
                                 <div class="small">
-                                    ₹{{ item.price }}
-                                    ×
-                                    {{ item.unit_calculation }}
+                                    ₹{{ item.price }} × {{ item.unit_calculation }}
                                 </div>
-
                             </div>
-
-
-                            <strong>
-                                ₹{{ item.total }}
-                            </strong>
-
+                            <strong>₹{{ item.total }}</strong>
                         </div>
-
                         {% endfor %}
-
                     </div>
+                </details>
 
-                </div>
-
-                <div class="card border-0 checkout-card mt-4">
-                    <div class="card-body">
-                        <h5 class="fw-bold mb-2">Order instruction</h5>
+                <details class="card border-0 checkout-card checkout-collapsible mt-3">
+                    <summary>
+                        Order instruction
+                        <span class="small fw-normal text-muted ms-2">Optional · note or audio</span>
+                    </summary>
+                    <div class="checkout-collapsible-body">
                         <p class="small text-muted">
                             Add a written note or voice recording for the shop team or the rider assigned to one shop order. Audio is available until one hour after delivery.
                         </p>
@@ -294,11 +458,14 @@
                         {% endif %}
                         <audio class="w-100 mt-2" id="instructionAudioPreview" controls hidden></audio>
                     </div>
-                </div>
+                </details>
 
-                <div class="card border-0 checkout-card mt-4">
-                    <div class="card-body">
-                        <h5 class="fw-bold mb-3">Delivery fee by shop</h5>
+                <details class="card border-0 checkout-card checkout-collapsible mt-3">
+                    <summary>
+                        Delivery fee by shop
+                        <span class="small fw-normal text-muted ms-2">View breakdown</span>
+                    </summary>
+                    <div class="checkout-collapsible-body">
                         {% for shop in checkout_shop_summary %}
                         <div class="d-flex justify-content-between align-items-center gap-3 py-2 {% if not forloop.last %}border-bottom{% endif %}">
                             <span class="text-break">{{ shop.shop_name }}</span>
@@ -308,11 +475,14 @@
                         </div>
                         {% endfor %}
                     </div>
-                </div>
+                </details>
 
-                <div class="card border-0 checkout-card mt-4">
-                    <div class="card-body">
-                        <h5 class="fw-bold mb-3">Savings</h5>
+                <details class="card border-0 checkout-card checkout-collapsible mt-3">
+                    <summary>
+                        Savings &amp; wallet
+                        <span class="small fw-normal text-muted ms-2">Coupon and wallet balance · ₹{{ client.wallet_balance|default:"0.00" }}</span>
+                    </summary>
+                    <div class="checkout-collapsible-body">
                         <label for="couponCode" class="form-label">Coupon code</label>
                         <input id="couponCode" name="coupon_code" class="form-control"
                                type="text" placeholder="Enter coupon code" autocomplete="off">
@@ -333,7 +503,7 @@
                             </div>
                         </div>
                     </div>
-                </div>
+                </details>
 
                 <div class="card border-0 checkout-card mt-4">
                     <div class="card-body">
@@ -361,8 +531,9 @@
                                 </span>
                             </span>
                         </label>
-                        {% if not razorpay_configured and not razorpay_checkout %}
-                            <div class="alert alert-warning small mb-0" role="status">
+                        {% if not razorpay_configured %}
+                            <div class="alert alert-warning small mb-0" id="razorpayCredentialsWarning"
+                                 role="status"{% if not razorpay_checkout %} hidden{% endif %}>
                                 Online payment needs Razorpay credentials. The shop administrator must configure
                                 <code>RAZORPAY_KEY_ID</code> and <code>RAZORPAY_KEY_SECRET</code> on the server.
                                 Your order will not be placed if you continue with Razorpay before setup.
@@ -376,7 +547,7 @@
 
             <!-- RIGHT -->
 
-            <div class="col-lg-4">
+            <aside class="col-lg-4 checkout-sidebar" aria-label="Order summary and checkout actions">
 
                 <div class="card border-0 checkout-summary"
                      id="checkoutSummary"
@@ -411,14 +582,20 @@
 
                         {% if delivery_total %}
                         <div class="d-flex justify-content-between mb-2">
-                            <span>Delivery service</span>
+                            <span>Delivery charge</span>
                             <span>₹{{ delivery_total|floatformat:2 }}</span>
                         </div>
                         {% endif %}
                         {% if gst_amount %}
                         <div class="d-flex justify-content-between mb-2">
-                            <span>GST</span>
+                            <span>GST on items</span>
                             <span>₹{{ gst_amount|floatformat:2 }}</span>
+                        </div>
+                        {% endif %}
+                        {% if delivery_gst_amount %}
+                        <div class="d-flex justify-content-between mb-2">
+                            <span>GST on delivery</span>
+                            <span>₹{{ delivery_gst_amount|floatformat:2 }}</span>
                         </div>
                         {% endif %}
                         <div class="d-flex justify-content-between mb-2">
@@ -443,14 +620,17 @@
                             </strong>
                         </div>
                         <div class="small text-white-50 mt-2">
-                            Platform charge: ₹10 + 0.1% of item total. Razorpay fees apply only to online payments.
+                            Platform charge: ₹10 + 0.1% of item total.
+                            <span id="razorpayFeeNotice"{% if razorpay_checkout %} hidden{% endif %}>
+                                Razorpay fees apply only to online payments.
+                            </span>
                         </div>
 
                         <button
                             id="checkoutSubmitButton"
                             type="submit"
                             class="btn btn-success btn-lg w-100 mt-4"
-                            {% if razorpay_checkout %}disabled{% endif %}
+                            {% if razorpay_checkout or delivery_issues %}disabled{% endif %}
                         >
                             🛍️ Place COD Order
                         </button>
@@ -467,7 +647,7 @@
 
                 </div>
 
-            </div>
+                </aside>
 
         </div>
 
@@ -634,12 +814,16 @@
 (() => {
     const checkoutForm = document.getElementById("checkoutForm");
     const submitButton = document.getElementById("checkoutSubmitButton");
+    const itemDetails = document.querySelector(".checkout-collapsible");
     const paymentChoices = document.querySelectorAll('input[name="payment_method"]');
+    const addressChoices = document.querySelectorAll('input[name="address"]');
     const walletChoice = document.getElementById("useWalletBalance");
     const summary = document.getElementById("checkoutSummary");
     const dueAmount = document.getElementById("checkoutDueAmount");
     const feeRow = document.getElementById("razorpayFeeRow");
     const feeAmount = document.getElementById("razorpayFeeAmount");
+    const feeNotice = document.getElementById("razorpayFeeNotice");
+    const razorpayCredentialsWarning = document.getElementById("razorpayCredentialsWarning");
     const walletRow = document.getElementById("walletAppliedRow");
     const walletAppliedAmount = document.getElementById("walletAppliedAmount");
     const confirmationModal = document.getElementById("orderConfirmationModal");
@@ -647,8 +831,23 @@
     const shopRows = document.getElementById("confirmationShopRows");
     const shopCount = document.getElementById("confirmationShopCount");
     const grandTotal = document.getElementById("confirmationGrandTotal");
+    if (itemDetails && window.matchMedia("(min-width: 992px)").matches) {
+        itemDetails.open = true;
+    }
     if (!submitButton || !paymentChoices.length) return;
     let confirmed = false;
+    const updateSelectedAddressStyle = () => {
+        addressChoices.forEach((choice) => {
+            choice.closest(".checkout-address-label")?.classList.toggle(
+                "is-selected",
+                choice.checked,
+            );
+        });
+    };
+    addressChoices.forEach((choice) => {
+        choice.addEventListener("change", updateSelectedAddressStyle);
+    });
+    updateSelectedAddressStyle();
     const updateButtonLabel = () => {
         const selected = document.querySelector('input[name="payment_method"]:checked');
         const online = selected?.value === "RAZORPAY";
@@ -681,6 +880,8 @@
             if (feeAmount) feeAmount.textContent = `₹${onlineFee.toFixed(2)}`;
         }
         if (feeRow) feeRow.hidden = !online;
+        if (feeNotice) feeNotice.hidden = !online;
+        if (razorpayCredentialsWarning) razorpayCredentialsWarning.hidden = !online;
     };
     paymentChoices.forEach((choice) => choice.addEventListener("change", updateButtonLabel));
     walletChoice?.addEventListener("change", updateButtonLabel);

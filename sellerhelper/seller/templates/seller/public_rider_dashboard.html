@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+
+{% block title %}Public Rider Dashboard{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <h1 class="h3 mb-3">Public rider dashboard</h1>
+    {% include "seller/_public_rider_wallet.html" %}
+    {% if public_rider_earnings_summary %}
+    <section class="card shadow-sm border-0 mb-4" aria-label="Public rider earnings overview">
+        <div class="card-body p-4">
+            <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-3">
+                <div>
+                    <div class="small text-muted">Earnings overview</div>
+                    <h3 class="mb-0">₹{{ public_rider_earnings_summary.total|default:'0.00'|floatformat:2 }}</h3>
+                </div>
+                <div class="btn-group btn-group-sm" role="group" aria-label="Earnings period selector">
+                    <a href="{% url 'rider_dashboard' %}?view=earnings&period=today" class="btn {% if earnings_period == 'today' %}btn-primary{% else %}btn-outline-primary{% endif %}">Today</a>
+                    <a href="{% url 'rider_dashboard' %}?view=earnings&period=yesterday" class="btn {% if earnings_period == 'yesterday' %}btn-primary{% else %}btn-outline-primary{% endif %}">Yesterday</a>
+                    <a href="{% url 'rider_dashboard' %}?view=earnings&period=weekly" class="btn {% if earnings_period == 'weekly' %}btn-primary{% else %}btn-outline-primary{% endif %}">Weekly</a>
+                    <a href="{% url 'rider_dashboard' %}?view=earnings&period=monthly" class="btn {% if earnings_period == 'monthly' %}btn-primary{% else %}btn-outline-primary{% endif %}">Monthly</a>
+                    <a href="{% url 'rider_dashboard' %}?view=earnings&period=yearly" class="btn {% if earnings_period == 'yearly' %}btn-primary{% else %}btn-outline-primary{% endif %}">Yearly</a>
+                </div>
+            </div>
+            <div class="row g-3">
+                <div class="col-md-3 col-sm-6">
+                    <div class="card border-0 bg-light h-100">
+                        <div class="card-body px-3 py-3">
+                            <div class="small text-muted">Wallet balance</div>
+                            <div class="h5 mb-0">₹{{ public_rider_earnings_summary.wallet_balance|default:'0.00'|floatformat:2 }}</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3 col-sm-6">
+                    <div class="card border-0 bg-light h-100">
+                        <div class="card-body px-3 py-3">
+                            <div class="small text-muted">Completed orders</div>
+                            <div class="h5 mb-0">{{ public_rider_earnings_summary.orders }}</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3 col-sm-6">
+                    <div class="card border-0 bg-light h-100">
+                        <div class="card-body px-3 py-3">
+                            <div class="small text-muted">Average/order</div>
+                            <div class="h5 mb-0">₹{{ public_rider_earnings_summary.average|default:'0.00'|floatformat:2 }}</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3 col-sm-6">
+                    <div class="card border-0 bg-light h-100">
+                        <div class="card-body px-3 py-3">
+                            <div class="small text-muted">Best period</div>
+                            <div class="h5 mb-0">{{ public_rider_earnings_summary.best_day.label }}</div>
+                            <div class="small text-muted">₹{{ public_rider_earnings_summary.best_day.value|default:'0.00'|floatformat:2 }}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+    {% endif %}
+    {% include "seller/_public_rider_work_area.html" %}
+    <div class="card shadow-sm">
+        <div class="card-body p-4">
+            <p class="text-muted mb-0">
+                Your application is approved. No shops are currently accepting deliveries through the public rider network.
+                You can use this dashboard when a participating shop enables public riders.
+            </p>
+            {% if not public_rider.work_area %}
+                <p class="alert alert-warning mt-3 mb-0" role="status">
+                    Live delivery offers are paused until you draw and save a work area above.
+                    Offers will appear here when an enabled shop has an eligible order.
+                </p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -77,46 +77,114 @@
     }
 
     .rider-dashboard-tabs-wrap {
-        min-height: 58px;
-    }
-
-    .rider-dashboard-tabs-wrap .rider-dashboard-tabs {
-        position: fixed !important;
-        top: var(--rider-dashboard-tabs-top, 56px) !important;
+        position: fixed;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        top: var(--rider-dashboard-tabs-top, 56px);
         right: 0;
         left: 0;
         z-index: 1029;
-        display: grid !important;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        grid-template-rows: minmax(42px, auto);
-        grid-auto-rows: minmax(42px, auto);
-        grid-auto-flow: row;
-        flex-wrap: nowrap !important;
-        gap: 4px !important;
-        margin: 0 !important;
-        padding: 5px 8px;
         background: #f5f7fb;
         border-bottom: 1px solid #e5eaf0;
         box-shadow: 0 6px 14px rgba(31, 41, 55, .12);
     }
 
-    .rider-dashboard-tabs .nav-link {
+    .rider-dashboard-tabs-wrap .rider-dashboard-tabs {
+        position: relative !important;
+        z-index: 2;
+        display: grid !important;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-rows: minmax(68px, auto);
+        grid-auto-rows: minmax(68px, auto);
+        grid-auto-flow: row;
+        flex-wrap: wrap !important;
+        gap: 4px !important;
+        margin: 0 !important;
+        padding: 5px 8px;
+        justify-content: stretch;
+        background: transparent;
+    }
+
+    .rider-dashboard-more-tabs {
+        position: relative;
+        flex: 0 0 42px;
+        margin-right: 6px;
+    }
+
+    .rider-dashboard-more-toggle {
         display: flex;
-        min-width: 0;
-        min-height: 40px;
-        align-items: center;
-        justify-content: center;
-        gap: 4px;
-        padding: 5px 3px !important;
-        margin: 0;
+        min-height: 48px;
+        padding: 6px 3px !important;
+        border: 1px solid #dce3eb;
         border-radius: 10px;
-        font-size: .68rem;
+        background: #fff;
+        color: #334155;
+        font-size: .7rem;
         line-height: 1.15;
         text-align: center;
         white-space: nowrap;
     }
 
+    .rider-dashboard-more-toggle.active {
+        border-color: #0d6efd;
+        background: #0d6efd;
+        color: #fff;
+    }
+
+    .rider-dashboard-more-menu {
+        position: absolute;
+        top: calc(100% + 6px);
+        right: 0;
+        width: min(240px, calc(100vw - 16px));
+        max-height: min(60vh, 360px);
+        overflow-y: auto;
+    }
+
+    .rider-dashboard-more-menu .nav-link {
+        min-height: 44px;
+        font-size: .85rem;
+    }
+
+    .rider-dashboard-tabs .nav-link {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        min-height: 68px;
+        width: 100%;
+        align-items: center;
+        justify-content: center;
+        gap: 2px;
+        padding: 5px 3px !important;
+        margin: 0;
+        border-radius: 10px;
+        border: 1px solid #dce3eb;
+        background: #ffffff;
+        font-size: .68rem;
+        line-height: 1.15;
+        text-align: center;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+
+    .rider-dashboard-tabs .nav-link > i {
+        order: 3;
+        margin-right: 0 !important;
+        line-height: 1;
+    }
+
+    .rider-dashboard-tabs .nav-link > span:not(.badge) {
+        order: 2;
+        min-width: 0;
+        max-width: 100%;
+        white-space: normal;
+    }
+
     .rider-dashboard-tabs .badge {
+        order: 1;
+        max-width: 100%;
+        white-space: nowrap;
+        margin-left: 0 !important;
         padding: .25em .45em;
         font-size: .6rem;
     }
@@ -142,6 +210,50 @@
     textarea,
     button {
         scroll-margin-block: 1rem;
+    }
+
+    .rider-active-actions {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 7.5rem), 1fr));
+        align-items: start;
+        gap: 6px;
+        margin: 0;
+        padding: 6px;
+        background: #f5f7fb;
+        border-top: 1px solid #e5eaf0;
+    }
+
+    .rider-dashboard-tabs-spacer {
+        display: block;
+    }
+
+    .rider-active-action {
+        min-width: 0;
+    }
+
+    .rider-active-action form,
+    .rider-active-action .btn {
+        width: 100%;
+    }
+
+    .rider-active-action .btn {
+        width: 100%;
+        min-width: 0;
+        min-height: 44px;
+        padding: .35rem .3rem;
+        font-size: .75rem;
+        line-height: 1.15;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        overflow: hidden;
+    }
+
+    .rider-active-action [role="status"]:not(:empty) {
+        margin-top: 3px;
+        font-size: .68rem;
+        line-height: 1.2;
     }
 }
 

@@ -1,0 +1,1429 @@
+{% extends "base.html" %}
+
+{% block title %}Site theme builder · {{ site_branding.site_name|default:'Seller Helper' }}{% endblock %}
+
+{% block content %}
+<style>
+    .theme-panel, .theme-preview {
+        border: 1px solid #e2e8f0;
+        border-radius: 18px;
+        background: #fff;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, .05);
+    }
+    .theme-panel { padding: clamp(18px, 3vw, 28px); }
+    .theme-preview {
+        --preview-primary: #2563eb;
+        --preview-accent: #16a34a;
+        --preview-surface: #fff;
+        --preview-background: #f5f7fb;
+        --preview-text: #1f2937;
+        --preview-radius: 12px;
+        --preview-padding: 12px;
+        padding: 14px;
+        background: var(--preview-background);
+        color: var(--preview-text);
+        transition: max-width .2s ease;
+        margin-inline: auto;
+    }
+    .theme-preview.mobile-preview { max-width: 390px; }
+    .theme-preview.desktop-preview { max-width: 100%; }
+    .theme-preview-shell { display: flex; flex-direction: column; gap: 8px; }
+    .theme-preview-block {
+        border-radius: var(--preview-radius);
+        background: var(--preview-surface);
+        padding: var(--preview-padding);
+        border: 1px solid #dbe3ed;
+    }
+    .theme-preview-header { color: var(--preview-primary); font-weight: 800; }
+    .theme-preview-content { min-height: 88px; }
+    .theme-preview-footer { color: var(--preview-text); opacity: .75; }
+    #homepage-preview .theme-preview-header { color: var(--preview-primary); }
+    #homepage-preview .theme-preview-block { background: var(--preview-surface); }
+    #homepage-preview { background: var(--preview-background); color: var(--preview-text); }
+    .theme-preview-button {
+        display: inline-block;
+        margin-top: 8px;
+        padding: 6px 10px;
+        border-radius: 8px;
+        background: var(--preview-accent);
+        color: #fff;
+    }
+    .theme-sort-list { display: grid; gap: 8px; }
+    .theme-sort-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border: 1px solid #dbe3ed;
+        border-radius: 10px;
+        background: #fff;
+        cursor: grab;
+        touch-action: manipulation;
+    }
+    .theme-sort-item.dragging { opacity: .45; }
+    .theme-sort-item:focus { outline: 2px solid #2563eb; outline-offset: 2px; }
+    .theme-sort-item .bi-grip-vertical { color: #64748b; font-size: 1.2rem; }
+    .marketplace-builder-preview {
+        --builder-market-primary: #146c5b;
+        --builder-market-accent: #16835f;
+        --builder-market-start: #123b65;
+        --builder-market-end: #208b72;
+        --builder-market-radius: 18px;
+        --builder-market-product-width: 190px;
+        --builder-market-section-gap: 22px;
+        --builder-market-product-gap: 14px;
+        --builder-market-desktop-padding: 16px;
+        --builder-market-mobile-padding: 2px;
+        display: grid;
+        gap: var(--builder-market-section-gap);
+        width: 100%;
+        padding: 14px var(--builder-market-desktop-padding);
+        box-sizing: border-box;
+        margin-inline: auto;
+        border: 1px solid #dbe3ed;
+        border-radius: var(--builder-market-radius);
+        background: #f5f7fb;
+    }
+    .marketplace-builder-preview-products {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--builder-market-product-gap);
+    }
+    .marketplace-builder-preview-hero {
+        padding: 20px;
+        border-radius: var(--builder-market-radius);
+        color: #fff;
+        background: linear-gradient(125deg, var(--builder-market-start), var(--builder-market-primary) 55%, var(--builder-market-end));
+    }
+    .marketplace-builder-preview-card {
+        padding: 12px;
+        width: 100%;
+        max-width: var(--builder-market-product-width);
+        border-radius: var(--builder-market-radius);
+        border: 1px solid #dbe3ed;
+        background: #fff;
+    }
+    .marketplace-builder-preview-nav { display: flex; flex-wrap: wrap; gap: 8px; }
+    .marketplace-builder-preview-nav span { padding: 6px 10px; border-radius: 999px; background: #fff; border: 1px solid #dbe3ed; }
+    .theme-builder-sidebar { position: sticky; top: 12px; }
+    .theme-live-frame-wrap {
+        position: relative;
+        width: 100%;
+        height: min(78vh, 820px);
+        min-height: 520px;
+        overflow: auto;
+        border: 1px solid #cbd5e1;
+        border-radius: 12px;
+        background: #e2e8f0;
+    }
+    #theme-live-frame {
+        display: block;
+        width: 1280px;
+        height: 1400px;
+        border: 0;
+        background: #fff;
+        transform-origin: top left;
+    }
+    .theme-live-frame-status { min-height: 1.25rem; }
+    .theme-builder-layout .theme-builder-editor > .theme-preview,
+    .theme-builder-layout #homepage-preview,
+    .theme-builder-layout #marketplace-builder-preview,
+    .theme-builder-layout #basic-theme-preview { display: none !important; }
+    @media (max-width: 991.98px) {
+        .theme-builder-sidebar { position: static; }
+        .theme-live-frame-wrap { height: 70vh; min-height: 420px; }
+    }
+</style>
+
+<div class="container-fluid px-0">
+    <section class="theme-panel mb-4">
+        <div class="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3">
+            <div>
+                <span class="badge rounded-pill text-bg-primary mb-2">SUPERUSER THEME TOOLS</span>
+                <h1 class="h2 fw-bold mb-2">Site-wide theme builder</h1>
+                <p class="text-muted mb-0">Edit the controls and preview changes here in desktop or mobile mode. Changes remain a preview until you select Save and apply site theme.</p>
+            </div>
+            <a class="btn btn-outline-secondary" href="{% url 'admin_catalog_dashboard' %}"><i class="bi bi-arrow-left me-1"></i>Back to catalog</a>
+        </div>
+    </section>
+
+    <form method="post" id="site-theme-form">
+        {% csrf_token %}
+        <div class="row g-4 align-items-start theme-builder-layout">
+        <main class="col-12 col-lg-7 theme-builder-editor">
+        <section class="theme-panel mb-4">
+            <h2 class="h5 fw-bold mb-3">Colors and typography</h2>
+            <div class="row g-3">
+                {% for field in form %}
+                    {% if field.name in "primary_color accent_color page_background surface_color text_color font_family" %}
+                        <div class="col-6 col-lg-4">
+                            <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                            {{ field }}
+                            {% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                        </div>
+                    {% endif %}
+                {% endfor %}
+            </div>
+        </section>
+
+        <section class="theme-panel mb-4">
+            <h2 class="h5 fw-bold mb-1">Homepage content builder</h2>
+            <p class="text-muted small">Customize the public welcome page. Edit its text, hide either section, or drag the welcome banner and feature cards into order.</p>
+            <input type="hidden" name="homepage_content_fields_present" value="1">
+            <div class="row g-4">
+                <div class="col-12">
+                    <div class="form-check form-switch mb-3">
+                        {{ form.homepage_hero_enabled }}
+                        <label class="form-check-label fw-semibold" for="{{ form.homepage_hero_enabled.id_for_label }}">Show welcome banner</label>
+                    </div>
+                    <div class="row g-3">
+                        {% for field in form %}
+                            {% if field.name in "homepage_hero_badge homepage_hero_title homepage_hero_text homepage_primary_cta homepage_secondary_cta" %}
+                                <div class="{% if field.name == 'homepage_hero_text' %}col-12{% else %}col-12 col-md-6{% endif %}">
+                                    <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                                    {{ field }}
+                                    {% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                                </div>
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+                </div>
+                <div class="col-12">
+                    <div class="form-check form-switch mb-3">
+                        {{ form.homepage_features_enabled }}
+                        <label class="form-check-label fw-semibold" for="{{ form.homepage_features_enabled.id_for_label }}">Show feature cards</label>
+                    </div>
+                    <div class="row g-3">
+                        {% for field in form %}
+                            {% if field.name in "homepage_feature_1_title homepage_feature_1_text homepage_feature_2_title homepage_feature_2_text homepage_feature_3_title homepage_feature_3_text" %}
+                                <div class="col-12 col-lg-4">
+                                    <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                                    {{ field }}
+                                    {% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                                </div>
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+                </div>
+                <div class="col-12 col-lg-6">
+                    <h3 class="h6 fw-bold">Homepage section order</h3>
+                    {{ form.homepage_section_order }}
+                    <div class="theme-sort-list" data-order-target="id_homepage_section_order" data-order-keys="hero,features" data-initial-order="{{ form.homepage_section_order.value }}"></div>
+                    {% for error in form.homepage_section_order.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                </div>
+                <div class="col-12">
+                    <div class="theme-preview desktop-preview" id="homepage-preview">
+                        <div class="theme-preview-shell" id="homepage-preview-shell">
+                            <div class="theme-preview-block theme-preview-header" data-home-preview-section="hero">
+                                <span id="homepage-preview-badge">Local shops, all in one place</span>
+                                <h3 class="h4 mb-1 mt-2" id="homepage-preview-title">Your neighbourhood, delivered.</h3>
+                                <p class="mb-1" id="homepage-preview-text">Discover trusted local shops and follow every order.</p>
+                                <span class="theme-preview-button" id="homepage-preview-primary-cta">Sign in</span>
+                                <span class="theme-preview-button" id="homepage-preview-secondary-cta">Create customer account</span>
+                            </div>
+                            <div class="theme-preview-block" data-home-preview-section="features">
+                                <div class="row g-2">
+                                    <div class="col-md-4"><strong id="homepage-preview-feature-1">Shop local</strong><div class="small" id="homepage-preview-feature-text-1"></div></div>
+                                    <div class="col-md-4"><strong id="homepage-preview-feature-2">Track deliveries</strong><div class="small" id="homepage-preview-feature-text-2"></div></div>
+                                    <div class="col-md-4"><strong id="homepage-preview-feature-3">Grow your shop</strong><div class="small" id="homepage-preview-feature-text-3"></div></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="theme-panel mb-4">
+            <h2 class="h5 fw-bold mb-1">Marketplace builder</h2>
+            <p class="text-muted small">Customize marketplace messaging, choose visible sections, arrange the page, curate featured catalog products, and adjust the marketplace design. Product visibility still respects stock, delivery-area, and search rules.</p>
+            <input type="hidden" name="marketplace_content_fields_present" value="1">
+            <div class="row g-3 mb-4">
+                {% for field in form %}
+                    {% if field.name in "marketplace_hero_enabled marketplace_nearby_shops_enabled marketplace_category_nav_enabled marketplace_products_enabled" %}
+                        <div class="col-6 col-lg-3">
+                            <div class="form-check form-switch">
+                                {{ field }}
+                                <label class="form-check-label fw-semibold" for="{{ field.id_for_label }}">
+                                    {% if field.name == "marketplace_hero_enabled" %}Show marketplace banner{% elif field.name == "marketplace_nearby_shops_enabled" %}Show nearby shops{% elif field.name == "marketplace_category_nav_enabled" %}Show market navigation{% else %}Show product listings{% endif %}
+                                </label>
+                            </div>
+                        </div>
+                    {% endif %}
+                {% endfor %}
+            </div>
+            <div class="row g-3 mb-4">
+                {% for field in form %}
+                    {% if field.name in "marketplace_hero_title marketplace_hero_text" %}
+                        <div class="col-12 col-md-6">
+                            <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                            {{ field }}
+                            {% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                        </div>
+                    {% endif %}
+                {% endfor %}
+            </div>
+            <div class="row g-4 mb-4">
+                <div class="col-12 col-lg-6">
+                    <h3 class="h6 fw-bold">Marketplace section order</h3>
+                    {{ form.marketplace_section_order }}
+                    <div class="theme-sort-list" data-order-target="id_marketplace_section_order" data-order-keys="hero,search,nearby,category_nav,products" data-order-labels="hero:Marketplace banner|search:Search|nearby:Nearby shops|category_nav:Market navigation|products:Product listings" data-initial-order="{{ form.marketplace_section_order.value }}"></div>
+                    {% for error in form.marketplace_section_order.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                </div>
+                <div class="col-12 col-lg-6">
+                    <h3 class="h6 fw-bold">Marketplace category order</h3>
+                    <p class="small text-muted">Drag categories to set their display priority.</p>
+                    {{ form.marketplace_category_order }}
+                    <div class="theme-sort-list" data-order-target="id_marketplace_category_order" data-order-keys="{% for category in marketplace_category_choices %}{{ category.0 }}{% if not forloop.last %},{% endif %}{% endfor %}" data-initial-order="{{ form.marketplace_category_order.value }}"></div>
+                    {% for error in form.marketplace_category_order.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                </div>
+            </div>
+            <div class="row g-3 mb-4">
+                <div class="col-12 col-lg-7">
+                    <label class="form-label fw-semibold" for="{{ form.marketplace_featured_product_ids.id_for_label }}">Featured catalog products</label>
+                    <p class="small text-muted mb-2">Select products to place first within their categories when they are available nearby.</p>
+                    {{ form.marketplace_featured_product_ids }}
+                    {% for error in form.marketplace_featured_product_ids.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                </div>
+                <div class="col-12 col-lg-5">
+                    <h3 class="h6 fw-bold">Marketplace colors</h3>
+                    <div class="row g-2">
+                        {% for field in form %}
+                            {% if field.name in "marketplace_primary_color marketplace_accent_color marketplace_header_start_color marketplace_header_end_color" %}
+                                <div class="col-6">
+                                    <label class="form-label small fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                                    {{ field }}
+                                    {% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                                </div>
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+            <h3 class="h6 fw-bold mb-1">Marketplace layout sizing</h3>
+            <p class="small text-muted">Set the desktop content-width limit, desktop product-card width, and desktop/mobile horizontal padding in pixels.</p>
+            <div class="row g-3 align-items-end mb-4">
+                {% for field in form %}
+                    {% if field.name in "marketplace_card_radius marketplace_section_gap marketplace_product_gap marketplace_content_width marketplace_product_width marketplace_desktop_padding marketplace_mobile_padding" %}
+                        <div class="col-6 col-lg-4">
+                            <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                            {{ field }}
+                            {% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                        </div>
+                    {% endif %}
+                {% endfor %}
+            </div>
+            <p class="small text-muted">This preview updates as you edit. Changes are not applied to the live marketplace until you save the theme.</p>
+            <div class="marketplace-builder-preview" id="marketplace-builder-preview">
+                <div class="marketplace-builder-preview-hero" data-marketplace-preview-section="hero">
+                    <strong id="marketplace-preview-title">Marketplace</strong>
+                    <div id="marketplace-preview-text">Find products from nearby shops</div>
+                </div>
+                <div class="marketplace-builder-preview-card" data-marketplace-preview-section="search">Search products</div>
+                <div class="marketplace-builder-preview-card" data-marketplace-preview-section="nearby">Nearby shops</div>
+                <div class="marketplace-builder-preview-nav" data-marketplace-preview-section="category_nav">
+                    <span>Categories</span><span>Popular</span><span>Featured</span>
+                </div>
+                <div class="marketplace-builder-preview-products" data-marketplace-preview-section="products">
+                    <div class="marketplace-builder-preview-card">Featured product</div>
+                    <div class="marketplace-builder-preview-card">Product</div>
+                    <div class="marketplace-builder-preview-card">Product</div>
+                </div>
+            </div>
+        </section>
+
+        <section class="theme-panel mb-4">
+            <h2 class="h5 fw-bold mb-1">Responsive sizing and spacing</h2>
+            <p class="text-muted small">Values are in pixels and apply to the shared global page frame and common controls. Section margins are applied vertically.</p>
+            <div class="row g-3">
+                <div class="col-12">
+                    <input type="hidden" name="mobile_navigation_fields_present" value="1">
+                    <div class="form-check form-switch">
+                        {{ form.mobile_topbar_scroll_hide_enabled }}
+                        <label class="form-check-label fw-semibold" for="{{ form.mobile_topbar_scroll_hide_enabled.id_for_label }}">
+                            Hide app top bar while scrolling down
+                        </label>
+                    </div>
+                    {% for error in form.mobile_topbar_scroll_hide_enabled.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                    <div class="form-check form-switch mt-2">
+                        {{ form.mobile_bottombar_scroll_hide_enabled }}
+                        <label class="form-check-label fw-semibold" for="{{ form.mobile_bottombar_scroll_hide_enabled.id_for_label }}">
+                            Hide app bottom bar while scrolling down
+                        </label>
+                    </div>
+                    {% for error in form.mobile_bottombar_scroll_hide_enabled.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                    <div class="small text-muted">On mobile screens, each enabled bar returns when the customer scrolls up. Both settings are off by default.</div>
+                    <div class="small text-muted mt-3">Shop owners and staff can lock or unlock touch zoom from the app navigation bar.</div>
+                    <input type="hidden" name="mobile_app_desktop_view_fields_present" value="1">
+                    <div class="form-check form-switch mt-3">
+                        {{ form.mobile_app_desktop_view_enabled }}
+                        <label class="form-check-label fw-semibold" for="{{ form.mobile_app_desktop_view_enabled.id_for_label }}">
+                            Mobile app: load website as desktop site
+                        </label>
+                    </div>
+                    <div class="small text-muted">When enabled, the mobile app requests the desktop website layout, similar to Chrome's “Desktop site” option. This does not change desktop browsers.</div>
+                    {% for error in form.mobile_app_desktop_view_enabled.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                </div>
+                <div class="col-12 col-md-6">
+                    <label class="form-label fw-semibold" for="{{ form.theme_revision_retention_days.id_for_label }}">Theme history retention (days)</label>
+                    {{ form.theme_revision_retention_days }}
+                    <div class="small text-muted">Delete records older than this many days. Set 0 to keep history indefinitely.</div>
+                    {% for error in form.theme_revision_retention_days.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                </div>
+                {% for field in form %}
+                    {% if field.name in "desktop_content_width desktop_page_padding mobile_page_padding component_radius header_padding content_padding footer_padding header_margin content_margin footer_margin" %}
+                        <div class="col-6 col-lg-3">
+                            <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                            {{ field }}
+                            {% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                        </div>
+                    {% endif %}
+                {% endfor %}
+            </div>
+        </section>
+
+        <section class="theme-panel mb-4" id="component-layout-settings">
+            <h2 class="h5 fw-bold mb-1">Per-component size and spacing</h2>
+            <p class="text-muted small">Configure each component independently for desktop and mobile. Leave a value blank to keep its default; dimensions are pixels, and 0 resets a dimension to automatic sizing.</p>
+            {{ form.component_layouts }}
+            {% for error in form.component_layouts.errors %}<div class="alert alert-danger py-2">{{ error }}</div>{% endfor %}
+            <div class="accordion" id="component-layout-controls"></div>
+        </section>
+
+        <section class="theme-panel mb-4">
+            <h2 class="h5 fw-bold mb-1">Drag to arrange shared page sections</h2>
+            <p class="text-muted small">Reorders the site header, main page content, and footer. Use the grip to drag items; keyboard users can focus an item and use the arrow keys.</p>
+            <div class="row g-4">
+                <div class="col-12 col-lg-6">
+                    <h3 class="h6 fw-bold">Desktop order</h3>
+                    {{ form.desktop_layout_order }}
+                    <div class="theme-sort-list" data-order-target="id_desktop_layout_order" data-initial-order="{{ form.desktop_layout_order.value }}"></div>
+                    {% for error in form.desktop_layout_order.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                </div>
+                <div class="col-12 col-lg-6">
+                    <h3 class="h6 fw-bold">Mobile order</h3>
+                    {{ form.mobile_layout_order }}
+                    <div class="theme-sort-list" data-order-target="id_mobile_layout_order" data-initial-order="{{ form.mobile_layout_order.value }}"></div>
+                    {% for error in form.mobile_layout_order.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                </div>
+            </div>
+        </section>
+
+        <section class="theme-panel mb-4" id="basic-theme-preview">
+            <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+                <div>
+                    <h2 class="h5 fw-bold mb-1">Live style preview</h2>
+                    <p class="small text-muted mb-0">Changes preview immediately and are not saved until you choose “Save and apply site theme.”</p>
+                </div>
+                <div class="btn-group" role="group" aria-label="Preview viewport">
+                    <button class="btn btn-outline-primary active" type="button" data-preview-mode="desktop">Desktop</button>
+                    <button class="btn btn-outline-primary" type="button" data-preview-mode="mobile">Mobile</button>
+                </div>
+            </div>
+            <div class="theme-preview desktop-preview" id="theme-preview">
+                <div class="theme-preview-shell" id="theme-preview-shell">
+                    <div class="theme-preview-block theme-preview-header" data-preview-section="header">Site header</div>
+                    <div class="theme-preview-block theme-preview-content" data-preview-section="content">
+                        Main page content
+                        <div><span class="theme-preview-button">Primary action</span></div>
+                    </div>
+                    <div class="theme-preview-block theme-preview-footer" data-preview-section="footer">Site footer</div>
+                </div>
+            </div>
+        </section>
+
+        <div class="d-flex flex-wrap gap-2 mb-4">
+            <button class="btn btn-primary btn-lg" type="submit"><i class="bi bi-check2-circle me-1"></i>Save and apply site theme</button>
+            <a class="btn btn-outline-secondary btn-lg" href="{% url 'admin_catalog_dashboard' %}">Cancel</a>
+        </div>
+        </main>
+        <aside class="col-12 col-lg-5 theme-builder-sidebar">
+            <section class="theme-panel mb-4">
+                <div class="d-flex align-items-start justify-content-between gap-2 mb-3">
+                    <div>
+                        <h2 class="h5 fw-bold mb-1">Live page preview</h2>
+                        <p class="small text-muted mb-0">Shows the real page with your unsaved changes.</p>
+                    </div>
+                    <span class="badge text-bg-warning">Unsaved preview</span>
+                </div>
+                <div class="d-flex flex-wrap justify-content-between gap-2 mb-2">
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Preview page">
+                        <button class="btn btn-outline-secondary active" type="button" data-preview-page="home">Homepage</button>
+                        <button class="btn btn-outline-secondary" type="button" data-preview-page="marketplace">Marketplace</button>
+                    </div>
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Preview viewport">
+                        <button class="btn btn-outline-primary active" type="button" data-preview-mode="desktop">Desktop</button>
+                        <button class="btn btn-outline-primary" type="button" data-preview-mode="mobile">Mobile</button>
+                    </div>
+                </div>
+                <div class="theme-live-frame-wrap" id="theme-live-frame-wrap">
+                    <iframe
+                        id="theme-live-frame"
+                        title="Live website theme preview"
+                        src="{% url 'home' %}?theme_preview=1"
+                        loading="eager"
+                    ></iframe>
+                </div>
+                <p class="small text-muted theme-live-frame-status mt-2 mb-0" id="theme-live-frame-status" role="status">Loading live preview…</p>
+            </section>
+        </aside>
+        </div>
+    </form>
+
+    <section class="theme-panel mb-4" id="theme-history">
+        <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
+            <div>
+                <h2 class="h5 fw-bold mb-1">Theme change history</h2>
+                <p class="small text-muted mb-0">Every saved or restored theme is recorded. Restore or delete a record; older records are automatically removed according to the retention setting.</p>
+            </div>
+            <span class="badge text-bg-light">{{ theme_revisions|length }} recent record{{ theme_revisions|length|pluralize }}</span>
+        </div>
+        {% if theme_revisions %}
+            <div class="table-responsive">
+                <table class="table align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th scope="col">Date</th>
+                            <th scope="col">Change</th>
+                            <th scope="col">By</th>
+                            <th scope="col">Preview</th>
+                            <th scope="col" class="text-end">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for revision in theme_revisions %}
+                            <tr>
+                                <td class="text-nowrap">{{ revision.created_at|date:"Y-m-d H:i" }}</td>
+                                <td>
+                                    <div class="fw-semibold">{{ revision.get_action_display }}</div>
+                                    {% if revision.restored_from %}
+                                        <small class="text-muted">Restored a prior version</small>
+                                    {% endif %}
+                                </td>
+                                <td>{{ revision.created_by.get_username|default:"Deleted user" }}</td>
+                                <td>
+                                    <span class="d-inline-block rounded-circle border me-1" title="Primary color" style="width: 18px; height: 18px; vertical-align: middle; background: {{ revision.snapshot.primary_color|default:'#2563eb' }}"></span>
+                                    <span class="d-inline-block rounded-circle border me-1" title="Accent color" style="width: 18px; height: 18px; vertical-align: middle; background: {{ revision.snapshot.accent_color|default:'#16a34a' }}"></span>
+                                    <small class="text-muted d-block">Desktop: {{ revision.snapshot.desktop_layout_order }} · Mobile: {{ revision.snapshot.mobile_layout_order }}</small>
+                                </td>
+                                <td class="text-end">
+                                    <form method="post" class="d-inline" onsubmit="return confirm('Restore this theme version across the site?');">
+                                        {% csrf_token %}
+                                        <button type="submit" name="restore_theme_revision" value="{{ revision.pk }}" class="btn btn-sm btn-outline-primary">
+                                            <i class="bi bi-clock-history me-1"></i>Restore
+                                        </button>
+                                    </form>
+                                    <form method="post" class="d-inline" onsubmit="return confirm('Permanently delete this theme history record?');">
+                                        {% csrf_token %}
+                                        <button type="submit" name="delete_theme_revision" value="{{ revision.pk }}" class="btn btn-sm btn-outline-danger ms-1">
+                                            <i class="bi bi-trash me-1"></i>Delete
+                                        </button>
+                                    </form>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <p class="text-muted mb-0">No saved theme changes yet. The first save will appear here.</p>
+        {% endif %}
+    </section>
+</div>
+
+<script>
+(() => {
+    const labels = {
+        header: "Site header",
+        content: "Main page content",
+        footer: "Site footer",
+        hero: "Welcome banner",
+        features: "Feature cards",
+        search: "Search",
+        nearby: "Nearby shops",
+        category_nav: "Market navigation",
+        products: "Product listings"
+    };
+    const sections = ["header", "content", "footer"];
+    const form = document.getElementById("site-theme-form");
+    const preview = document.getElementById("theme-preview");
+    const shell = document.getElementById("theme-preview-shell");
+    const homepagePreviewShell = document.getElementById("homepage-preview-shell");
+    const homepagePreview = document.getElementById("homepage-preview");
+    const colorInputs = {
+        primary: document.getElementById("id_primary_color"),
+        accent: document.getElementById("id_accent_color"),
+        background: document.getElementById("id_page_background"),
+        surface: document.getElementById("id_surface_color"),
+        text: document.getElementById("id_text_color")
+    };
+    const numberInputs = {
+        radius: document.getElementById("id_component_radius"),
+        mobilePadding: document.getElementById("id_mobile_page_padding"),
+        desktopWidth: document.getElementById("id_desktop_content_width"),
+        desktopPadding: document.getElementById("id_desktop_page_padding"),
+        headerPadding: document.getElementById("id_header_padding"),
+        contentPadding: document.getElementById("id_content_padding"),
+        footerPadding: document.getElementById("id_footer_padding"),
+        headerMargin: document.getElementById("id_header_margin"),
+        contentMargin: document.getElementById("id_content_margin"),
+        footerMargin: document.getElementById("id_footer_margin")
+    };
+    const fontInput = document.getElementById("id_font_family");
+    const marketplacePreview = document.getElementById("marketplace-builder-preview");
+    const liveFrame = document.getElementById("theme-live-frame");
+    const liveFrameWrap = document.getElementById("theme-live-frame-wrap");
+    const liveFrameStatus = document.getElementById("theme-live-frame-status");
+    let livePreviewPage = "home";
+    let livePreviewMode = "desktop";
+    let liveFrameReady = false;
+    let pendingComponentFocus = null;
+    const componentLayoutField = document.getElementById("id_component_layouts");
+    const componentLayoutControls = document.getElementById("component-layout-controls");
+    const componentLayouts = [
+        ["site_header", "Site header"],
+        ["site_content", "Main site content"],
+        ["site_footer", "Site footer"],
+        ["home_content", "Homepage content"],
+        ["home_hero", "Homepage welcome banner"],
+        ["home_features", "Homepage feature section"],
+        ["home_feature_card", "Homepage feature cards"],
+        ["marketplace_page", "Marketplace page"],
+        ["marketplace_hero", "Marketplace banner"],
+        ["marketplace_search", "Marketplace search"],
+        ["marketplace_nearby", "Nearby shops section"],
+        ["marketplace_category_nav", "Market navigation"],
+        ["marketplace_products", "Product listings section"],
+        ["marketplace_category", "Marketplace product category"],
+        ["marketplace_product_row", "Product row"],
+        ["marketplace_product", "Product card"],
+        ["marketplace_product_image", "Marketplace product images"]
+    ];
+    const componentPreviewPages = {
+        home_content: "home",
+        home_hero: "home",
+        home_features: "home",
+        home_feature_card: "home",
+        marketplace_page: "marketplace",
+        marketplace_hero: "marketplace",
+        marketplace_search: "marketplace",
+        marketplace_nearby: "marketplace",
+        marketplace_category_nav: "marketplace",
+        marketplace_products: "marketplace",
+        marketplace_category: "marketplace",
+        marketplace_product_row: "marketplace",
+        marketplace_product: "marketplace",
+        marketplace_product_image: "marketplace"
+    };
+    const layoutProperties = [
+        {
+            label: "Size",
+            properties: [
+                ["width", "Width"],
+                ["height", "Height"],
+                ["min_width", "Minimum width"],
+                ["max_width", "Maximum width"],
+                ["min_height", "Minimum height"],
+                ["max_height", "Maximum height"]
+            ]
+        },
+        {
+            label: "Margin",
+            properties: [
+                ["margin_top", "Top margin"],
+                ["margin_right", "Right margin"],
+                ["margin_bottom", "Bottom margin"],
+                ["margin_left", "Left margin"],
+                ["margin_x", "Horizontal margin (both sides)"],
+                ["margin_y", "Vertical margin (both sides)"]
+            ]
+        },
+        {
+            label: "Padding",
+            properties: [
+                ["padding_top", "Top padding"],
+                ["padding_right", "Right padding"],
+                ["padding_bottom", "Bottom padding"],
+                ["padding_left", "Left padding"],
+                ["padding_x", "Horizontal padding (both sides)"],
+                ["padding_y", "Vertical padding (both sides)"]
+            ]
+        },
+        {
+            label: "Gap and corners",
+            properties: [
+                ["gap_x", "Horizontal gap"],
+                ["gap_y", "Vertical gap"],
+                ["border_radius", "Corner radius"]
+            ]
+        },
+        {
+            label: "Image display",
+            properties: [
+                ["object_fit", "Image fit"]
+            ]
+        }
+    ];
+    let initialComponentLayouts = {};
+    try {
+        initialComponentLayouts = JSON.parse(componentLayoutField?.value || "{}");
+    } catch (error) {
+        console.error("Could not load saved component layout settings.", error);
+    }
+
+    function readComponentLayoutValues() {
+        const values = {};
+        componentLayoutControls?.querySelectorAll("[data-layout-component]").forEach((input) => {
+            const { layoutComponent, layoutBreakpoint, layoutProperty } = input.dataset;
+            const wasSaved = input.dataset.layoutSaved === "true";
+            const wasEdited = input.dataset.layoutDirty === "true";
+            if (!wasSaved && !wasEdited) return;
+            let value;
+            if (layoutProperty === "visible") {
+                value = input.checked;
+            } else if (layoutProperty === "object_fit") {
+                if (!input.value) return;
+                value = input.value;
+            } else {
+                if (input.value === "") return;
+                value = Number(input.value);
+                if (!Number.isInteger(value) || value < 0 || value > 3000) return;
+            }
+            values[layoutComponent] ||= {};
+            values[layoutComponent][layoutBreakpoint] ||= {};
+            values[layoutComponent][layoutBreakpoint][layoutProperty] = value;
+        });
+        if (componentLayoutField) componentLayoutField.value = JSON.stringify(values);
+        return values;
+    }
+
+    function fillCurrentComponentValues() {
+        if (!liveFrameReady || !liveFrame?.contentDocument) return;
+        const doc = liveFrame.contentDocument;
+        const breakpoint = livePreviewMode;
+        const computedPixels = (value) => {
+            const parsed = Number.parseFloat(value);
+            return Number.isFinite(parsed) ? Math.round(parsed) : null;
+        };
+        const getCurrentValue = (element, property) => {
+            const computed = doc.defaultView.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            const horizontal = (start, end) => {
+                const first = computedPixels(computed[start]);
+                const second = computedPixels(computed[end]);
+                return first === second ? first : null;
+            };
+            const vertical = (start, end) => {
+                const first = computedPixels(computed[start]);
+                const second = computedPixels(computed[end]);
+                return first === second ? first : null;
+            };
+            const values = {
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+                min_width: computedPixels(computed.minWidth),
+                max_width: computedPixels(computed.maxWidth),
+                min_height: computedPixels(computed.minHeight),
+                max_height: computedPixels(computed.maxHeight),
+                margin_top: computedPixels(computed.marginTop),
+                margin_right: computedPixels(computed.marginRight),
+                margin_bottom: computedPixels(computed.marginBottom),
+                margin_left: computedPixels(computed.marginLeft),
+                margin_x: horizontal("marginLeft", "marginRight"),
+                margin_y: vertical("marginTop", "marginBottom"),
+                padding_top: computedPixels(computed.paddingTop),
+                padding_right: computedPixels(computed.paddingRight),
+                padding_bottom: computedPixels(computed.paddingBottom),
+                padding_left: computedPixels(computed.paddingLeft),
+                padding_x: horizontal("paddingLeft", "paddingRight"),
+                padding_y: vertical("paddingTop", "paddingBottom"),
+                gap_x: computedPixels(computed.columnGap),
+                gap_y: computedPixels(computed.rowGap),
+                border_radius: computedPixels(computed.borderTopLeftRadius)
+            };
+            return values[property];
+        };
+
+        componentLayoutControls?.querySelectorAll("[data-layout-component]").forEach((input) => {
+            if (
+                input.dataset.layoutBreakpoint !== breakpoint
+                || input.dataset.layoutDirty === "true"
+                || input.dataset.layoutSaved === "true"
+            ) {
+                return;
+            }
+            const target = [...doc.querySelectorAll("[data-theme-component]")]
+                .find((element) => element.dataset.themeComponent === input.dataset.layoutComponent);
+            if (!target) return;
+            if (input.dataset.layoutProperty === "visible") {
+                input.checked = doc.defaultView.getComputedStyle(target).display !== "none";
+                return;
+            }
+            if (input.dataset.layoutProperty === "object_fit") {
+                input.value = doc.defaultView.getComputedStyle(target).objectFit;
+                return;
+            }
+            const currentValue = getCurrentValue(target, input.dataset.layoutProperty);
+            if (Number.isInteger(currentValue)) {
+                input.value = String(Math.max(0, Math.min(3000, currentValue)));
+                input.placeholder = "Current";
+            } else {
+                const computed = doc.defaultView.getComputedStyle(target);
+                const noLimit = ["max_width", "max_height"].includes(input.dataset.layoutProperty)
+                    && computed[input.dataset.layoutProperty === "max_width" ? "maxWidth" : "maxHeight"] === "none";
+                input.value = "";
+                input.placeholder = noLimit ? "None" : "Mixed";
+            }
+        });
+    }
+
+    function highlightLiveComponent(component) {
+        if (!liveFrameReady || !liveFrame?.contentDocument) {
+            pendingComponentFocus = component;
+            return;
+        }
+        const doc = liveFrame.contentDocument;
+        const targets = [...doc.querySelectorAll("[data-theme-component]")]
+            .filter((element) => element.dataset.themeComponent === component);
+        if (!targets.length) {
+            if (liveFrameStatus) {
+                liveFrameStatus.textContent = `Component "${componentLayouts.find(([key]) => key === component)?.[1] || component}" is not visible on this preview page.`;
+            }
+            return;
+        }
+
+        let focusStyle = doc.getElementById("theme-component-focus-style");
+        if (!focusStyle) {
+            focusStyle = doc.createElement("style");
+            focusStyle.id = "theme-component-focus-style";
+            focusStyle.textContent = `
+                @keyframes themeComponentFocusPulse {
+                    0%, 100% { outline: 0 solid transparent; box-shadow: none; }
+                    20%, 65% { outline: 4px solid #f59e0b; outline-offset: 3px; box-shadow: 0 0 0 8px rgba(245, 158, 11, .28); }
+                }
+                .theme-component-focus-pulse {
+                    position: relative !important;
+                    z-index: 9999 !important;
+                    animation: themeComponentFocusPulse .75s ease-in-out 2;
+                }
+            `;
+            doc.head.appendChild(focusStyle);
+        }
+
+        const target = targets[0];
+        const frameScale = liveFrame.offsetWidth
+            ? liveFrame.getBoundingClientRect().width / liveFrame.offsetWidth
+            : 1;
+        const targetDocumentTop = target.getBoundingClientRect().top + doc.defaultView.scrollY;
+        const targetPreviewTop = liveFrame.offsetTop + targetDocumentTop * frameScale;
+        const targetScrollTop = Math.max(
+            0,
+            targetPreviewTop - liveFrameWrap.clientHeight / 2,
+        );
+        liveFrameWrap.scrollTo({ top: targetScrollTop, behavior: "smooth" });
+        targets.forEach((element) => {
+            element.classList.remove("theme-component-focus-pulse");
+            void element.offsetWidth;
+            element.classList.add("theme-component-focus-pulse");
+            element.addEventListener("animationend", () => {
+                element.classList.remove("theme-component-focus-pulse");
+            }, { once: true });
+        });
+        if (liveFrameStatus) {
+            liveFrameStatus.textContent = `Focused: ${componentLayouts.find(([key]) => key === component)?.[1] || component}`;
+        }
+    }
+
+    function selectLiveComponent(component, breakpoint = null) {
+        if (breakpoint) {
+            const mobile = breakpoint === "mobile";
+            livePreviewMode = breakpoint;
+            preview.classList.toggle("mobile-preview", mobile);
+            preview.classList.toggle("desktop-preview", !mobile);
+            homepagePreview?.classList.toggle("mobile-preview", mobile);
+            homepagePreview?.classList.toggle("desktop-preview", !mobile);
+            document.querySelectorAll("[data-preview-mode]").forEach((button) => {
+                button.classList.toggle(
+                    "active",
+                    button.dataset.previewMode === breakpoint,
+                );
+            });
+        }
+        const desiredPage = componentPreviewPages[component];
+        if (desiredPage && desiredPage !== livePreviewPage) {
+            livePreviewPage = desiredPage;
+            document.querySelectorAll("[data-preview-page]").forEach((button) => {
+                button.classList.toggle("active", button.dataset.previewPage === desiredPage);
+            });
+            pendingComponentFocus = component;
+            liveFrameReady = false;
+            liveFrame.src = desiredPage === "marketplace"
+                ? "{% url 'marketplace' %}?theme_preview=1"
+                : "{% url 'home' %}?theme_preview=1";
+            if (liveFrameStatus) liveFrameStatus.textContent = "Loading component preview…";
+            return;
+        }
+        updateLivePagePreview();
+        highlightLiveComponent(component);
+    }
+
+    componentLayouts.forEach(([component, label], index) => {
+        const item = document.createElement("details");
+        item.className = "accordion-item";
+        const summary = document.createElement("summary");
+        summary.className = "accordion-header accordion-button collapsed";
+        summary.textContent = label;
+        summary.style.cursor = "pointer";
+        summary.addEventListener("click", () => selectLiveComponent(component));
+        const body = document.createElement("div");
+        body.className = "accordion-body";
+        const breakpointRow = document.createElement("div");
+        breakpointRow.className = "row g-4";
+
+        ["desktop", "mobile"].forEach((breakpoint) => {
+            const column = document.createElement("div");
+            column.className = "col-12 col-lg-6";
+            const heading = document.createElement("h3");
+            heading.className = "h6 fw-bold text-capitalize";
+            heading.textContent = breakpoint;
+            const fields = document.createElement("div");
+            fields.className = "row g-2";
+            const visibilityWrapper = document.createElement("div");
+            visibilityWrapper.className = "col-12";
+            const visibilityCheck = document.createElement("div");
+            visibilityCheck.className = "form-check form-switch";
+            const visibilityInput = document.createElement("input");
+            visibilityInput.type = "checkbox";
+            visibilityInput.className = "form-check-input";
+            visibilityInput.id = `layout-${component}-${breakpoint}-visible`;
+            visibilityInput.checked =
+                initialComponentLayouts?.[component]?.[breakpoint]?.visible !== false;
+            visibilityInput.dataset.layoutComponent = component;
+            visibilityInput.dataset.layoutBreakpoint = breakpoint;
+            visibilityInput.dataset.layoutProperty = "visible";
+            visibilityInput.dataset.layoutSaved = String(
+                Object.prototype.hasOwnProperty.call(
+                    initialComponentLayouts?.[component]?.[breakpoint] || {},
+                    "visible",
+                ),
+            );
+            const visibilityLabel = document.createElement("label");
+            visibilityLabel.className = "form-check-label";
+            visibilityLabel.htmlFor = visibilityInput.id;
+            visibilityLabel.textContent = `Display on ${breakpoint}`;
+            visibilityInput.setAttribute(
+                "aria-label",
+                `${label}: display on ${breakpoint}`,
+            );
+            visibilityInput.addEventListener("change", () => {
+                visibilityInput.dataset.layoutDirty = "true";
+                readComponentLayoutValues();
+                updatePreview();
+            });
+            visibilityCheck.append(visibilityInput, visibilityLabel);
+            visibilityWrapper.appendChild(visibilityCheck);
+            fields.appendChild(visibilityWrapper);
+            layoutProperties.forEach(({ label: groupLabel, properties }) => {
+                if (groupLabel === "Image display" && component !== "marketplace_product_image") {
+                    return;
+                }
+                const groupHeading = document.createElement("h4");
+                groupHeading.className = "col-12 h6 fw-semibold mt-2 mb-0";
+                groupHeading.textContent = groupLabel;
+                fields.appendChild(groupHeading);
+                properties.forEach(([property, propertyLabel]) => {
+                    const wrapper = document.createElement("div");
+                    wrapper.className = "col-6";
+                    const inputId = `layout-${component}-${breakpoint}-${property}`;
+                    const fieldLabel = document.createElement("label");
+                    fieldLabel.className = "form-label small mb-1";
+                    fieldLabel.htmlFor = inputId;
+                    fieldLabel.textContent = propertyLabel;
+                    const input = document.createElement(property === "object_fit" ? "select" : "input");
+                    input.id = inputId;
+                    input.className = "form-control form-control-sm";
+                    if (property === "object_fit") {
+                        [
+                            ["", "Default"],
+                            ["contain", "Contain"],
+                            ["cover", "Cover"],
+                            ["fill", "Fill"],
+                            ["scale-down", "Scale down"],
+                        ].forEach(([value, text]) => {
+                            const option = document.createElement("option");
+                            option.value = value;
+                            option.textContent = text;
+                            input.appendChild(option);
+                        });
+                    } else {
+                        input.type = "number";
+                        input.min = "0";
+                        input.max = "3000";
+                        input.step = "1";
+                        input.placeholder = "Default";
+                    }
+                    input.dataset.layoutComponent = component;
+                    input.dataset.layoutBreakpoint = breakpoint;
+                    input.dataset.layoutProperty = property;
+                    input.dataset.layoutSaved = String(
+                        Object.prototype.hasOwnProperty.call(
+                            initialComponentLayouts?.[component]?.[breakpoint] || {},
+                            property,
+                        ),
+                    );
+                    input.setAttribute("aria-label", `${label}: ${breakpoint} ${propertyLabel.toLowerCase()}`);
+                    input.addEventListener("focus", () => {
+                        selectLiveComponent(component, breakpoint);
+                    });
+                    const savedValue = initialComponentLayouts?.[component]?.[breakpoint]?.[property];
+                    if (property === "object_fit" && typeof savedValue === "string") {
+                        input.value = savedValue;
+                    } else if (Number.isInteger(savedValue)) {
+                        input.value = String(savedValue);
+                    }
+                    input.addEventListener(property === "object_fit" ? "change" : "input", () => {
+                        input.dataset.layoutDirty = "true";
+                        readComponentLayoutValues();
+                        updatePreview();
+                    });
+                    wrapper.append(fieldLabel, input);
+                    fields.appendChild(wrapper);
+                });
+            });
+            column.append(heading, fields);
+            breakpointRow.appendChild(column);
+        });
+        body.appendChild(breakpointRow);
+        item.append(summary, body);
+        item.id = `component-layout-item-${index}`;
+        componentLayoutControls?.appendChild(item);
+    });
+    readComponentLayoutValues();
+
+    document.querySelectorAll(".theme-sort-list").forEach((list) => {
+        const input = document.getElementById(list.dataset.orderTarget);
+        const keys = (list.dataset.orderKeys || sections.join(",")).split(",");
+        const order = (list.dataset.initialOrder || "").split(",").filter((key) => keys.includes(key));
+        keys.forEach((key) => { if (!order.includes(key)) order.push(key); });
+        const dynamicLabels = Object.fromEntries(
+            (list.dataset.orderLabels || "").split("|").filter(Boolean).map((entry) => {
+                const separator = entry.indexOf(":");
+                return [entry.slice(0, separator), entry.slice(separator + 1)];
+            })
+        );
+        order.forEach((key) => {
+            const item = document.createElement("div");
+            item.className = "theme-sort-item";
+            item.draggable = true;
+            item.tabIndex = 0;
+            item.dataset.section = key;
+            const grip = document.createElement("i");
+            grip.className = "bi bi-grip-vertical";
+            grip.setAttribute("aria-hidden", "true");
+            const label = document.createElement("span");
+            label.textContent = dynamicLabels[key] || labels[key] || key;
+            item.append(grip, label);
+            list.appendChild(item);
+            item.addEventListener("dragstart", () => item.classList.add("dragging"));
+            item.addEventListener("dragend", () => {
+                item.classList.remove("dragging");
+                saveOrder();
+                updatePreview();
+            });
+            item.addEventListener("keydown", (event) => {
+                if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+                event.preventDefault();
+                const sibling = event.key === "ArrowUp" ? item.previousElementSibling : item.nextElementSibling;
+                if (sibling) list.insertBefore(item, event.key === "ArrowUp" ? sibling : sibling.nextElementSibling);
+                saveOrder();
+                updatePreview();
+            });
+        });
+        list.addEventListener("dragover", (event) => {
+            event.preventDefault();
+            const dragging = list.querySelector(".dragging");
+            if (!dragging) return;
+            const after = [...list.querySelectorAll(".theme-sort-item:not(.dragging)")].find((item) => {
+                return event.clientY < item.getBoundingClientRect().top + item.offsetHeight / 2;
+            });
+            list.insertBefore(dragging, after || null);
+        });
+        const saveOrder = () => {
+            input.value = [...list.querySelectorAll(".theme-sort-item")].map((item) => item.dataset.section).join(",");
+        };
+        saveOrder();
+    });
+
+    function updatePreview() {
+        if (!preview || !shell) return;
+        const mobile = preview.classList.contains("mobile-preview");
+        if (marketplacePreview) {
+            const marketplaceStyles = {
+                "--builder-market-primary": "marketplace_primary_color",
+                "--builder-market-accent": "marketplace_accent_color",
+                "--builder-market-start": "marketplace_header_start_color",
+                "--builder-market-end": "marketplace_header_end_color"
+            };
+            Object.entries(marketplaceStyles).forEach(([property, fieldName]) => {
+                const field = document.getElementById(`id_${fieldName}`);
+                if (field) marketplacePreview.style.setProperty(property, field.value);
+            });
+            const radius = document.getElementById("id_marketplace_card_radius");
+            const contentWidth = document.getElementById("id_marketplace_content_width");
+            const productWidth = document.getElementById("id_marketplace_product_width");
+            const sectionGap = document.getElementById("id_marketplace_section_gap");
+            const productGap = document.getElementById("id_marketplace_product_gap");
+            const desktopPadding = document.getElementById("id_marketplace_desktop_padding");
+            const mobilePadding = document.getElementById("id_marketplace_mobile_padding");
+            const title = document.getElementById("id_marketplace_hero_title");
+            const text = document.getElementById("id_marketplace_hero_text");
+            if (radius) marketplacePreview.style.setProperty("--builder-market-radius", `${radius.value}px`);
+            marketplacePreview.style.maxWidth = mobile
+                ? "390px"
+                : `${contentWidth?.value || 2400}px`;
+            if (productWidth) marketplacePreview.style.setProperty("--builder-market-product-width", `${productWidth.value}px`);
+            if (sectionGap) marketplacePreview.style.setProperty("--builder-market-section-gap", `${sectionGap.value}px`);
+            if (productGap) marketplacePreview.style.setProperty("--builder-market-product-gap", `${productGap.value}px`);
+            marketplacePreview.style.paddingInline = `${(mobile ? mobilePadding : desktopPadding)?.value || 0}px`;
+            if (title) document.getElementById("marketplace-preview-title").textContent = title.value;
+            if (text) document.getElementById("marketplace-preview-text").textContent = text.value;
+            const marketplaceVisibility = {
+                hero: "marketplace_hero_enabled",
+                nearby: "marketplace_nearby_shops_enabled",
+                category_nav: "marketplace_category_nav_enabled",
+                products: "marketplace_products_enabled"
+            };
+            Object.entries(marketplaceVisibility).forEach(([sectionName, fieldName]) => {
+                const field = document.getElementById(`id_${fieldName}`);
+                const section = marketplacePreview.querySelector(
+                    `[data-marketplace-preview-section="${sectionName}"]`
+                );
+                if (field && section) section.hidden = !field.checked;
+            });
+            const marketplaceOrder = document.getElementById("id_marketplace_section_order");
+            if (marketplaceOrder) {
+                marketplaceOrder.value.split(",").forEach((sectionName) => {
+                    const section = marketplacePreview.querySelector(
+                        `[data-marketplace-preview-section="${sectionName.trim()}"]`
+                    );
+                    if (section) marketplacePreview.appendChild(section);
+                });
+            }
+        }
+        Object.entries(colorInputs).forEach(([name, input]) => {
+            if (input) {
+                preview.style.setProperty(`--preview-${name}`, input.value);
+                homepagePreview?.style.setProperty(`--preview-${name}`, input.value);
+            }
+        });
+        if (numberInputs.radius) {
+            preview.style.setProperty("--preview-radius", `${numberInputs.radius.value}px`);
+            homepagePreview?.style.setProperty("--preview-radius", `${numberInputs.radius.value}px`);
+        }
+        preview.style.maxWidth = mobile
+            ? "390px"
+            : `${numberInputs.desktopWidth?.value || 1280}px`;
+        if (homepagePreview) {
+            homepagePreview.style.maxWidth = mobile
+                ? "390px"
+                : `${numberInputs.desktopWidth?.value || 1280}px`;
+            homepagePreview.classList.toggle("mobile-preview", mobile);
+            homepagePreview.classList.toggle("desktop-preview", !mobile);
+        }
+        preview.style.setProperty(
+            "--preview-padding",
+            `${(mobile ? numberInputs.mobilePadding : numberInputs.desktopPadding)?.value || 12}px`
+        );
+        homepagePreview?.style.setProperty(
+            "--preview-padding",
+            `${(mobile ? numberInputs.mobilePadding : numberInputs.desktopPadding)?.value || 12}px`
+        );
+        if (fontInput) preview.style.fontFamily = fontInput.value;
+        const spacing = {
+            header: [numberInputs.headerPadding, numberInputs.headerMargin],
+            content: [numberInputs.contentPadding, numberInputs.contentMargin],
+            footer: [numberInputs.footerPadding, numberInputs.footerMargin]
+        };
+        Object.entries(spacing).forEach(([sectionName, [padding, margin]]) => {
+            const section = shell.querySelector(`[data-preview-section="${sectionName}"]`);
+            if (section) {
+                if (padding) section.style.paddingBlock = `${padding.value}px`;
+                if (margin) section.style.marginBlock = `${margin.value}px`;
+            }
+        });
+        document.querySelectorAll(".theme-sort-list").forEach((list) => {
+            if (list.dataset.orderTarget === "id_homepage_section_order") {
+                if (!homepagePreviewShell) return;
+                [...list.querySelectorAll(".theme-sort-item")].forEach((item) => {
+                    const section = homepagePreviewShell.querySelector(
+                        `[data-home-preview-section="${item.dataset.section}"]`
+                    );
+                    if (section) homepagePreviewShell.appendChild(section);
+                });
+                return;
+            }
+            const isMobileOrder = list.dataset.orderTarget === "id_mobile_layout_order";
+            if (isMobileOrder !== preview.classList.contains("mobile-preview")) return;
+            [...list.querySelectorAll(".theme-sort-item")].forEach((item) => {
+                const section = shell.querySelector(`[data-preview-section="${item.dataset.section}"]`);
+                if (section) shell.appendChild(section);
+            });
+        });
+        const previewText = [
+            ["homepage_hero_badge", "homepage-preview-badge"],
+            ["homepage_hero_title", "homepage-preview-title"],
+            ["homepage_hero_text", "homepage-preview-text"],
+            ["homepage_primary_cta", "homepage-preview-primary-cta"],
+            ["homepage_secondary_cta", "homepage-preview-secondary-cta"],
+            ["homepage_feature_1_title", "homepage-preview-feature-1"],
+            ["homepage_feature_2_title", "homepage-preview-feature-2"],
+            ["homepage_feature_3_title", "homepage-preview-feature-3"],
+            ["homepage_feature_1_text", "homepage-preview-feature-text-1"],
+            ["homepage_feature_2_text", "homepage-preview-feature-text-2"],
+            ["homepage_feature_3_text", "homepage-preview-feature-text-3"]
+        ];
+        previewText.forEach(([fieldId, previewId]) => {
+            const field = document.getElementById(`id_${fieldId}`);
+            const target = document.getElementById(previewId);
+            if (field && target) target.textContent = field.value;
+        });
+        const heroEnabled = document.getElementById("id_homepage_hero_enabled");
+        const featuresEnabled = document.getElementById("id_homepage_features_enabled");
+        const heroPreview = homepagePreviewShell?.querySelector('[data-home-preview-section="hero"]');
+        const featurePreview = homepagePreviewShell?.querySelector('[data-home-preview-section="features"]');
+        if (heroPreview && heroEnabled) heroPreview.hidden = !heroEnabled.checked;
+        if (featurePreview && featuresEnabled) featurePreview.hidden = !featuresEnabled.checked;
+        updateLivePagePreview();
+    }
+
+    function formValue(name, fallback = "") {
+        return document.getElementById(`id_${name}`)?.value || fallback;
+    }
+
+    function applyLivePageTheme() {
+        if (!liveFrameReady || !liveFrame?.contentDocument) return;
+        const doc = liveFrame.contentDocument;
+        const root = doc.documentElement;
+        const body = doc.body;
+        if (!root || !body) return;
+
+        const width = livePreviewMode === "mobile"
+            ? 390
+            : Math.max(992, Number(formValue("desktop_content_width", "1280")));
+        const scale = Math.min(1, liveFrameWrap.clientWidth / width);
+        liveFrame.style.width = `${width}px`;
+        liveFrame.style.height = "1400px";
+        liveFrame.style.transform = `scale(${scale})`;
+        liveFrameWrap.style.height = `${Math.min(820, 1400 * scale)}px`;
+
+        const values = {
+            "--site-primary": formValue("primary_color", "#2563eb"),
+            "--site-accent": formValue("accent_color", "#16a34a"),
+            "--site-page-background": formValue("page_background", "#f5f7fb"),
+            "--site-surface": formValue("surface_color", "#ffffff"),
+            "--site-text": formValue("text_color", "#1f2937"),
+            "--site-component-radius": `${formValue("component_radius", "12")}px`
+        };
+        Object.entries(values).forEach(([property, value]) => root.style.setProperty(property, value));
+        body.style.background = values["--site-page-background"];
+        body.style.color = values["--site-text"];
+        body.style.fontFamily = formValue("font_family", "Inter, system-ui, sans-serif");
+
+        const main = doc.querySelector(".main-container");
+        if (main) {
+            main.style.maxWidth = `${formValue("desktop_content_width", "1280")}px`;
+            main.style.paddingTop = `${formValue("content_padding", "25")}px`;
+            main.style.paddingBottom = `${formValue("content_padding", "25")}px`;
+            main.style.paddingLeft = `${livePreviewMode === "mobile" ? formValue("mobile_page_padding", "12") : formValue("desktop_page_padding", "24")}px`;
+            main.style.paddingRight = main.style.paddingLeft;
+            main.style.marginBlock = `${formValue("content_margin", "0")}px`;
+        }
+        const navbar = doc.querySelector(".main-navbar");
+        if (navbar) {
+            navbar.style.background = values["--site-surface"];
+            navbar.style.paddingBlock = `${formValue("header_padding", "8")}px`;
+            navbar.style.marginBlock = `${formValue("header_margin", "0")}px`;
+            navbar.style.order = formValue(
+                livePreviewMode === "mobile" ? "mobile_layout_order" : "desktop_layout_order",
+                "header,content,footer"
+            ).split(",").indexOf("header") + 1;
+        }
+        if (main) {
+            main.style.order = formValue(
+                livePreviewMode === "mobile" ? "mobile_layout_order" : "desktop_layout_order",
+                "header,content,footer"
+            ).split(",").indexOf("content") + 1;
+        }
+        const footer = doc.querySelector(".site-footer");
+        if (footer) {
+            footer.style.background = values["--site-surface"];
+            footer.style.color = values["--site-text"];
+            footer.style.padding = `${formValue("footer_padding", "18")}px`;
+            footer.style.marginTop = `${formValue("footer_margin", "0")}px`;
+            footer.style.order = formValue(
+                livePreviewMode === "mobile" ? "mobile_layout_order" : "desktop_layout_order",
+                "header,content,footer"
+            ).split(",").indexOf("footer") + 1;
+        }
+        doc.querySelectorAll(".card, .form-control, .form-select, .btn, .dropdown-menu").forEach((element) => {
+            element.style.borderRadius = values["--site-component-radius"];
+        });
+        doc.querySelectorAll(".btn-primary, .navbar-brand").forEach((element) => {
+            element.style.setProperty("background-color", values["--site-primary"]);
+            element.style.setProperty("border-color", values["--site-primary"]);
+            if (element.matches(".navbar-brand")) element.style.color = values["--site-primary"];
+        });
+        doc.querySelectorAll(".btn-success").forEach((element) => {
+            element.style.backgroundColor = values["--site-accent"];
+            element.style.borderColor = values["--site-accent"];
+        });
+
+        if (livePreviewPage === "home") {
+            const homeText = {
+                homepage_hero_badge: ".homepage-welcome-hero .badge",
+                homepage_hero_title: ".homepage-welcome-hero h1",
+                homepage_hero_text: ".homepage-welcome-hero p",
+                homepage_primary_cta: ".homepage-welcome-hero .btn-light",
+                homepage_secondary_cta: ".homepage-welcome-hero .btn-outline-light"
+            };
+            Object.entries(homeText).forEach(([fieldName, selector]) => {
+                const element = doc.querySelector(selector);
+                if (element) element.textContent = formValue(fieldName, element.textContent);
+            });
+            ["1", "2", "3"].forEach((index) => {
+                const card = doc.querySelectorAll(".homepage-feature-cards .portal-card")[Number(index) - 1];
+                if (!card) return;
+                const title = card.querySelector("h2");
+                const text = card.querySelector("p");
+                if (title) title.textContent = formValue(`homepage_feature_${index}_title`, title.textContent);
+                if (text) text.textContent = formValue(`homepage_feature_${index}_text`, text.textContent);
+            });
+            const hero = doc.querySelector(".homepage-welcome-hero");
+            const features = doc.querySelector(".homepage-feature-cards");
+            if (hero) {
+                hero.style.background = `linear-gradient(125deg, ${formValue("primary_color", "#2563eb")}, ${formValue("accent_color", "#16a34a")})`;
+                hero.style.borderRadius = values["--site-component-radius"];
+            }
+            const heroEnabled = document.getElementById("id_homepage_hero_enabled");
+            const featuresEnabled = document.getElementById("id_homepage_features_enabled");
+            if (hero) hero.hidden = Boolean(heroEnabled && !heroEnabled.checked);
+            if (features) features.hidden = Boolean(featuresEnabled && !featuresEnabled.checked);
+            const order = formValue("homepage_section_order", "hero,features").split(",");
+            order.forEach((name, index) => {
+                const section = name.trim() === "hero" ? hero : name.trim() === "features" ? features : null;
+                if (section) section.style.order = String(index + 1);
+            });
+        } else {
+            const market = doc.querySelector(".marketplace-shell");
+            if (market) {
+                const marketValues = {
+                    "--market-primary": formValue("marketplace_primary_color", "#146c5b"),
+                    "--market-accent": formValue("marketplace_accent_color", "#16835f"),
+                    "--market-header-start": formValue("marketplace_header_start_color", "#123b65"),
+                    "--market-header-end": formValue("marketplace_header_end_color", "#208b72"),
+                    "--market-card-radius": `${formValue("marketplace_card_radius", "18")}px`,
+                    "--market-section-gap": `${formValue("marketplace_section_gap", "22")}px`,
+                    "--market-product-gap": `${formValue("marketplace_product_gap", "14")}px`,
+                    "--market-content-width": `${formValue("marketplace_content_width", "2400")}px`,
+                    "--market-product-width": `${formValue("marketplace_product_width", "190")}px`,
+                    "--market-desktop-padding": `${formValue("marketplace_desktop_padding", "16")}px`,
+                    "--market-mobile-padding": `${formValue("marketplace_mobile_padding", "2")}px`
+                };
+                Object.entries(marketValues).forEach(([property, value]) => market.style.setProperty(property, value));
+                const sections = {
+                    hero: ["marketplace_hero_enabled", ".market-header"],
+                    nearby: ["marketplace_nearby_shops_enabled", '[data-marketplace-section="nearby"]'],
+                    category_nav: ["marketplace_category_nav_enabled", '[data-marketplace-section="category_nav"]'],
+                    products: ["marketplace_products_enabled", '[data-marketplace-section="products"]']
+                };
+                Object.entries(sections).forEach(([name, [fieldName, selector]]) => {
+                    const section = doc.querySelector(selector);
+                    const field = document.getElementById(`id_${fieldName}`);
+                    if (section && field) section.hidden = !field.checked;
+                });
+                const heroTitle = doc.querySelector(".market-header h2");
+                const heroText = doc.querySelector(".market-header p");
+                if (heroTitle) heroTitle.textContent = formValue("marketplace_hero_title", heroTitle.textContent);
+                if (heroText) heroText.textContent = formValue("marketplace_hero_text", heroText.textContent);
+                formValue("marketplace_section_order", "").split(",").forEach((name, index) => {
+                    const section = market.querySelector(`[data-marketplace-section="${name.trim()}"]`);
+                    if (section) section.style.order = String(index + 1);
+                });
+            }
+        }
+        liveFrame.contentWindow.applySiteComponentLayouts?.(
+            readComponentLayoutValues(),
+        );
+        fillCurrentComponentValues();
+        liveFrame.contentWindow.setMobileNavigationScrollHideEnabled?.(
+            Boolean(document.getElementById("id_mobile_topbar_scroll_hide_enabled")?.checked),
+            Boolean(document.getElementById("id_mobile_bottombar_scroll_hide_enabled")?.checked),
+        );
+        if (liveFrameStatus) liveFrameStatus.textContent = "Live preview · changes are not saved yet.";
+    }
+
+    function updateLivePagePreview() {
+        if (!liveFrame || !liveFrameReady) return;
+        try {
+            applyLivePageTheme();
+        } catch (error) {
+            console.error("Could not apply unsaved theme values to the live preview.", error);
+            if (liveFrameStatus) liveFrameStatus.textContent = "Live preview could not be updated. Reload the preview to try again.";
+        }
+    }
+
+    form?.querySelectorAll("input, select, textarea").forEach((control) => {
+        control.addEventListener("input", updatePreview);
+        control.addEventListener("change", updatePreview);
+    });
+    liveFrame?.addEventListener("load", () => {
+        liveFrameReady = true;
+        const framePath = liveFrame.contentWindow.location.pathname;
+        if (livePreviewPage === "marketplace" && !framePath.includes("/shop/")) {
+            liveFrameStatus.textContent = "Marketplace preview needs a customer account with marketplace access.";
+            return;
+        }
+        if (liveFrameStatus) liveFrameStatus.textContent = "";
+        updateLivePagePreview();
+        if (pendingComponentFocus) {
+            const component = pendingComponentFocus;
+            pendingComponentFocus = null;
+            highlightLiveComponent(component);
+        }
+    });
+    document.querySelectorAll("[data-preview-page]").forEach((button) => {
+        button.addEventListener("click", () => {
+            pendingComponentFocus = null;
+            livePreviewPage = button.dataset.previewPage;
+            document.querySelectorAll("[data-preview-page]").forEach((pageButton) => {
+                pageButton.classList.toggle("active", pageButton === button);
+            });
+            liveFrameReady = false;
+            liveFrame.src = livePreviewPage === "marketplace"
+                ? "{% url 'marketplace' %}?theme_preview=1"
+                : "{% url 'home' %}?theme_preview=1";
+            if (liveFrameStatus) liveFrameStatus.textContent = "Loading live preview…";
+        });
+    });
+    document.querySelectorAll("[data-preview-mode]").forEach((button) => {
+        button.addEventListener("click", () => {
+            const mobile = button.dataset.previewMode === "mobile";
+            livePreviewMode = mobile ? "mobile" : "desktop";
+            preview.classList.toggle("mobile-preview", mobile);
+            preview.classList.toggle("desktop-preview", !mobile);
+            homepagePreview?.classList.toggle("mobile-preview", mobile);
+            homepagePreview?.classList.toggle("desktop-preview", !mobile);
+            document.querySelectorAll("[data-preview-mode]").forEach((modeButton) => {
+                modeButton.classList.toggle("active", modeButton === button);
+            });
+            updatePreview();
+            updateLivePagePreview();
+        });
+    });
+    if (liveFrameWrap && "ResizeObserver" in window) {
+        new ResizeObserver(updateLivePagePreview).observe(liveFrameWrap);
+    }
+    updatePreview();
+})();
+</script>
+{% endblock %}

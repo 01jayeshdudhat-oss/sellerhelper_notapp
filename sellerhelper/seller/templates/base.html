@@ -1,7 +1,7 @@
 {% load static %}
 
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-sellerhelper-customer-no-zoom="{% if mobile_app_customer_no_zoom %}true{% else %}false{% endif %}" data-sellerhelper-app-content-zoom-enabled="{% if mobile_app_content_zoom_enabled %}true{% else %}false{% endif %}" data-sellerhelper-portal-content-zoom-enabled="{% if mobile_app_portal_content_zoom_enabled %}true{% else %}false{% endif %}" data-sellerhelper-mobile-app-desktop-view="{% if mobile_app_desktop_view_enabled %}true{% else %}false{% endif %}" data-sellerhelper-active-portal="{{ active_portal|default:'CUSTOMER' }}" data-sellerhelper-marketplace-page="{% if request.resolver_match.url_name == 'marketplace' %}true{% else %}false{% endif %}">
 
 <head>
 
@@ -45,7 +45,6 @@
 
 
     <style>
-
         body {
             background: #f5f7fb;
             color: #1f2937;
@@ -57,6 +56,15 @@
                 BlinkMacSystemFont,
                 "Segoe UI",
                 sans-serif;
+        }
+
+        html[data-sellerhelper-native-app="true"] :is(
+            input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="color"]),
+            select,
+            textarea,
+            [contenteditable="true"]
+        ) {
+            font-size: max(16px, 1em) !important;
         }
 
 
@@ -74,11 +82,123 @@
         }
 
         .navbar-market-search { position: relative; width: min(330px, 28vw); }
+        @media (max-width: 991.98px) {
+            html[data-sellerhelper-native-app="true"] .main-navbar {
+                --bs-navbar-padding-y: .15rem;
+            }
+            html[data-sellerhelper-native-app="true"] .main-navbar .navbar-brand {
+                padding-block: .15rem;
+                font-size: .9rem;
+                flex: 0 1 auto;
+                max-width: 45vw;
+                margin-right: .35rem;
+                white-space: nowrap;
+            }
+            html[data-sellerhelper-native-app="true"] .main-navbar .navbar-brand img {
+                max-height: 30px !important;
+                max-width: 150px !important;
+            }
+            html[data-sellerhelper-native-app="true"] .main-navbar .navbar-toggler {
+                min-width: 36px;
+                min-height: 28px;
+                padding: 1px 6px;
+            }
+            html[data-sellerhelper-native-app="true"] .main-navbar .navbar-toggler-icon {
+                width: 1.15em;
+                height: 1.15em;
+                background-size: 1.15em;
+            }
+            html[data-sellerhelper-native-app="true"] .mobile-market-search {
+                order: 1;
+                flex: 1 1 0;
+                width: auto;
+                min-width: 0;
+                padding: 0;
+                margin-right: .35rem;
+            }
+            html[data-sellerhelper-native-app="true"] .mobile-market-search .form-control {
+                min-width: 0;
+                min-height: 34px;
+                padding: .25rem .4rem;
+                font-size: .8rem;
+            }
+            html[data-sellerhelper-native-app="true"] .mobile-market-search .btn {
+                min-height: 34px;
+                padding: .25rem .45rem;
+            }
+            html[data-sellerhelper-native-app="true"] .mobile-market-search [data-voice-search] {
+                display: inline-flex;
+                flex: 0 0 36px;
+                width: 36px;
+                align-items: center;
+                justify-content: center;
+                border: 1px solid #ced4da !important;
+                background-color: #fff !important;
+                box-shadow: none !important;
+                color: #495057 !important;
+                opacity: 1 !important;
+            }
+            html[data-sellerhelper-native-app="true"] .mobile-market-search [data-voice-search] i {
+                display: inline-block;
+                font-size: 1rem;
+            }
+            html[data-sellerhelper-native-app="true"] .mobile-market-search button[type="submit"] {
+                margin-left: .2rem;
+                border-radius: .5rem !important;
+            }
+            html[data-sellerhelper-native-app="true"] .main-navbar .navbar-toggler {
+                order: 2;
+                margin-left: 0;
+            }
+            html[data-sellerhelper-native-app="true"] .owner-all-shops {
+                display: none !important;
+            }
+            html[data-sellerhelper-native-app="true"] .owner-add-shop {
+                display: none !important;
+            }
+        }
         .navbar-market-search .form-control { min-width: 0; border-radius: 12px 0 0 12px; }
         .navbar-market-search .btn { border-radius: 0 12px 12px 0; }
         .navbar-market-search [data-voice-search],
         .mobile-market-search [data-voice-search] { border-radius: 0; }
-        .mobile-market-search { position: relative; }
+        .mobile-market-search,
+        .navbar-market-search {
+            position: relative;
+            overflow: visible;
+        }
+        .mobile-market-search [data-voice-search],
+        .navbar-market-search [data-voice-search] {
+            position: relative;
+            flex: 0 0 38px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 38px;
+            min-height: 34px;
+            padding: 0;
+            margin: 0;
+            border: 1px solid #ced4da !important;
+            border-radius: 0 !important;
+            background-color: #fff !important;
+            color: #495057;
+            box-shadow: none;
+            opacity: 1;
+        }
+        .mobile-market-search [data-voice-search] i,
+        .navbar-market-search [data-voice-search] i {
+            display: inline-block;
+            color: inherit;
+            font-size: 1rem;
+            line-height: 1;
+        }
+        .mobile-market-search [data-voice-search]:hover,
+        .navbar-market-search [data-voice-search]:hover,
+        .mobile-market-search [data-voice-search]:focus-visible,
+        .navbar-market-search [data-voice-search]:focus-visible {
+            background-color: #f1f6ff !important;
+            border-color: #86b7fe !important;
+            color: #0d6efd;
+        }
         .mobile-market-search [data-voice-search-status],
         .navbar-market-search [data-voice-search-status] {
             position: absolute;
@@ -116,6 +236,8 @@
                 border-radius: 10px 0 0 10px;
             }
             .mobile-market-search .btn { border-radius: 0 10px 10px 0; }
+            .mobile-market-search [data-voice-search] { border-radius: 0 !important; }
+            .mobile-market-search button[type="submit"] { border-radius: 0 10px 10px 0; }
             .main-navbar .navbar-collapse { order: 4; flex-basis: 100%; }
             .navbar-market-search-desktop { display: none !important; }
             .navbar-delivery-label { max-width: min(60vw, 220px); }
@@ -189,6 +311,30 @@
 
         .dropdown-divider {
             margin: 6px 0;
+        }
+
+        .app-content-zoom-controls { display: none; }
+        html[data-sellerhelper-native-app="true"] .app-content-zoom-controls {
+            display: flex;
+            align-items: center;
+        }
+        .app-content-zoom-panel {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            background: #f8fafc;
+        }
+        .app-content-zoom-panel .btn {
+            min-width: 38px;
+            min-height: 36px;
+        }
+        @media (max-width: 991.98px) {
+            .app-content-zoom-controls { width: 100%; }
+            .app-content-zoom-panel { width: 100%; justify-content: space-between; }
         }
 
 
@@ -322,6 +468,34 @@
             box-shadow: 0 -4px 15px rgba(0,0,0,.08);
         }
 
+        @media (max-width: 991.98px) {
+            .main-navbar[data-mobile-scroll-hide-enabled="true"],
+            .mobile-bottom-nav[data-mobile-scroll-hide-enabled="true"] {
+                transition: transform .24s ease;
+                will-change: transform;
+            }
+            .main-navbar[data-mobile-scroll-hide-enabled="true"].navigation-hidden {
+                transform: translateY(-110%);
+            }
+            .mobile-bottom-nav[data-mobile-scroll-hide-enabled="true"].navigation-hidden {
+                transform: translateY(calc(100% + env(safe-area-inset-bottom)));
+            }
+            body.sellerhelper-bars-hidden .main-navbar[data-mobile-scroll-hide-enabled="false"],
+            body.sellerhelper-bars-hidden .mobile-bottom-nav[data-mobile-scroll-hide-enabled="false"] {
+                transform: translateY(0) !important;
+            }
+        }
+        [data-theme-component][data-theme-hidden="true"] {
+            display: none !important;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .main-navbar[data-mobile-scroll-hide-enabled="true"],
+            .mobile-bottom-nav[data-mobile-scroll-hide-enabled="true"] {
+                transition: none;
+            }
+        }
+
 
         .mobile-bottom-nav a {
 
@@ -398,9 +572,49 @@
     <link rel="stylesheet" href="{% static 'seller/css/base.css' %}">
     <link
         rel="stylesheet"
-        href="{% static 'seller/css/mobile.css' %}?v=20261008-bottom-nav-height-v2"
+        href="{% static 'seller/css/mobile.css' %}?v=20261013-rider-tabs-actions-zindex-v9"
         media="(max-width: 991.98px)"
     >
+    {% if site_theme %}
+    <style>
+        :root {
+            --site-primary: {{ site_theme.primary_color }};
+            --site-accent: {{ site_theme.accent_color }};
+            --site-page-background: {{ site_theme.page_background }};
+            --site-surface: {{ site_theme.surface_color }};
+            --site-text: {{ site_theme.text_color }};
+            --site-font-family: {{ site_theme.font_family }};
+            --site-content-width: 100%;
+            --site-desktop-padding: {{ site_theme.desktop_page_padding }}px;
+            --site-mobile-padding: {{ site_theme.mobile_page_padding }}px;
+            --site-component-radius: {{ site_theme.component_radius }}px;
+            --site-header-padding: {{ site_theme.header_padding }}px;
+            --site-content-padding: {{ site_theme.content_padding }}px;
+            --site-footer-padding: {{ site_theme.footer_padding }}px;
+            --site-header-margin: {{ site_theme.header_margin }}px;
+            --site-content-margin: {{ site_theme.content_margin }}px;
+            --site-footer-margin: {{ site_theme.footer_margin }}px;
+        }
+        body { background: var(--site-page-background); color: var(--site-text); font-family: var(--site-font-family); }
+        .site-layout { display: flex; flex-direction: column; min-height: 100vh; }
+        .main-navbar { order: {{ site_theme_orders.desktop.header }}; background: var(--site-surface); padding-block: var(--site-header-padding); margin-block: var(--site-header-margin); }
+        .main-container { order: {{ site_theme_orders.desktop.content }}; width: 100%; max-width: var(--site-content-width); margin: var(--site-content-margin) auto; padding: var(--site-content-padding) var(--site-desktop-padding) 80px; }
+        .site-footer { order: {{ site_theme_orders.desktop.footer }}; margin: var(--site-footer-margin) 0 0; background: var(--site-surface); padding: var(--site-footer-padding); color: var(--site-text); border-color: color-mix(in srgb, var(--site-text) 14%, transparent); }
+        .navbar-brand { color: var(--site-primary) !important; }
+        .nav-link:hover { background: color-mix(in srgb, var(--site-primary) 9%, transparent); color: var(--site-primary) !important; }
+        .nav-link.active, .btn-primary { background-color: var(--site-primary); border-color: var(--site-primary); }
+        .btn-success { background-color: var(--site-accent); border-color: var(--site-accent); }
+        .text-success { color: var(--site-accent) !important; }
+        .mobile-bottom-nav { background: var(--site-surface); }
+        .mobile-bottom-nav a.active { color: var(--site-primary); }
+        .card, .form-control, .form-select, .btn, .dropdown-menu { border-radius: var(--site-component-radius); }
+        @media (max-width: 991.98px) {
+            .main-navbar { order: {{ site_theme_orders.mobile.header }}; }
+            .main-container { order: {{ site_theme_orders.mobile.content }}; padding-right: var(--site-mobile-padding); padding-left: var(--site-mobile-padding); }
+            .site-footer { order: {{ site_theme_orders.mobile.footer }}; }
+        }
+    </style>
+    {% endif %}
 
     {% block extra_css %}
     {% endblock %}
@@ -415,7 +629,11 @@
      NAVBAR
 ========================================================= -->
 
-<nav class="navbar navbar-expand-lg main-navbar">
+<div class="site-layout">
+
+<nav class="navbar navbar-expand-lg main-navbar"
+     data-theme-component="site_header"
+     data-mobile-scroll-hide-enabled="{% if site_theme.mobile_topbar_scroll_hide_enabled %}true{% else %}false{% endif %}">
 
     <div class="container-fluid px-3">
 
@@ -451,6 +669,10 @@
             <span class="navbar-toggler-icon"></span>
 
         </button>
+
+        {% if is_public_rider_portal %}
+            {% include "seller/_public_rider_availability.html" %}
+        {% endif %}
 
         {% if is_customer_portal %}
         <form method="get" action="{% url 'marketplace' %}" class="input-group input-group-sm mobile-market-search">
@@ -514,6 +736,52 @@
 
                 {% if user.is_authenticated %}
 
+                {% if show_app_zoom_controls %}
+                <li class="nav-item app-content-zoom-controls">
+                    <div class="app-content-zoom-panel" aria-label="App zoom lock controls">
+                        <span class="small fw-semibold">Touch zoom</span>
+                        <button type="button" class="btn btn-sm btn-outline-primary"
+                                data-app-zoom-lock aria-pressed="false">
+                            <i class="bi bi-unlock me-1" aria-hidden="true"></i>
+                            <span data-app-zoom-lock-label>Lock zoom</span>
+                        </button>
+                    </div>
+                </li>
+                <li class="nav-item dropdown">
+                    <a
+                        class="nav-link dropdown-toggle"
+                        href="#"
+                        role="button"
+                        data-bs-toggle="dropdown"
+                        aria-expanded="false"
+                    >
+                        <i class="bi bi-bicycle"></i>
+                        Rider Panel
+                    </a>
+                    <ul class="dropdown-menu">
+                        <li>
+                            <a class="dropdown-item" href="{% url 'rider_dashboard' %}">
+                                <i class="bi bi-bicycle me-2"></i>
+                                Deliveries
+                            </a>
+                        </li>
+                        <li>
+                            <a class="dropdown-item" href="{% url 'rider_dashboard' %}?view=available#publicRiderWorkArea">
+                                <i class="bi bi-geo-alt me-2"></i>
+                                Work area &amp; home settings
+                            </a>
+                        </li>
+                        {% if user.shop_staff_memberships.all %}
+                        <li>
+                            <a class="dropdown-item" href="{% url 'staff_payment_settings' %}">
+                                <i class="bi bi-qr-code me-2"></i>
+                                UPI payment settings
+                            </a>
+                        </li>
+                        {% endif %}
+                    </ul>
+                </li>
+                {% endif %}
 
                 <!-- =============================================
                      CLIENT MARKETPLACE
@@ -1032,7 +1300,7 @@
 
                 {% if is_shop_owner_portal %}
                 <li class="nav-item me-lg-2">
-                    <a class="nav-link btn btn-outline-primary px-3" href="{% url 'shop_list' %}">
+                    <a class="nav-link btn btn-outline-primary px-3 owner-all-shops" href="{% url 'shop_list' %}">
                         <i class="bi bi-shop me-1"></i>All shops
                     </a>
                 </li>
@@ -1183,7 +1451,7 @@
 
                         </li>
 
-                        {% if user.shop_staff %}
+                        {% if user.shop_staff_memberships.all %}
                             <li>
                                 <a class="dropdown-item" href="{% url 'staff_payment_settings' %}">
                                     <i class="bi bi-qr-code me-2"></i>My UPI payment settings
@@ -1192,6 +1460,11 @@
                         {% endif %}
 
                         {% if is_customer_portal %}
+                        <li>
+                            <a class="dropdown-item" href="{% url 'public_rider_apply' %}">
+                                <i class="bi bi-bicycle me-2"></i>Become a public rider
+                            </a>
+                        </li>
                         <li>
                             <div class="dropdown-item-text d-flex align-items-center justify-content-between gap-3 px-3 py-2">
                                 <span class="text-muted">
@@ -1413,7 +1686,7 @@
      MAIN CONTENT
 ========================================================= -->
 
-<main class="main-container">
+<main class="main-container{% if request.resolver_match.url_name == 'marketplace' %} marketplace-main-container{% endif %}" data-theme-component="site_content">
 
     <div class="container-fluid px-3 px-lg-4">
 
@@ -1424,13 +1697,70 @@
 
 </main>
 
-
+{% if user.is_authenticated %}
+<style>
+    .sellerhelper-notification-stack {
+        position: fixed;
+        top: max(12px, env(safe-area-inset-top));
+        right: max(12px, env(safe-area-inset-right));
+        z-index: 1100;
+        display: grid;
+        gap: 8px;
+        width: min(380px, calc(100vw - 24px));
+        pointer-events: none;
+    }
+    .sellerhelper-notification-toast {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 4px 12px;
+        padding: 12px 14px;
+        border: 1px solid #bfdbfe;
+        border-left: 4px solid #2563eb;
+        border-radius: 12px;
+        background: #fff;
+        color: #1f2937;
+        box-shadow: 0 8px 26px rgba(15, 23, 42, .18);
+        pointer-events: auto;
+        animation: sellerhelper-notification-in .18s ease-out;
+    }
+    .sellerhelper-notification-toast a {
+        color: inherit;
+        text-decoration: none;
+    }
+    .sellerhelper-notification-toast a:hover { text-decoration: underline; }
+    .sellerhelper-notification-toast-title { font-weight: 700; }
+    .sellerhelper-notification-toast-message {
+        grid-column: 1 / -1;
+        color: #475569;
+        font-size: .9rem;
+        overflow-wrap: anywhere;
+    }
+    .sellerhelper-notification-toast-dismiss {
+        align-self: start;
+        border: 0;
+        background: transparent;
+        color: #64748b;
+        font-size: 1.2rem;
+        line-height: 1;
+    }
+    @keyframes sellerhelper-notification-in {
+        from { opacity: 0; transform: translateY(-6px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+</style>
+<div class="sellerhelper-notification-stack"
+     data-notification-toast-stack
+     role="region"
+     aria-label="New notifications"
+     aria-live="polite"
+     aria-atomic="false"></div>
+{% endif %}
 
 <!-- =========================================================
      FOOTER
 ========================================================= -->
 
-<footer class="site-footer">
+<footer class="site-footer" data-theme-component="site_footer">
 
     <div class="container">
         <small class="d-block mb-2">
@@ -1455,6 +1785,7 @@
 
 </footer>
 
+</div>
 
 
 <!-- =========================================================
@@ -1463,12 +1794,13 @@
 
 {% if user.is_authenticated %}
 
-<div class="mobile-bottom-nav mobile-only">
+<div class="mobile-bottom-nav mobile-only"
+     data-mobile-scroll-hide-enabled="{% if site_theme.mobile_bottombar_scroll_hide_enabled %}true{% else %}false{% endif %}">
 
 
     <!-- HOME -->
 
-    <a href="{% url 'home' %}">
+    <a href="{% if is_public_rider_portal %}{% url 'rider_dashboard' %}{% else %}{% url 'home' %}{% endif %}">
 
         <i class="bi bi-house"></i>
 
@@ -1507,9 +1839,8 @@
     <a href="{% url 'notifications' %}" style="position:relative;" aria-label="Alerts" title="Alerts">
         <i class="bi bi-bell"></i>
         <span class="mobile-nav-label">Alerts</span>
-        {% if unread_notifications_count %}
-            <span class="cart-badge">{{ unread_notifications_count }}</span>
-        {% endif %}
+        <span class="cart-badge{% if not unread_notifications_count %} d-none{% endif %}"
+              data-unread-notifications-count>{{ unread_notifications_count|default:0 }}</span>
     </a>
 
 
@@ -1523,24 +1854,61 @@
 
     </a>
 
-    {% elif is_staff_portal %}
+    {% elif is_public_rider_portal %}
 
-        <button type="button" data-sellerhelper-scan-order aria-label="Scan order QR code">
+        <button type="button"
+                data-sellerhelper-scan-order="rider-pickup-order"
+                aria-label="Scan order QR to check whether it is in your active orders">
             <i class="bi bi-qr-code-scan"></i>
-            Scan
+            Check order
         </button>
 
-        {% if active_staff.role == "RIDER" %}
+        <a href="{% url 'rider_dashboard' %}">
+            <i class="bi bi-bicycle"></i>
+            Deliveries
+            {% with offer_count=available_order_count|default_if_none:public_rider_offer_count|default:0 active_count=active_order_count|default:0 %}
+                <span class="badge rounded-pill ms-1 text-bg-danger{% if not offer_count %} d-none{% endif %}"
+                      data-public-rider-offer-count
+                      data-rider-available-count
+                      title="New delivery offers"
+                      aria-label="{{ offer_count }} new delivery offer{{ offer_count|pluralize }}">{{ offer_count }}</span>
+                <span class="badge rounded-pill ms-1 text-bg-primary{% if not active_count %} d-none{% endif %}"
+                      data-rider-active-count
+                      title="Active deliveries"
+                      aria-label="{{ active_count }} active deliver{{ active_count|pluralize:'y,ies' }}">{{ active_count }}</span>
+            {% endwith %}
+        </a>
+
+    {% elif is_staff_portal %}
+
+        <button type="button"
+                data-sellerhelper-scan-order="{% if staff_permissions.role == 'RIDER' %}rider-pickup-order{% endif %}"
+                aria-label="{% if staff_permissions.role == 'RIDER' %}Scan order QR to check whether it is in your active orders{% else %}Scan order QR code{% endif %}">
+            <i class="bi bi-qr-code-scan"></i>
+            {% if staff_permissions.role == "RIDER" %}Check order{% else %}Scan{% endif %}
+        </button>
+
+        {% if staff_permissions.role == "RIDER" %}
             <a href="{% url 'rider_dashboard' %}">
                 <i class="bi bi-bicycle"></i>
                 Deliveries
+                {% with available_count=available_order_count|default:0 active_count=active_order_count|default:0 %}
+                    <span class="badge rounded-pill ms-1 text-bg-danger{% if not available_count %} d-none{% endif %}"
+                          data-rider-available-count
+                          title="New available deliveries"
+                          aria-label="{{ available_count }} new available deliver{{ available_count|pluralize:'y,ies' }}">{{ available_count }}</span>
+                    <span class="badge rounded-pill ms-1 text-bg-primary{% if not active_count %} d-none{% endif %}"
+                          data-rider-active-count
+                          title="Active deliveries"
+                          aria-label="{{ active_count }} active deliver{{ active_count|pluralize:'y,ies' }}">{{ active_count }}</span>
+                {% endwith %}
             </a>
-        {% elif active_staff.can_pack_orders %}
+        {% elif staff_permissions.can_pack_orders %}
             <a href="{% url 'packer_dashboard' %}">
                 <i class="bi bi-box-seam"></i>
                 Packing
             </a>
-        {% elif active_staff.can_view_orders %}
+        {% elif staff_permissions.can_view_orders %}
             <a href="{% url 'shop_order_list' %}">
                 <i class="bi bi-receipt"></i>
                 Orders
@@ -1567,6 +1935,17 @@
 
     <!-- PROFILE -->
 
+    {% if not is_customer_portal %}
+        <button type="button"
+                data-sellerhelper-app-refresh
+                aria-label="Refresh page"
+                title="Refresh page"
+                hidden>
+            <i class="bi bi-arrow-clockwise"></i>
+            Refresh
+        </button>
+    {% endif %}
+
     <a href="{% url 'my_profile' %}">
 
         <i class="bi bi-person"></i>
@@ -1578,6 +1957,66 @@
 </div>
 
 {% endif %}
+
+<script>
+    (function () {
+        const topBar = document.querySelector(".main-navbar");
+        const bottomBar = document.querySelector(".mobile-bottom-nav");
+        const navigationBars = [topBar, bottomBar].filter(Boolean);
+        const mobileViewport = window.matchMedia("(max-width: 991.98px)");
+        let topBarEnabled = topBar?.dataset.mobileScrollHideEnabled === "true";
+        let bottomBarEnabled = bottomBar?.dataset.mobileScrollHideEnabled === "true";
+        let lastScrollY = Math.max(0, window.scrollY);
+
+        function setHidden(hidden) {
+            topBar?.classList.toggle("navigation-hidden", hidden && topBarEnabled);
+            bottomBar?.classList.toggle("navigation-hidden", hidden && bottomBarEnabled);
+        }
+
+        function handleScroll() {
+            const currentScrollY = Math.max(0, window.scrollY);
+            const delta = currentScrollY - lastScrollY;
+            lastScrollY = currentScrollY;
+            if (
+                (!topBarEnabled && !bottomBarEnabled) ||
+                !mobileViewport.matches ||
+                currentScrollY < 48
+            ) {
+                setHidden(false);
+                return;
+            }
+            if (delta > 4) setHidden(true);
+            else if (delta < -4) setHidden(false);
+        }
+
+        function setEnabled(hideTopBar, hideBottomBar) {
+            topBarEnabled = Boolean(hideTopBar);
+            bottomBarEnabled = Boolean(hideBottomBar);
+            if (topBar) {
+                topBar.dataset.mobileScrollHideEnabled = String(topBarEnabled);
+            }
+            if (bottomBar) {
+                bottomBar.dataset.mobileScrollHideEnabled = String(bottomBarEnabled);
+            }
+            setHidden(false);
+            if (topBarEnabled || bottomBarEnabled) {
+                window.addEventListener("scroll", handleScroll, { passive: true });
+            } else {
+                window.removeEventListener("scroll", handleScroll);
+            }
+        }
+
+        navigationBars.forEach((bar) => {
+            bar.addEventListener("focusin", () => setHidden(false));
+        });
+        mobileViewport.addEventListener("change", () => {
+            lastScrollY = Math.max(0, window.scrollY);
+            setHidden(false);
+        });
+        window.setMobileNavigationScrollHideEnabled = setEnabled;
+        setEnabled(topBarEnabled, bottomBarEnabled);
+    })();
+</script>
 
 <aside
     id="pwa-install-prompt"
@@ -1617,18 +2056,202 @@
     src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
 ></script>
 
+{% if is_public_rider_portal or is_staff_portal and staff_permissions.role == "RIDER" %}
+<form id="riderOrderQrScanForm" method="post" action="{% url 'rider_scan_pickup_qr' %}" hidden>
+    {% csrf_token %}
+    <input type="hidden" name="order_qr" value="">
+</form>
+{% endif %}
+
+{% if user.is_authenticated %}
+<form id="riderPickupTaskQrForm" method="post" action="{% url 'verify_rider_pickup_otp' %}" hidden>
+    {% csrf_token %}
+    <input type="hidden" name="pickup_otp" value="">
+</form>
+{% endif %}
+
 <script>
+    function showRiderQrScanError(message) {
+        let alertBox = document.getElementById("riderQrScanError");
+        if (!alertBox) {
+            alertBox = document.createElement("div");
+            alertBox.id = "riderQrScanError";
+            alertBox.className = "alert alert-danger position-fixed top-0 start-50 translate-middle-x mt-3 shadow";
+            alertBox.setAttribute("role", "alert");
+            alertBox.style.zIndex = "20000";
+            document.body.appendChild(alertBox);
+        }
+        alertBox.textContent = message;
+        document.dispatchEvent(new CustomEvent("sellerhelper:qr-scan-error", {
+            detail: { message: message }
+        }));
+        window.clearTimeout(alertBox.dismissTimeout);
+        alertBox.dismissTimeout = window.setTimeout(function () {
+            alertBox.remove();
+        }, 5000);
+    }
+
     document.querySelectorAll("[data-sellerhelper-scan-order]").forEach(function (button) {
         button.addEventListener("click", function () {
+            const purpose = button.dataset.sellerhelperScanOrder === "pickup-otp"
+                ? "pickup-otp"
+                : button.dataset.sellerhelperScanOrder === "rider-pickup-order"
+                    ? "rider-pickup-order"
+                    : "general";
+            window.__sellerHelperQrScanPurpose = purpose;
             document.dispatchEvent(new CustomEvent("sellerhelper:open-qr-scanner", {
-                detail: {
-                    purpose: button.dataset.sellerhelperScanOrder === "pickup-otp"
-                        ? "pickup-otp"
-                        : "general"
-                }
+                detail: { purpose: purpose }
             }));
         });
     });
+
+    let desktopQrScanner = null;
+
+    function closeDesktopQrScanner() {
+        if (!desktopQrScanner) return;
+        desktopQrScanner.active = false;
+        if (desktopQrScanner.stream) {
+            desktopQrScanner.stream.getTracks().forEach(function (track) {
+                track.stop();
+            });
+        }
+        desktopQrScanner.element.remove();
+        desktopQrScanner = null;
+    }
+
+    function resumeDesktopQrScanning() {
+        if (!desktopQrScanner || !desktopQrScanner.active || desktopQrScanner.scanning) return;
+        desktopQrScanner.scanning = true;
+        window.requestAnimationFrame(scanDesktopQrFrame);
+    }
+
+    async function scanDesktopQrFrame() {
+        const scanner = desktopQrScanner;
+        if (!scanner || !scanner.active || !scanner.scanning) return;
+        if (scanner.video.readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA) {
+            try {
+                const detections = await scanner.detector.detect(scanner.video);
+                if (detections.length && detections[0].rawValue) {
+                    scanner.scanning = false;
+                    document.dispatchEvent(new CustomEvent("sellerhelper:qr-scanned", {
+                        detail: {
+                            value: detections[0].rawValue,
+                            purpose: scanner.purpose
+                        }
+                    }));
+                    return;
+                }
+            } catch (error) {
+                console.error("SellerHelper could not read a QR code from the camera.", error);
+                scanner.status.textContent = "Could not read that QR. Keep the code in view and try again.";
+                scanner.status.hidden = false;
+            }
+        }
+        window.requestAnimationFrame(scanDesktopQrFrame);
+    }
+
+    document.addEventListener("sellerhelper:open-qr-scanner", async function (event) {
+        if (window.ReactNativeWebView) return;
+        closeDesktopQrScanner();
+
+        const purpose = event.detail && typeof event.detail.purpose === "string"
+            ? event.detail.purpose
+            : "general";
+        const overlay = document.createElement("div");
+        overlay.className = "position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center p-3";
+        overlay.style.cssText = "z-index:20000;background:rgba(0,0,0,.82)";
+        const panel = document.createElement("div");
+        panel.className = "bg-white rounded-3 p-3 shadow";
+        panel.style.cssText = "width:min(720px,100%);max-height:95vh;overflow:auto";
+        const header = document.createElement("div");
+        header.className = "d-flex align-items-center justify-content-between mb-2";
+        const title = document.createElement("h2");
+        title.className = "h5 mb-0";
+        title.textContent = "Scan QR code";
+        const closeButton = document.createElement("button");
+        closeButton.type = "button";
+        closeButton.className = "btn btn-outline-secondary";
+        closeButton.textContent = "Close";
+        closeButton.addEventListener("click", closeDesktopQrScanner);
+        header.append(title, closeButton);
+        const status = document.createElement("div");
+        status.className = "alert alert-danger mb-2";
+        status.setAttribute("role", "alert");
+        status.hidden = true;
+        const video = document.createElement("video");
+        video.autoplay = true;
+        video.playsInline = true;
+        video.muted = true;
+        video.className = "w-100 rounded bg-dark";
+        video.style.cssText = "max-height:72vh;object-fit:contain";
+        const hint = document.createElement("p");
+        hint.className = "small text-muted mt-2 mb-0";
+        hint.textContent = "Allow camera access and hold the QR code steady in front of the camera.";
+        panel.append(header, status, video, hint);
+        overlay.appendChild(panel);
+        document.body.appendChild(overlay);
+
+        const scanner = {
+            active: true,
+            scanning: true,
+            purpose: purpose,
+            detector: null,
+            stream: null,
+            element: overlay,
+            video: video,
+            status: status
+        };
+        desktopQrScanner = scanner;
+        if (
+            !navigator.mediaDevices
+            || typeof navigator.mediaDevices.getUserMedia !== "function"
+            || typeof window.BarcodeDetector !== "function"
+        ) {
+            status.textContent = window.isSecureContext
+                ? "Camera QR scanning is not supported by this browser. Try the SellerHelper mobile app or use the OTP field."
+                : "Camera access requires a secure HTTPS connection or localhost. Use the OTP field or open the secure site.";
+            status.hidden = false;
+            scanner.scanning = false;
+            return;
+        }
+
+        try {
+            scanner.detector = new window.BarcodeDetector({ formats: ["qr_code"] });
+            scanner.stream = await navigator.mediaDevices.getUserMedia({
+                audio: false,
+                video: { facingMode: { ideal: "environment" } }
+            });
+            if (!scanner.active) {
+                scanner.stream.getTracks().forEach(function (track) {
+                    track.stop();
+                });
+                return;
+            }
+            video.srcObject = scanner.stream;
+            await video.play();
+            status.hidden = true;
+            resumeDesktopQrScanning();
+        } catch (error) {
+            console.error("SellerHelper could not start the QR camera.", error);
+            status.textContent = error && error.name === "NotAllowedError"
+                ? "Camera permission was denied. Allow camera access in your browser, then scan again."
+                : "Could not open the camera. Check that a camera is connected and not being used by another app.";
+            status.hidden = false;
+            scanner.scanning = false;
+        }
+    });
+
+    document.addEventListener("sellerhelper:qr-scan-error", function (event) {
+        if (!desktopQrScanner) return;
+        desktopQrScanner.status.textContent = event.detail && event.detail.message
+            ? event.detail.message
+            : "QR verification failed. Scan again.";
+        desktopQrScanner.status.hidden = false;
+        resumeDesktopQrScanning();
+    });
+
+    document.addEventListener("sellerhelper:qr-scan-retry", resumeDesktopQrScanning);
+    document.addEventListener("sellerhelper:qr-scan-close", closeDesktopQrScanner);
 
     {% if user.is_authenticated %}
     document.addEventListener("sellerhelper:native-push-token", function (event) {
@@ -1705,21 +2328,84 @@
         const value = event.detail && typeof event.detail.value === "string"
             ? event.detail.value.trim()
             : "";
-        const match = /^SH-PICKUP:([0-9]{6})$/.exec(value);
-        if (!match) {
-            alert("This QR code is not a valid rider pickup OTP.");
-            document.dispatchEvent(new Event("sellerhelper:qr-scan-retry"));
+        const scanPurpose = event.detail && typeof event.detail.purpose === "string"
+            ? event.detail.purpose
+            : window.__sellerHelperQrScanPurpose || "";
+        window.__sellerHelperQrScanPurpose = "";
+        let shopOrderPath = "";
+        try {
+            const scannedUrl = new URL(value, window.location.origin);
+            if (/^\/shop\/orders\/[0-9]+\/?$/.test(scannedUrl.pathname)) {
+                shopOrderPath = scannedUrl.pathname;
+            }
+        } catch (error) {
+            shopOrderPath = "";
+        }
+        if (shopOrderPath && scanPurpose !== "pickup-otp") {
+            const form = document.getElementById("riderOrderQrScanForm");
+            if (!form) {
+                window.location.assign(new URL(shopOrderPath, window.location.origin).toString());
+                return;
+            }
+            const input = form.querySelector('[name="order_qr"]');
+            if (!input) {
+                showRiderQrScanError("The order scanner is unavailable. Reload and try again.");
+                return;
+            }
+            input.value = new URL(shopOrderPath, window.location.origin).toString();
+            fetch(form.action, {
+                method: "POST",
+                body: new FormData(form),
+                credentials: "same-origin",
+                headers: { "X-Requested-With": "XMLHttpRequest" }
+            })
+                .then(function (response) {
+                    return response.json().then(function (result) {
+                        if (!response.ok || !result.success) {
+                            throw new Error(result.message || "Could not verify this order in your active list.");
+                        }
+                        if (
+                            typeof result.order_url !== "string"
+                            || !result.order_url.startsWith("/")
+                            || result.order_url.startsWith("//")
+                        ) {
+                            throw new Error("The order was verified, but its page link is unavailable.");
+                        }
+                        document.dispatchEvent(new Event("sellerhelper:qr-scan-close"));
+                        window.location.assign(result.order_url);
+                    });
+                })
+                .catch(function (error) {
+                    showRiderQrScanError(error instanceof Error
+                        ? error.message
+                        : "Could not verify this order in your active list. The order was not changed.");
+                });
             return;
         }
 
-        const input = document.querySelector("[data-pickup-otp-input]");
-        if (!input || !input.form) {
-            alert("Open the rider pickup verification form before scanning this QR code.");
-            document.dispatchEvent(new Event("sellerhelper:qr-scan-retry"));
-            return;
+        if (scanPurpose === "rider-pickup-order") {
+                showRiderQrScanError(
+                    "This QR is not an order assigned to your rider account. Scan your order QR to continue."
+                );
+                return;
+        }
+
+        const match = /^(?:SH-TASK:VERIFY_RIDER_PICKUP:|SH-PICKUP:)([0-9]{6})$/.exec(value);
+        if (!match) {
+                showRiderQrScanError(scanPurpose === "pickup-otp"
+                    ? "This QR is not a valid rider pickup OTP. Scan the rider's pickup QR to continue."
+                    : "This QR is not a valid SellerHelper order or pickup QR. Scan the correct QR to continue."
+                );
+                return;
+        }
+
+        const form = document.getElementById("riderPickupTaskQrForm");
+        const input = form && form.querySelector('[name="pickup_otp"]');
+        if (!form || !input) {
+                showRiderQrScanError("Sign in with an authorized shop account to verify rider pickup.");
+                return;
         }
         input.value = match[1];
-        const form = input.form;
         fetch(form.action, {
             method: "POST",
             body: new FormData(form),
@@ -1736,10 +2422,9 @@
                 });
             })
             .catch(function (error) {
-                alert(error instanceof Error
+                showRiderQrScanError(error instanceof Error
                     ? error.message
                     : "Rider OTP verification failed. The order was not confirmed.");
-                document.dispatchEvent(new Event("sellerhelper:qr-scan-retry"));
             });
     });
 </script>
@@ -1793,8 +2478,12 @@
 
     (function () {
         const soundKey = "sellerhelper_notification_sound";
-        const latestKey = "sellerhelper_latest_notification_id";
+        const latestKey = "sellerhelper_latest_notification_id:{{ request.user.id|default:'anonymous' }}";
         const soundToggle = document.querySelector("[data-notification-sound-toggle]");
+        const toastStack = document.querySelector("[data-notification-toast-stack]");
+        const riderCountSelector =
+            "[data-public-rider-offer-count], [data-rider-available-count], [data-rider-active-count]";
+        const hasRiderCounters = Boolean(document.querySelector(riderCountSelector));
         let audioContext = null;
         let hasLoadedBaseline = false;
 
@@ -1824,6 +2513,41 @@
             oscillator.stop(audioContext.currentTime + 0.25);
         }
 
+        function showNotificationToast(notification) {
+            if (!toastStack) return;
+            const toast = document.createElement("div");
+            toast.className = "sellerhelper-notification-toast";
+
+            const title = document.createElement("div");
+            title.className = "sellerhelper-notification-toast-title";
+            const link = document.createElement("a");
+            link.textContent = notification.title || "New notification";
+            link.href = notification.read_url || "{% url 'notifications' %}";
+            title.appendChild(link);
+
+            const dismiss = document.createElement("button");
+            dismiss.type = "button";
+            dismiss.className = "sellerhelper-notification-toast-dismiss";
+            dismiss.setAttribute("aria-label", "Dismiss notification");
+            dismiss.textContent = "×";
+            dismiss.addEventListener("click", function () {
+                toast.remove();
+            });
+
+            const message = document.createElement("div");
+            message.className = "sellerhelper-notification-toast-message";
+            message.textContent = notification.message || "";
+
+            toast.append(title, dismiss, message);
+            toastStack.prepend(toast);
+            while (toastStack.children.length > 3) {
+                toastStack.lastElementChild.remove();
+            }
+            window.setTimeout(function () {
+                toast.remove();
+            }, 12000);
+        }
+
         if (soundToggle) {
             soundToggle.addEventListener("click", function () {
                 const enabled = localStorage.getItem(soundKey) === "enabled";
@@ -1835,14 +2559,59 @@
         }
 
         function checkForNotifications() {
-            fetch("{% url 'notifications_api' %}", {
+            const apiUrl = new URL("{% url 'notifications_api' %}", window.location.origin);
+            if (!hasRiderCounters) {
+                apiUrl.searchParams.set("notifications_only", "1");
+            }
+            fetch(apiUrl.toString(), {
                 headers: {"X-Requested-With": "XMLHttpRequest"}
             }).then(function (response) {
                 if (!response.ok) throw new Error("Notification check failed.");
                 return response.json();
             }).then(function (payload) {
-                const newestId = payload.items.length ? Number(payload.items[0].id) : 0;
+                const unreadCount = Math.max(0, Number(payload.unread_count) || 0);
+                document.querySelectorAll("[data-unread-notifications-count]").forEach(function (badge) {
+                    badge.textContent = String(unreadCount);
+                    badge.classList.toggle("d-none", unreadCount === 0);
+                });
+                const availableCount = Number.isFinite(
+                    Number(payload.available_delivery_count),
+                )
+                    ? Math.max(0, Number(payload.available_delivery_count))
+                    : Math.max(0, Number(payload.public_offer_count) || 0);
+                document.querySelectorAll(
+                    "[data-rider-available-count]",
+                ).forEach(function (badge) {
+                    badge.textContent = String(availableCount);
+                    badge.classList.toggle("d-none", availableCount === 0);
+                    badge.setAttribute(
+                        "aria-label",
+                        `${availableCount} new ${availableCount === 1 ? "delivery" : "deliveries"}`,
+                    );
+                });
+                const activeCount = Math.max(
+                    0,
+                    Number(payload.active_delivery_count) || 0,
+                );
+                document.querySelectorAll(
+                    "[data-rider-active-count]",
+                ).forEach(function (badge) {
+                    badge.textContent = String(activeCount);
+                    badge.classList.toggle("d-none", activeCount === 0);
+                    badge.setAttribute(
+                        "aria-label",
+                        `${activeCount} active deliver${activeCount === 1 ? "y" : "ies"}`,
+                    );
+                });
+                const items = Array.isArray(payload.items) ? payload.items : [];
+                const newestId = items.length ? Number(items[0].id) : 0;
                 const previousId = Number(localStorage.getItem(latestKey) || "0");
+                const newNotifications = hasLoadedBaseline
+                    ? items.filter(function (notification) {
+                        return Number(notification.id) > previousId;
+                    }).slice(0, 3)
+                    : [];
+                newNotifications.reverse().forEach(showNotificationToast);
                 if (
                     hasLoadedBaseline &&
                     newestId > previousId &&
@@ -1860,6 +2629,13 @@
         }
 
         checkForNotifications();
+        const notificationPollInterval = hasRiderCounters ? 10000 : 15000;
+        if (!window.__sellerHelperNotificationInterval) {
+            window.__sellerHelperNotificationInterval = window.setInterval(
+                checkForNotifications,
+                notificationPollInterval,
+            );
+        }
         document.addEventListener("sellerhelper:live-event", function (event) {
             if (event.detail?.type === "notifications.created") {
                 checkForNotifications();
@@ -1873,10 +2649,34 @@
 {% if user.is_authenticated %}
 <script>
     (function () {
+        const scrollPositionKey = `sellerhelper:reload-scroll:${window.location.pathname}${window.location.search}`;
+        const savedScrollPosition = sessionStorage.getItem(scrollPositionKey);
+        if (savedScrollPosition !== null) {
+            sessionStorage.removeItem(scrollPositionKey);
+            const scrollY = Number(savedScrollPosition);
+            if (Number.isFinite(scrollY) && scrollY >= 0) {
+                window.addEventListener("load", function () {
+                    window.requestAnimationFrame(function () {
+                        window.requestAnimationFrame(function () {
+                            window.scrollTo(0, scrollY);
+                        });
+                    });
+                }, { once: true });
+            }
+        }
+        window.sellerHelperReloadPreservingScroll = function () {
+            sessionStorage.setItem(scrollPositionKey, String(window.scrollY));
+            window.location.reload();
+        };
+    })();
+
+    (function () {
         let reconnectDelay = 1000;
         let hasConnected = false;
         let reloadTimer = null;
         let reloadNotice = null;
+        let refreshingPage = false;
+        let refreshPending = false;
         const liveStatus = document.getElementById("sellerhelper-live-status");
         window.sellerHelperLiveConnected = false;
         window.sellerHelperLiveSocket = null;
@@ -1901,14 +2701,118 @@
             button.className = "btn btn-sm btn-primary ms-2";
             button.textContent = "Refresh";
             button.addEventListener("click", function () {
-                window.location.reload();
+                window.sellerHelperReloadPreservingScroll();
             });
             reloadNotice.appendChild(button);
             document.body.appendChild(reloadNotice);
         }
 
+        function isPublicRiderWorkAreaBeingEdited() {
+            const details = document.querySelector(".public-rider-work-area");
+            const form = details?.querySelector("form");
+            return Boolean(
+                details
+                && (
+                    details.open
+                    || form?.dataset.liveDirty === "true"
+                )
+            );
+        }
+
+        async function executePageScripts(container) {
+            const scripts = Array.from(container.querySelectorAll("script"));
+            for (const oldScript of scripts) {
+                const scriptUrl = oldScript.src;
+                if (
+                    scriptUrl
+                    && Array.from(document.scripts).some((loaded) => loaded.src === scriptUrl)
+                ) {
+                    oldScript.remove();
+                    continue;
+                }
+                const newScript = document.createElement("script");
+                for (const attribute of oldScript.attributes) {
+                    newScript.setAttribute(attribute.name, attribute.value);
+                }
+                newScript.textContent = oldScript.textContent;
+                oldScript.replaceWith(newScript);
+                if (scriptUrl) {
+                    await new Promise((resolve, reject) => {
+                        newScript.addEventListener("load", resolve, { once: true });
+                        newScript.addEventListener("error", () => {
+                            reject(new Error(`Could not load page script: ${scriptUrl}`));
+                        }, { once: true });
+                    });
+                }
+            }
+        }
+
+        async function refreshPageContent() {
+            if (isPublicRiderWorkAreaBeingEdited()) return;
+            const response = await fetch(window.location.href, {
+                cache: "no-store",
+                credentials: "same-origin",
+                headers: { "X-Requested-With": "XMLHttpRequest" }
+            });
+            if (!response.ok) {
+                throw new Error(`Page update request failed (${response.status}).`);
+            }
+            if (
+                new URL(response.url).pathname !== window.location.pathname
+                || new URL(response.url).search !== window.location.search
+            ) {
+                throw new Error("The page update redirected to a different page.");
+            }
+            const refreshedDocument = new DOMParser().parseFromString(
+                await response.text(),
+                "text/html"
+            );
+            const currentMain = document.querySelector("main.main-container");
+            const refreshedMain = refreshedDocument.querySelector("main.main-container");
+            const currentPageScripts = document.getElementById("sellerhelper-page-extra-js");
+            const refreshedPageScripts = refreshedDocument.getElementById(
+                "sellerhelper-page-extra-js"
+            );
+            if (
+                !currentMain
+                || !refreshedMain
+                || !currentPageScripts
+                || !refreshedPageScripts
+            ) {
+                throw new Error("The refreshed page is missing an update container.");
+            }
+            if (isPublicRiderWorkAreaBeingEdited()) return;
+            currentMain.replaceChildren(...Array.from(refreshedMain.childNodes));
+            currentPageScripts.replaceChildren(
+                ...Array.from(refreshedPageScripts.childNodes)
+            );
+            document.title = refreshedDocument.title;
+            await executePageScripts(currentMain);
+            await executePageScripts(currentPageScripts);
+        }
+
+        window.sellerHelperRefreshPageContent = function () {
+            if (isPublicRiderWorkAreaBeingEdited()) return;
+            if (refreshingPage) {
+                refreshPending = true;
+                return;
+            }
+            refreshingPage = true;
+            refreshPageContent().catch(function (error) {
+                console.error("Could not update the page without reloading.", error);
+                showReloadNotice();
+            }).finally(function () {
+                refreshingPage = false;
+                if (refreshPending) {
+                    refreshPending = false;
+                    requestPageRefresh();
+                }
+            });
+        };
+
         function requestPageRefresh() {
             if (document.querySelector("#order-tracking-live")) return;
+            if (isPublicRiderWorkAreaBeingEdited()) return;
             if (document.visibilityState !== "visible") {
                 window.__sellerHelperRefreshWhenVisible = true;
                 return;
@@ -1922,8 +2826,9 @@
             }
             if (reloadTimer === null) {
                 reloadTimer = window.setTimeout(function () {
-                    window.location.reload();
-                }, 1200);
+                    reloadTimer = null;
+                    window.sellerHelperRefreshPageContent();
+                }, 250);
             }
         }
 
@@ -2039,6 +2944,14 @@
                 }
             }
 
+            function submitSearch() {
+                if (typeof form.requestSubmit === "function") {
+                    form.requestSubmit();
+                } else {
+                    form.submit();
+                }
+            }
+
             document.addEventListener("sellerhelper:native-voice-start", function () {
                 if (window.__sellerHelperVoiceSearchTarget !== button) return;
                 setListening(true);
@@ -2071,7 +2984,12 @@
             document.addEventListener("sellerhelper:native-voice-end", function () {
                 if (window.__sellerHelperVoiceSearchTarget !== button) return;
                 setListening(false);
-                if (!input.value.trim()) announce("No words were recognized. Tap the microphone and try again.");
+                if (input.value.trim()) {
+                    announce("Searching for: " + input.value.trim());
+                    submitSearch();
+                } else {
+                    announce("No words were recognized. Tap the microphone and try again.");
+                }
                 window.__sellerHelperVoiceSearchTarget = null;
             });
 
@@ -2107,9 +3025,13 @@
 
                 const recognition = new SpeechRecognition();
                 button._sellerHelperRecognition = recognition;
+                let recognizedTranscript = "";
+                let searchSubmitted = false;
                 recognition.lang = navigator.language || "en-IN";
                 recognition.interimResults = true;
                 recognition.maxAlternatives = 1;
+                input.value = "";
+                input.dispatchEvent(new Event("input", { bubbles: true }));
 
                 recognition.onstart = function () {
                     setListening(true);
@@ -2127,16 +3049,14 @@
                         announce("No words were recognized. Tap the microphone and try again.");
                         return;
                     }
+                    recognizedTranscript = transcript;
                     input.value = transcript;
                     input.dispatchEvent(new Event("input", { bubbles: true }));
                     announce(isFinal ? "Heard: " + transcript + ". Searching…" : "Listening: " + transcript);
                     if (!isFinal) return;
                     setListening(false);
-                    if (typeof form.requestSubmit === "function") {
-                        form.requestSubmit();
-                    } else {
-                        form.submit();
-                    }
+                    searchSubmitted = true;
+                    submitSearch();
                 };
                 recognition.onerror = function (event) {
                     const messages = {
@@ -2151,6 +3071,13 @@
                 recognition.onend = function () {
                     button._sellerHelperRecognition = null;
                     setListening(false);
+                    if (recognizedTranscript && !searchSubmitted) {
+                        announce("Searching for: " + recognizedTranscript);
+                        searchSubmitted = true;
+                        submitSearch();
+                    } else if (!recognizedTranscript) {
+                        announce("No words were recognized. Tap the microphone and try again.");
+                    }
                 };
 
                 try {
@@ -2164,8 +3091,131 @@
     })();
 </script>
 
-{% block extra_js %}
-{% endblock %}
+{% if site_theme %}
+    {{ site_theme.component_layouts|json_script:"site-component-layout-settings" }}
+    <script>
+    (() => {
+        const settingsElement = document.getElementById("site-component-layout-settings");
+        let layouts = {};
+        try {
+            layouts = JSON.parse(settingsElement?.textContent || "{}");
+        } catch (error) {
+            console.error("Could not load saved component layout settings.", error);
+        }
+
+        const applyLayouts = (nextLayouts = layouts) => {
+            layouts = nextLayouts && typeof nextLayouts === "object" ? nextLayouts : {};
+            const breakpoint = window.matchMedia("(max-width: 991.98px)").matches
+                ? "mobile"
+                : "desktop";
+            document.querySelectorAll("[data-theme-component]").forEach((element) => {
+                const componentLayouts = layouts[element.dataset.themeComponent] || {};
+                const desktop = componentLayouts.desktop || {};
+                const values = { ...desktop, ...(componentLayouts[breakpoint] || {}) };
+                const styles = [
+                    ["width", "width"],
+                    ["height", "height"],
+                    ["min_width", "minWidth"],
+                    ["max_width", "maxWidth"],
+                    ["min_height", "minHeight"],
+                    ["max_height", "maxHeight"],
+                    ["margin_x", "marginInline"],
+                    ["margin_y", "marginBlock"],
+                    ["margin_top", "marginTop"],
+                    ["margin_right", "marginRight"],
+                    ["margin_bottom", "marginBottom"],
+                    ["margin_left", "marginLeft"],
+                    ["padding_x", "paddingInline"],
+                    ["padding_y", "paddingBlock"],
+                    ["padding_top", "paddingTop"],
+                    ["padding_right", "paddingRight"],
+                    ["padding_bottom", "paddingBottom"],
+                    ["padding_left", "paddingLeft"],
+                    ["gap_x", "columnGap"],
+                    ["gap_y", "rowGap"],
+                    ["border_radius", "borderRadius"],
+                ];
+                styles.forEach(([setting, property]) => {
+                    if (!Object.prototype.hasOwnProperty.call(values, setting)) {
+                        element.style[property] = "";
+                        return;
+                    }
+                    const value = values[setting];
+                    if (setting === "width" || setting === "height") {
+                        element.style[property] = value === 0 ? "auto" : `${value}px`;
+                    } else if (
+                        ["min_width", "max_width", "min_height", "max_height"].includes(setting)
+                        && value === 0
+                    ) {
+                        element.style[property] = "";
+                    } else {
+                        element.style[property] = `${value}px`;
+                    }
+                });
+                if (element.dataset.themeComponent === "marketplace_product_image") {
+                    element.style.objectFit = values.object_fit || "";
+                }
+                element.dataset.themeHidden = values.visible === false ? "true" : "false";
+                if (element.dataset.themeComponent === "marketplace_product") {
+                    element.style.flexBasis = values.width > 0 ? `${values.width}px` : "";
+                }
+                if (!Object.prototype.hasOwnProperty.call(values, "max_width")) {
+                    element.style.maxWidth = values.width > 0 ? "100%" : "";
+                }
+                element.style.boxSizing = "border-box";
+            });
+        };
+
+        window.applySiteComponentLayouts = applyLayouts;
+        window.addEventListener("resize", () => applyLayouts(), { passive: true });
+        applyLayouts();
+    })();
+    </script>
+{% endif %}
+
+<script>
+    (() => {
+        const zoomPanel = document.querySelector(".app-content-zoom-panel");
+        if (!zoomPanel) return;
+        const lockButton = zoomPanel.querySelector("[data-app-zoom-lock]");
+        const lockLabel = zoomPanel.querySelector("[data-app-zoom-lock-label]");
+        const updateZoomControls = (event) => {
+            const state = event.detail || {};
+            if (lockButton) {
+                lockButton.disabled = state.enabled === false;
+                lockButton.setAttribute("aria-pressed", String(Boolean(state.locked)));
+                lockButton.classList.toggle("btn-primary", Boolean(state.locked));
+                lockButton.classList.toggle("btn-outline-primary", !state.locked);
+                const icon = lockButton.querySelector("i");
+                if (icon) {
+                    icon.classList.toggle("bi-lock-fill", Boolean(state.locked));
+                    icon.classList.toggle("bi-unlock", !state.locked);
+                }
+            }
+            if (lockLabel) {
+                lockLabel.textContent = state.locked ? "Unlock zoom" : "Lock zoom";
+            }
+        };
+        window.addEventListener("sellerhelper:content-zoom-state", updateZoomControls);
+        zoomPanel.addEventListener("click", (event) => {
+            const lockControl = event.target.closest("[data-app-zoom-lock]");
+            const zoom = window.sellerHelperContentZoom;
+            if (!zoom) return;
+            if (lockControl) {
+                zoom.toggleLock();
+            }
+        });
+        if (window.sellerHelperContentZoom) {
+            window.sellerHelperContentZoom.refresh();
+        }
+    })();
+</script>
+
+<div id="sellerhelper-page-extra-js">
+    {% block extra_js %}
+    {% endblock %}
+</div>
+
 
 </body>
 
