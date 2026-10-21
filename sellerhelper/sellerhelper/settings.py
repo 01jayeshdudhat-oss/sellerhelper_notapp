@@ -35,7 +35,7 @@ SHOP_STOREFRONT_BASE_DOMAIN = os.getenv(
 
 # ALLOWED_HOSTS = [
 #     host.strip()
-#     for host in os.getenv('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1,192.168.1.22,192.168.1.8,192.168.1.4,10.0.2.2').split(',')
+#     for host in os.getenv('DJANGO_ALLOWED_HOSTS', 'abcdef123456.pythonanywhere.com,localhost,127.0.0.1,192.168.1.22,192.168.1.8,192.168.1.4,10.0.2.2').split(',')
 #     if host.strip()
 # ]
 
