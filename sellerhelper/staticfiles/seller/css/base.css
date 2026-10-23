@@ -1,0 +1,221 @@
+/* base.css - common styles */
+
+
+/* =========================================================
+   TOP NAVBAR - FORCE HIGH CONTRAST TEXT
+   Put this at the VERY END of desktop.css
+========================================================= */
+
+.topbar .top-nav-link {
+    color: #ffffff !important;
+    /* background-color: transparent !important; */
+    background-color: black;
+
+    font-weight: 600 !important;
+    opacity: 1 !important;
+
+    text-decoration: none !important;
+}
+
+
+/* Hover */
+
+.topbar .top-nav-link:hover {
+    color: #ffffff !important;
+    background-color: #334155 !important;
+}
+
+
+/* Active page */
+
+.topbar .top-nav-link.active {
+    color: #ffffff !important;
+    background-color: #2563eb !important;
+}
+
+
+/* My Profile */
+
+.topbar .top-nav-link.profile-link {
+    color: #ffffff !important;
+    background-color: #0369a1 !important;
+}
+
+
+/* Logout */
+
+.topbar .top-nav-link.logout-link {
+    color: #ffffff !important;
+    background-color: #b91c1c !important;
+}
+
+
+/* Login */
+
+.topbar .top-nav-link.login-link {
+    color: #ffffff !important;
+    background-color: #475569 !important;
+}
+
+
+/* Sign Up */
+
+.topbar .top-nav-link.signup-link {
+    color: #ffffff !important;
+    background-color: #15803d !important;
+}
+
+
+/* Text inside links */
+
+.topbar .top-nav-link span {
+    color: #ffffff !important;
+}
+
+
+/* Emoji/icon */
+
+.topbar .top-nav-link {
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+
+/* Brand */
+
+.topbar .topbar-brand,
+.topbar .topbar-brand span {
+    color: #ffffff !important;
+    opacity: 1 !important;
+}
+
+
+/* Sidebar switch button */
+
+.topbar #navModeToggle {
+    color: #ffffff !important;
+
+    background-color: #334155 ;
+
+    border: 1px solid #cbd5e1 !important;
+
+    font-weight: 600 !important;
+}
+
+.topbar #navModeToggle:hover {
+    color: #0f172a !important;
+
+    background-color: #ffffff !important;
+}
+
+.pwa-install-prompt {
+    position: fixed;
+    z-index: 1080;
+    right: max(1rem, env(safe-area-inset-right));
+    bottom: max(1rem, env(safe-area-inset-bottom));
+    width: min(26rem, calc(100vw - 2rem));
+    padding: 1rem;
+    color: #1f2937;
+    background: #fff;
+    border: 1px solid #dbe3ef;
+    border-radius: 1rem;
+    box-shadow: 0 12px 36px rgba(15, 23, 42, .2);
+}
+
+.pwa-install-prompt[hidden] {
+    display: none;
+}
+
+.pwa-install-heading {
+    display: flex;
+    align-items: flex-start;
+    gap: .75rem;
+}
+
+.pwa-install-icon {
+    display: grid;
+    width: 2.75rem;
+    height: 2.75rem;
+    flex: 0 0 auto;
+    place-items: center;
+    color: #fff;
+    background: #0b5ed7;
+    border-radius: .75rem;
+    font-size: .9rem;
+    font-weight: 800;
+}
+
+.pwa-install-heading h2 {
+    margin: 0 0 .25rem;
+    font-size: 1rem;
+    font-weight: 700;
+}
+
+.pwa-install-heading p {
+    margin: 0;
+    color: #4b5563;
+    font-size: .9rem;
+}
+
+.pwa-install-close {
+    margin: -.4rem -.4rem 0 auto;
+    padding: .2rem .55rem;
+    color: #4b5563;
+    background: transparent;
+    border: 0;
+    font-size: 1.5rem;
+    line-height: 1;
+}
+
+.pwa-ios-steps {
+    margin: .75rem 0 0;
+    padding-left: 1.4rem;
+    font-size: .9rem;
+}
+
+.pwa-install-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: .5rem;
+    margin-top: .85rem;
+}
+
+.pwa-install-actions .btn {
+    min-height: 2.75rem;
+}
+
+/* =========================================================
+   SIDEBAR BUTTON
+========================================================= */
+
+#navModeToggle {
+    color: #ffffff;
+    background:#2563eb;
+    border-color: #94a3b8;
+
+    font-weight: 600;
+}
+
+#navModeToggle:hover {
+    color: #0f172a;
+
+    background: #ffffff;
+
+    border-color: #ffffff;
+}
+
+
+/* =========================================================
+   MOBILE
+========================================================= */
+
+@media (max-width: 991px) {
+
+    .top-navigation {
+        display: none;
+    }
+
+    #navModeToggle {
+        display: none;
+    }
+
+}

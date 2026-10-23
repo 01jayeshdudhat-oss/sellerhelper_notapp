@@ -1,0 +1,31 @@
+{
+  "id": "/",
+  "name": "Seller Helper",
+  "short_name": "Seller Helper",
+  "description": "Seller Helper tools for managing your shop.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f5f7fb",
+  "theme_color": "#0b5ed7",
+  "icons": [
+    {
+      "src": "/static/seller/img/app-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/seller/img/app-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/seller/img/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

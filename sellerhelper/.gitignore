@@ -7,5 +7,5 @@ __pycache__/
 *.py[cod]
 db.sqlite3
 sqlite_backups/
-staticfiles/
+# staticfiles/
 private_rider_documents/
