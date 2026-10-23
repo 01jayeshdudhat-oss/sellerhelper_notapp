@@ -21,7 +21,7 @@
         top: 56px;
         z-index: 1020;
         display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 4px !important;
         margin: 0 -8px 10px !important;
         padding: 6px 8px;
@@ -123,6 +123,20 @@
             {{ ready_order_count }}
         </span>
     </a>
+    <a href="{% url 'packer_dashboard' %}?view=verify"
+       class="nav-link {% if verify_view %}active{% endif %}">
+        <i class="bi bi-person-check me-1"></i><span>Verify rider</span>
+        <span class="badge rounded-pill ms-1 {% if verify_view %}text-bg-light{% else %}text-bg-secondary{% endif %}">
+            {{ verification_order_count }}
+        </span>
+    </a>
+    <a href="{% url 'packer_dashboard' %}?view=verified"
+       class="nav-link {% if verified_view %}active{% endif %}">
+        <i class="bi bi-shield-check me-1"></i><span>Recently verified</span>
+        <span class="badge rounded-pill ms-1 {% if verified_view %}text-bg-light{% else %}text-bg-secondary{% endif %}">
+            {{ recently_verified_order_count }}
+        </span>
+    </a>
     <a href="{% url 'packer_dashboard' %}?view=history"
        class="nav-link {% if history_view %}active{% endif %}">
         <i class="bi bi-clock-history me-1"></i><span>History</span>
@@ -145,7 +159,7 @@
                             </small>
                         </div>
                         <span class="badge rounded-pill
-                            {% if order.status == 'READY' %}text-bg-success
+                            {% if order.status == 'READY' or order.status == 'OUT_FOR_DELIVERY' or order.status == 'PICKED_UP' %}text-bg-success
                             {% elif order.status == 'PACKING' %}text-bg-warning
                             {% else %}text-bg-primary{% endif %}">
                             {{ order.get_status_display|default:order.status }}
@@ -184,7 +198,7 @@
 
                     <details class="border rounded p-3 mb-3 packer-order-items">
                         <summary class="small text-muted text-uppercase fw-semibold packer-items-summary">
-                            {% if history_view %}Items packed{% else %}Items to pack{% endif %}
+                            {% if history_view %}Items packed{% elif verified_view %}Verified order items{% else %}Items to pack{% endif %}
                             ({{ order.order_items.all|length }})
                         </summary>
                         <div class="mt-2">
@@ -242,10 +256,35 @@
                             {% endif %}
                         {% endfor %}
                     {% endif %}
+                    {% if verified_view %}
+                        <div class="small text-success mb-3">
+                            <i class="bi bi-shield-check me-1"></i>
+                            Rider and parcel verified {{ order.pickup_verified_at|date:"d M Y, h:i A" }}
+                        </div>
+                    {% endif %}
 
                     <div class="d-grid gap-2">
                         {% if not history_view %}
-                            {% if order.assigned_packer and order.assigned_packer.id == staff.id %}
+                            {% if verify_view and order.status == "RIDER_ASSIGNED" %}
+                                <div class="alert alert-info small mb-0">
+                                    Verify {{ order.assigned_rider.user.get_full_name|default:order.assigned_rider.user.username }} and confirm they collected this parcel.
+                                </div>
+                                <form method="post" action="{% url 'verify_rider_pickup_otp' %}">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="next"
+                                           value="{% url 'packer_dashboard' %}?view=verify#order-{{ order.id }}">
+                                    <label class="form-label small" for="packer-pickup-otp-{{ order.id }}">Rider pickup code</label>
+                                    <div class="input-group">
+                                        <input class="form-control" id="packer-pickup-otp-{{ order.id }}"
+                                               type="text" name="pickup_otp" inputmode="numeric"
+                                               autocomplete="one-time-code" pattern="[0-9]{6}"
+                                               maxlength="6" required>
+                                        <button type="submit" class="btn btn-success">
+                                            <i class="bi bi-shield-check me-1"></i>Verify pickup
+                                        </button>
+                                    </div>
+                                </form>
+                            {% elif not verify_view and not verified_view and order.assigned_packer and order.assigned_packer.id == staff.id %}
                                 {% if order.status == "PACKING" %}
                                     <form method="post" action="{% url 'shop_order_status_update' order.id %}">
                                         {% csrf_token %}
@@ -262,7 +301,7 @@
                                         </button>
                                     </form>
                                 {% endif %}
-                            {% elif not order.assigned_packer %}
+                            {% elif not verify_view and not verified_view and not order.assigned_packer %}
                                 <form method="post" action="{% url 'accept_packer_order' order.id %}">
                                     {% csrf_token %}
                                     <button type="submit" class="btn btn-primary w-100">
@@ -290,12 +329,16 @@
                     </div>
                     <h4 class="fw-bold">
                         {% if history_view %}No packing history yet
+                        {% elif verify_view %}No riders are waiting for pickup verification
+                        {% elif verified_view %}No rider pickups verified recently
                         {% elif ready_view %}No orders ready for pickup
                         {% elif active_view %}No active packing orders
                         {% else %}No orders to pack{% endif %}
                     </h4>
                     <p class="text-muted mb-0">
                         {% if history_view %}Orders you mark ready for pickup will appear here.
+                        {% elif verify_view %}Accepted rider pickups will appear here for shop verification.
+                        {% elif verified_view %}Verified rider pickups will appear here.
                         {% elif ready_view %}Orders you finish will appear here for the pickup team.
                         {% elif active_view %}Accept an available order to start packing.
                         {% else %}New shop orders will appear here when they are ready for packing.{% endif %}

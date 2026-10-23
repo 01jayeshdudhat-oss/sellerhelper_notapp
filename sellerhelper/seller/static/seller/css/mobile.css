@@ -225,6 +225,27 @@
         border-top: 1px solid #e5eaf0;
     }
 
+    .rider-start-delivery-bar {
+        position: sticky;
+        top: var(--rider-dashboard-tabs-bottom, 132px);
+        z-index: 1028;
+        padding: 6px;
+        border: 1px solid #b7e4c7;
+        border-radius: 10px;
+        background: #f0fff4;
+        box-shadow: 0 4px 12px rgba(31, 41, 55, .12);
+    }
+
+    .rider-start-delivery-bar form,
+    .rider-start-delivery-bar .btn {
+        width: 100%;
+    }
+
+    .rider-start-delivery-bar .btn {
+        min-height: 46px;
+        font-weight: 700;
+    }
+
     .rider-dashboard-tabs-spacer {
         display: block;
     }

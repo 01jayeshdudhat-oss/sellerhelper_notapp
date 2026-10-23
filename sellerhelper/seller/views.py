@@ -4914,6 +4914,46 @@ def staff_dashboard(request):
         .select_related("product")
         .order_by("product__product_name")
     )
+    inventory_assignments = list(product_assignments[:10])
+    inventory_assignment_ids = [
+        assignment.pk for assignment in inventory_assignments
+    ]
+    inventory_forecasts = {
+        forecast.product_shop_id: forecast
+        for forecast in ShopProductForecast.objects.filter(
+            product_shop_id__in=inventory_assignment_ids,
+        )
+    }
+    recent_purchase_by_assignment = {}
+    for purchase_item in (
+        VendorPurchaseItem.objects
+        .filter(product_shop_id__in=inventory_assignment_ids)
+        .select_related("purchase__vendor")
+        .order_by("-purchase__purchase_date", "-purchase_id", "-pk")
+    ):
+        recent_purchase_by_assignment.setdefault(
+            purchase_item.product_shop_id,
+            purchase_item,
+        )
+    for assignment in inventory_assignments:
+        forecast = inventory_forecasts.get(assignment.pk)
+        target_stock = (
+            forecast.recommended_stock
+            if forecast
+            else Decimal("5.0000")
+        )
+        assignment.inventory_shortage = max(
+            Decimal("0.0000"),
+            target_stock - assignment.stock,
+        )
+        assignment.shortage_display = _quantity_unit_calculation(
+            assignment.inventory_shortage,
+            assignment.product.unit,
+        )
+        assignment.is_low_stock = assignment.inventory_shortage > 0
+        assignment.recent_purchase = recent_purchase_by_assignment.get(
+            assignment.pk,
+        )
 
     shop_orders = (
         ShopOrder.objects
@@ -4938,7 +4978,7 @@ def staff_dashboard(request):
             "can_manage_stock": staff.can_manage_stock,
             "can_manage_staff": staff.can_manage_staff,
             "can_manage_orders": staff.can_view_orders,
-            "product_assignments": product_assignments[:10],
+            "product_assignments": inventory_assignments,
             "shop_orders": shop_orders[:10],
             "total_products": total_products,
             "active_products": active_products,
@@ -6363,6 +6403,9 @@ def packer_dashboard(request):
                 "CONFIRMED",
                 "PACKING",
                 "READY",
+                "RIDER_ASSIGNED",
+                "PICKED_UP",
+                "OUT_FOR_DELIVERY",
             ]
         )
         .select_related(
@@ -6370,6 +6413,8 @@ def packer_dashboard(request):
             "shop",
             "assigned_packer",
             "assigned_packer__user",
+            "assigned_rider",
+            "assigned_rider__user",
         )
         .prefetch_related(
             Prefetch(
@@ -6394,6 +6439,30 @@ def packer_dashboard(request):
     ready_orders = shop_orders.filter(
         assigned_packer=staff,
         status="READY",
+    )
+    verification_orders = shop_orders.filter(
+        status="RIDER_ASSIGNED",
+        assigned_rider__isnull=False,
+    )
+    recently_verified_orders = (
+        ShopOrder.objects
+        .filter(
+            shop=staff.shop,
+            status_history__status="PICKED_UP",
+            status_history__remark__icontains="verified rider",
+        )
+        .annotate(
+            pickup_verified_at=Max(
+                "status_history__created_at",
+                filter=Q(
+                    status_history__status="PICKED_UP",
+                    status_history__remark__icontains="verified rider",
+                ),
+            ),
+        )
+        .select_related("order", "shop", "assigned_rider", "assigned_rider__user")
+        .order_by("-pickup_verified_at", "-pk")
+        .distinct()
     )
     packing_history = (
         ShopOrder.objects
@@ -6425,6 +6494,8 @@ def packer_dashboard(request):
         "available": available_orders,
         "active": active_orders,
         "ready": ready_orders,
+        "verify": verification_orders,
+        "verified": recently_verified_orders,
         "history": packing_history,
     }
     if current_view not in order_views:
@@ -6455,10 +6526,14 @@ def packer_dashboard(request):
             "available_view": current_view == "available",
             "active_view": current_view == "active",
             "ready_view": current_view == "ready",
+            "verify_view": current_view == "verify",
+            "verified_view": current_view == "verified",
             "history_view": current_view == "history",
             "available_order_count": available_orders.count(),
             "active_order_count": active_orders.count(),
             "ready_order_count": ready_orders.count(),
+            "verification_order_count": verification_orders.count(),
+            "recently_verified_order_count": recently_verified_orders.count(),
             "packing_history_count": packing_history.count(),
             "efficiency": _staff_efficiency_card(
                 staff.shop,
@@ -7469,7 +7544,7 @@ def _rider_available_order_ids(
     dispatch_public_offers=False,
 ):
     if public_rider and not public_rider_service_enabled():
-        return []
+        return [], {}, None
     group_shop_ids = (
         set()
         if public_rider
@@ -7674,18 +7749,21 @@ def rider_dashboard(request):
         or handover_view
         or earnings_view
     )
-    rider_orders = ShopOrder.objects.filter(
-        Q(assigned_rider__user=request.user)
-        | Q(
-            rider_accepted_at__isnull=False,
-            order__assigned_rider=request.user.username,
+    rider_orders = (
+        ShopOrder.objects.filter(
+            Q(assigned_rider__user=request.user)
+            | Q(
+                rider_accepted_at__isnull=False,
+                order__assigned_rider=request.user.username,
+            )
+            if public_rider
+            else Q(assigned_rider=staff)
+            | Q(
+                rider_accepted_at__isnull=False,
+                order__assigned_rider=staff.user.username,
+            )
         )
-    ) if public_rider else ShopOrder.objects.filter(
-        Q(assigned_rider=staff)
-        | Q(
-            rider_accepted_at__isnull=False,
-            order__assigned_rider=staff.user.username,
-        )
+        .filter(order__is_valid_order=True)
     )
     assigned_orders = rider_orders
     active_load_orders = list(
@@ -7696,6 +7774,55 @@ def rider_dashboard(request):
             status__in=["DELIVERED", "COMPLETED", "CANCELLED"],
         ).prefetch_related("order_items")
     )
+    public_rider_batch_window_elapsed = bool(
+        public_rider
+        and public_rider.public_rider_batch_accepting
+        and public_rider.public_rider_batch_started_at
+        and public_rider.public_rider_batch_started_at
+        + timedelta(minutes=5) <= timezone.now()
+    )
+    public_rider_collection_window_open = bool(
+        public_rider
+        and public_rider.public_rider_batch_accepting
+        and public_rider.public_rider_batch_started_at
+        and public_rider.public_rider_batch_started_at
+        + timedelta(minutes=5) > timezone.now()
+        and active_load_orders
+        and all(
+            active.status in {"READY", "RIDER_ASSIGNED"}
+            for active in active_load_orders
+        )
+    )
+    public_rider_collection_window_expired = (
+        public_rider_batch_window_elapsed
+        and any(
+            active.status in {"READY", "RIDER_ASSIGNED"}
+            for active in active_load_orders
+        )
+    )
+    if public_rider_collection_window_expired:
+        collection_notification_title = "Collection window closed"
+        collection_notification_message = (
+            "Your five-minute acceptance window expired. Go to the shops and "
+            "collect your accepted parcels; scan each shop's printed order QR "
+            "after staff verifies your pickup."
+        )
+        if not Notification.objects.filter(
+            user=request.user,
+            title=collection_notification_title,
+            message=collection_notification_message,
+        ).exists():
+            Notification.objects.create(
+                user=request.user,
+                title=collection_notification_title,
+                message=collection_notification_message,
+                notification_type="ORDER",
+                related_url=f"{reverse('rider_dashboard')}?view=active",
+            )
+    if public_rider_collection_window_expired and selected_view == "available":
+        selected_view = "active"
+        available_view = False
+        active_view = True
     active_loads = [
         _shop_order_estimated_load(row)
         for row in active_load_orders
@@ -7724,9 +7851,19 @@ def rider_dashboard(request):
         request.user,
         rider_load_weight,
         rider_load_volume,
-        dispatch_public_offers=True,
+        dispatch_public_offers=not public_rider_batch_window_elapsed,
     )
+    if public_rider_batch_window_elapsed or (
+        public_rider and active_load_orders
+        and not public_rider_collection_window_open
+    ):
+        available_order_ids = []
     available_orders = ShopOrder.objects.filter(pk__in=available_order_ids)
+    show_collection_offers = bool(
+        public_rider_collection_window_open
+        and active_view
+        and available_order_ids
+    )
     if performance_view or handover_view or earnings_view:
         orders = ShopOrder.objects.none()
     elif completed_view:
@@ -7760,6 +7897,10 @@ def rider_dashboard(request):
             .filter(delivery_completed_at__isnull=True)
             .exclude(status__in=["DELIVERED", "COMPLETED"])
         )
+        if show_collection_offers:
+            orders = orders | ShopOrder.objects.filter(
+                pk__in=available_order_ids,
+            )
     else:
         orders = available_orders
 
@@ -7950,6 +8091,10 @@ def rider_dashboard(request):
         _delivery_sharing_settings() if public_rider else None
     )
     for order_obj in orders:
+        order_obj.is_collection_offer = bool(
+            show_collection_offers
+            and order_obj.pk in available_order_ids
+        )
         current_rider_membership = (
             order_obj.assigned_rider
             if (
@@ -7982,7 +8127,7 @@ def rider_dashboard(request):
                 and saved_route_estimate
             ):
                 order_obj.public_rider_route_display = saved_route_estimate
-            elif available_view:
+            elif available_view or order_obj.is_collection_offer:
                 order_obj.public_rider_route_display = (
                     _public_rider_route_estimate(
                         order_obj,
@@ -8299,6 +8444,14 @@ def rider_dashboard(request):
         status="PICKED_UP",
         delivery_completed_at__isnull=True,
     ).count()
+    pickup_start_orders = list(
+        rider_orders.filter(
+            status="PICKED_UP",
+            delivery_completed_at__isnull=True,
+            **({"rider_order_acknowledged": True} if public_rider else {}),
+        ).only("pk", "order_id")
+    )
+    pickup_start_count = len(pickup_start_orders)
     public_rider_batch_expires_at = None
     public_rider_base_fare = None
     public_rider_rate_per_km = None
@@ -8344,6 +8497,9 @@ def rider_dashboard(request):
             "earnings_period": earnings_period,
             "public_rider_earnings_summary": public_rider_earnings_summary,
             "public_rider_batch_expires_at": public_rider_batch_expires_at,
+            "public_rider_collection_window_expired": (
+                public_rider_collection_window_expired
+            ),
             "public_rider_base_fare": public_rider_base_fare,
             "public_rider_rate_per_km": public_rider_rate_per_km,
             "orders": orders,
@@ -8429,7 +8585,7 @@ def rider_dashboard(request):
             "pickup_navigation_stops": pickup_navigation_stops,
             "pickup_pending_count": pickup_pending_count,
             "pickup_ready_count": pickup_ready_count,
-            "show_start_active_deliveries": active_view,
+            "show_start_active_deliveries": pickup_start_count > 0,
             "can_manage_shared_rider_groups": (
                 not public_rider and (Shop.objects.filter(
                     owner=request.user,
@@ -8506,7 +8662,7 @@ def shop_order_list(request):
                 staff_members__is_active=True,
             )
             & (
-                Q(staff_members__role="MANAGER")
+                Q(staff_members__role__in=["MANAGER", "PACKER"])
                 | Q(staff_members__can_change_order_status=True)
             )
         )
@@ -9202,7 +9358,7 @@ def shop_order_detail(request, shop_order_id):
             user=request.user,
             is_active=True,
         ).filter(
-            Q(role="MANAGER") | Q(can_change_order_status=True)
+            Q(role__in=["MANAGER", "PACKER"]) | Q(can_change_order_status=True)
         ).exists()
     )
     show_rider_order_qr = bool(
@@ -12877,10 +13033,11 @@ def edit_completed_delivery_location(request, shop_order_id):
 
 
 @login_required
+@transaction.atomic
 def accept_packer_order(request, shop_order_id):
 
     shop_order = get_object_or_404(
-        ShopOrder.objects.select_related("shop", "order"),
+        ShopOrder.objects.select_for_update().select_related("shop", "order"),
         id=shop_order_id,
     )
 
@@ -12896,16 +13053,6 @@ def accept_packer_order(request, shop_order_id):
 
     if shop_order.assigned_packer_id and shop_order.assigned_packer_id != packer_membership.id:
         messages.error(request, "This order is already assigned to another packer.")
-        return redirect("packer_dashboard")
-
-    duplicate_active_order = ShopOrder.objects.filter(
-        shop=shop_order.shop,
-        assigned_packer=packer_membership,
-        status__in=["PLACED", "CONFIRMED", "PACKING", "READY"],
-    ).exclude(id=shop_order.id).exists()
-
-    if duplicate_active_order:
-        messages.error(request, "You already accepted an active packing order. Finish it before taking another one.")
         return redirect("packer_dashboard")
 
     shop_order.assigned_packer = packer_membership
@@ -13070,6 +13217,8 @@ def accept_rider_order(request, shop_order_id):
             )
             return redirect("rider_dashboard")
         public_rider_route_estimate["rider_location"] = acceptance_location
+        rider_membership.last_location = acceptance_location
+        rider_membership.save(update_fields=["last_location", "updated_at"])
     if not public_rider:
         if (
             shop_order.public_rider_network_requested
@@ -13401,7 +13550,8 @@ def rider_pickup_order(request, shop_order_id):
             user=request.user,
             is_active=True,
         ).filter(
-            Q(role="MANAGER") | Q(can_change_order_status=True)
+            Q(role__in=["MANAGER", "PACKER"])
+            | Q(can_change_order_status=True)
         ).exists()
     )
     if not can_confirm_pickup:
@@ -13490,6 +13640,9 @@ def rider_pickup_order(request, shop_order_id):
     shop_order.rider_pickup_otp_expires_at = None
     shop_order.rider_pickup_otp_attempts = 0
     shop_order.status = "PICKED_UP"
+    rider_confirmed_parcel = shop_order.rider_order_acknowledged
+    if rider_confirmed_parcel:
+        shop_order.status = "OUT_FOR_DELIVERY"
     shop_order.save(update_fields=[
         "status",
         "rider_pickup_otp",
@@ -13516,15 +13669,45 @@ def rider_pickup_order(request, shop_order_id):
             f"{rider.user.username} and confirmed parcel pickup by OTP."
         ),
     )
+    if rider_confirmed_parcel:
+        OrderStatusHistory.objects.create(
+            shop_order=shop_order,
+            status="OUT_FOR_DELIVERY",
+            remark=(
+                f"Rider {rider.user.username} scanned the shop's order QR "
+                "after shop verification; delivery started automatically."
+            ),
+        )
     if shop_order.order:
-        shop_order.order.status = "PICKED_UP"
+        remaining_pickups = ShopOrder.objects.filter(
+            order_id=shop_order.order_id,
+            status__in=[
+                "PLACED",
+                "CONFIRMED",
+                "PACKING",
+                "READY",
+                "RIDER_ASSIGNED",
+                "PICKED_UP",
+            ],
+        ).exists()
+        shop_order.order.status = (
+            "OUT_FOR_DELIVERY"
+            if rider_confirmed_parcel and not remaining_pickups
+            else "PICKED_UP"
+        )
         shop_order.order.save(update_fields=["status", "updated_at"])
 
-    success_message = (
-        f"Rider {rider.user.username} and order {shop_order.order.order_id} verified. "
-        "Pickup recorded. Once every active parcel is collected, use Start delivery "
-        "on your rider dashboard."
-    )
+    if rider_confirmed_parcel:
+        success_message = (
+            f"Rider {rider.user.username} and order "
+            f"{shop_order.order.order_id} verified. The parcel is out for delivery."
+        )
+    else:
+        success_message = (
+            f"Rider {rider.user.username} verified for order "
+            f"{shop_order.order.order_id}. Pickup recorded; the rider must scan "
+            "the shop's order QR to start delivery."
+        )
     return _pickup_otp_response(
         request,
         success_message,
@@ -13535,6 +13718,7 @@ def rider_pickup_order(request, shop_order_id):
 
 
 @login_required
+@transaction.atomic
 def rider_scan_pickup_qr(request):
     if request.method != "POST":
         return HttpResponse("POST required.", status=405)
@@ -13572,7 +13756,7 @@ def rider_scan_pickup_qr(request):
             status=400,
         )
 
-    shop_order = ShopOrder.objects.select_related(
+    shop_order = ShopOrder.objects.select_for_update().select_related(
         "order",
         "assigned_rider",
         "shop",
@@ -13666,6 +13850,50 @@ def rider_scan_pickup_qr(request):
         shop_order.rider_accepted_at
         and shop_order.order.assigned_rider == request.user.username
     )
+    rider_confirmation_recorded = not shop_order.rider_order_acknowledged
+    if rider_confirmation_recorded:
+        shop_order.rider_order_acknowledged = True
+        shop_order.save(update_fields=["rider_order_acknowledged", "updated_at"])
+        OrderStatusHistory.objects.create(
+            shop_order=shop_order,
+            status=shop_order.status,
+            remark=(
+                f"Rider {request.user.username} scanned the shop's printed "
+                "order QR and confirmed the parcel."
+            ),
+        )
+
+    delivery_started = False
+    if shop_order.status == "PICKED_UP":
+        shop_order.status = "OUT_FOR_DELIVERY"
+        shop_order.save(update_fields=["status", "updated_at"])
+        OrderStatusHistory.objects.create(
+            shop_order=shop_order,
+            status="OUT_FOR_DELIVERY",
+            remark=(
+                f"Rider {request.user.username} scanned the shop's order QR "
+                "after shop verification; delivery started automatically."
+            ),
+        )
+        delivery_started = True
+        if shop_order.order:
+            remaining_pickups = ShopOrder.objects.filter(
+                order_id=shop_order.order_id,
+                status__in=[
+                    "PLACED",
+                    "CONFIRMED",
+                    "PACKING",
+                    "READY",
+                    "RIDER_ASSIGNED",
+                    "PICKED_UP",
+                ],
+            ).exists()
+            if not remaining_pickups:
+                Order.objects.filter(pk=shop_order.order_id).update(
+                    status="OUT_FOR_DELIVERY",
+                    updated_at=timezone.now(),
+                )
+
     if assigned_to_rider and accepted_by_rider:
         rider_acceptance = "assigned to and accepted by you"
     elif accepted_by_rider:
@@ -13679,14 +13907,32 @@ def rider_scan_pickup_qr(request):
             kwargs={"shop_order_id": shop_order.pk},
         ),
         "message": (
-            f"Verified: order {shop_order.shop_order_number or shop_order.order.order_id} "
-            f"is in your active orders and is {rider_acceptance}. "
-            f"Current status: {shop_order.status}."
+            (
+                f"Both checks are complete. Order "
+                f"{shop_order.shop_order_number or shop_order.order.order_id} "
+                "is now out for delivery."
+            )
+            if delivery_started
+            else (
+                f"Rider-side parcel confirmation recorded for order "
+                f"{shop_order.shop_order_number or shop_order.order.order_id}. "
+                + (
+                    "The shop must verify your pickup before delivery starts."
+                    if shop_order.status == "RIDER_ASSIGNED"
+                    else (
+                        "Shop verification is complete; delivery has started."
+                        if shop_order.status == "OUT_FOR_DELIVERY"
+                        else f"Current status: {shop_order.status}."
+                    )
+                )
+            )
         ),
         "assigned_to_you": assigned_to_rider,
         "accepted_by_you": accepted_by_rider,
         "is_active_order": True,
         "order_status": shop_order.status,
+        "rider_confirmation_recorded": True,
+        "delivery_started": delivery_started,
     })
 
 
@@ -13695,6 +13941,98 @@ def rider_scan_pickup_qr(request):
 def rider_start_active_deliveries(request):
     if request.method != "POST":
         return HttpResponse("POST required.", status=405)
+
+    public_rider = (
+        PublicRiderApplication.objects.select_for_update().filter(
+            user=request.user,
+            status=PublicRiderApplication.STATUS_APPROVED,
+        ).first()
+        if request.session.get("active_portal") == "RIDER"
+        else None
+    )
+    if request.session.get("active_portal") == "RIDER" and not public_rider:
+        raise PermissionDenied
+    rider = ShopStaff.objects.select_for_update().filter(
+        user=request.user,
+        is_active=True,
+        role="RIDER",
+        **({"is_public_rider": False} if not public_rider else {}),
+    ).first()
+    if not rider and not public_rider:
+        raise PermissionDenied
+
+    assigned_filter = (
+        Q(assigned_rider__user=request.user)
+        | Q(
+            rider_accepted_at__isnull=False,
+            order__assigned_rider=request.user.username,
+        )
+        if public_rider
+        else Q(assigned_rider=rider)
+        | Q(
+            rider_accepted_at__isnull=False,
+            order__assigned_rider=request.user.username,
+        )
+    )
+    rider_pickup_filters = (
+        {"rider_order_acknowledged": True}
+        if public_rider
+        else {}
+    )
+    collected_orders = list(
+        ShopOrder.objects.select_for_update()
+        .filter(
+            assigned_filter,
+            status="PICKED_UP",
+            delivery_completed_at__isnull=True,
+            **rider_pickup_filters,
+        )
+        .select_related("order")
+        .order_by("created_at", "id")
+    )
+    if not collected_orders:
+        messages.info(
+            request,
+            "No pickup has both verifications yet. Confirm the pickup with the shop and scan its order QR. Parcels awaiting pickup stay unchanged.",
+        )
+        return redirect(f"{reverse('rider_dashboard')}?view=active")
+
+    affected_order_ids = {collected_order.order_id for collected_order in collected_orders}
+    for collected_order in collected_orders:
+        collected_order.status = "OUT_FOR_DELIVERY"
+        collected_order.save(update_fields=["status", "updated_at"])
+        OrderStatusHistory.objects.create(
+            shop_order=collected_order,
+            status="OUT_FOR_DELIVERY",
+            remark=(
+                f"Rider {request.user.username} started delivery for this "
+                "picked-up parcel."
+            ),
+        )
+
+    for order in Order.objects.select_for_update().filter(
+        pk__in=affected_order_ids,
+    ):
+        has_unverified_parcels = ShopOrder.objects.filter(
+            order_id=order.pk,
+            status__in=[
+                "PLACED",
+                "CONFIRMED",
+                "PACKING",
+                "READY",
+                "RIDER_ASSIGNED",
+                "PICKED_UP",
+            ],
+        ).exists()
+        if not has_unverified_parcels:
+            order.status = "OUT_FOR_DELIVERY"
+            order.save(update_fields=["status", "updated_at"])
+    messages.success(
+        request,
+        f"Delivery started for all {len(collected_orders)} picked-up parcel"
+        f"{'s' if len(collected_orders) != 1 else ''}.",
+    )
+    return redirect(f"{reverse('rider_dashboard')}?view=active")
 
 
 @login_required
@@ -13747,74 +14085,6 @@ def shop_order_action(request, shop_order_id, action):
     messages.error(request, "Unknown action requested.")
     return redirect("shop_order_detail", shop_order_id=shop_order_id)
 
-    public_rider = (
-        PublicRiderApplication.objects.filter(
-            user=request.user,
-            status=PublicRiderApplication.STATUS_APPROVED,
-        ).first()
-        if request.session.get("active_portal") == "RIDER"
-        else None
-    )
-    if request.session.get("active_portal") == "RIDER" and not public_rider:
-        raise PermissionDenied
-    rider = ShopStaff.objects.select_for_update().filter(
-        user=request.user,
-        is_active=True,
-        role="RIDER",
-        **({"is_public_rider": False} if not public_rider else {}),
-    ).first()
-    if not rider and not public_rider:
-        raise PermissionDenied
-    assigned_filter = (
-        Q(assigned_rider__user=request.user)
-        if public_rider
-        else Q(assigned_rider=rider)
-    )
-    collected_orders = list(
-        ShopOrder.objects.select_for_update()
-        .filter(
-            assigned_filter,
-            status="PICKED_UP",
-            delivery_completed_at__isnull=True,
-        )
-        .select_related("order")
-        .order_by("created_at", "id")
-    )
-    if not collected_orders:
-        messages.info(
-            request,
-            "No picked-up parcels are ready to start. Picked-up parcels will move to Out for delivery when you press Start delivery.",
-        )
-        return redirect(f"{reverse('rider_dashboard')}?view=active")
-
-    affected_order_ids = {
-        collected_order.order_id
-        for collected_order in collected_orders
-    }
-    for collected_order in collected_orders:
-        collected_order.status = "OUT_FOR_DELIVERY"
-        collected_order.save(update_fields=["status", "updated_at"])
-        OrderStatusHistory.objects.create(
-            shop_order=collected_order,
-            status="OUT_FOR_DELIVERY",
-            remark=(
-                f"Rider {request.user.username} started delivery for this "
-                "picked-up parcel."
-            ),
-        )
-
-    for order in Order.objects.select_for_update().filter(
-        pk__in=affected_order_ids,
-    ):
-        order.status = "OUT_FOR_DELIVERY"
-        order.save(update_fields=["status", "updated_at"])
-    messages.success(
-        request,
-        f"Delivery started for all {len(collected_orders)} picked-up parcel"
-        f"{'s' if len(collected_orders) != 1 else ''}.",
-    )
-    return redirect(f"{reverse('rider_dashboard')}?view=active")
-
 
 @login_required
 @transaction.atomic
@@ -13844,21 +14114,20 @@ def verify_rider_pickup_otp(request):
                     staff_members__is_active=True,
                 )
                 & (
-                    Q(staff_members__role="MANAGER")
+                    Q(staff_members__role__in=["MANAGER", "PACKER"])
                     | Q(staff_members__can_change_order_status=True)
                 )
             )
         ).distinct()
 
-    matching_orders = list(
-        ShopOrder.objects.filter(
+    matching_orders_query = ShopOrder.objects.filter(
             shop__in=verification_shops,
             status="RIDER_ASSIGNED",
             rider_pickup_otp=otp,
             rider_pickup_otp_expires_at__gt=timezone.now(),
             rider_pickup_otp_attempts__lt=RIDER_PICKUP_OTP_MAX_ATTEMPTS,
-        ).values_list("pk", flat=True)[:2]
-    )
+        )
+    matching_orders = list(matching_orders_query.values_list("pk", flat=True)[:2])
     if len(matching_orders) != 1:
         return _pickup_otp_response(
             request,
@@ -20273,14 +20542,41 @@ def shop_order_rider_location(request, shop_order_id):
         and shop_order.assigned_rider.is_active
         and shop_order.assigned_rider.role == "RIDER"
     )
-    if not user_can_access_shop(request.user, shop_order.shop) and not is_assigned_rider:
+    accepted_by_rider = bool(
+        shop_order.rider_accepted_at
+        and shop_order.order.assigned_rider == request.user.username
+    )
+    approved_public_rider = (
+        PublicRiderApplication.objects.filter(
+            user=request.user,
+            status=PublicRiderApplication.STATUS_APPROVED,
+        ).exists()
+        if accepted_by_rider
+        else False
+    )
+    active_shop_rider = (
+        ShopStaff.objects.filter(
+            shop=shop_order.shop,
+            user=request.user,
+            is_active=True,
+            role="RIDER",
+        ).exists()
+        if accepted_by_rider
+        else False
+    )
+    is_accepted_rider = bool(
+        accepted_by_rider
+        and (approved_public_rider or active_shop_rider)
+    )
+    can_view_rider_location = is_assigned_rider or is_accepted_rider
+    if not user_can_access_shop(request.user, shop_order.shop) and not can_view_rider_location:
         raise PermissionDenied
     location = shop_order.rider_last_location
     if not _valid_route_coordinates(location):
         location = None
     customer_location = (
         shop_order.order.customer_live_location
-        if is_assigned_rider
+        if can_view_rider_location
         and shop_order.status == "OUT_FOR_DELIVERY"
         and _recent_customer_live_location(shop_order.order.customer_live_location)
         else None
@@ -20289,6 +20585,8 @@ def shop_order_rider_location(request, shop_order_id):
         shop_order.assigned_rider.user.get_full_name()
         or shop_order.assigned_rider.user.username
         if shop_order.assigned_rider_id
+        else request.user.get_full_name() or request.user.username
+        if is_accepted_rider
         else ""
     )
     return JsonResponse({

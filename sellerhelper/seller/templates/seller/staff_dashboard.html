@@ -223,26 +223,50 @@
                     <h5 class="mb-0">Product inventory</h5>
                 </div>
                 <div class="card-body p-0">
-                    <table class="table mb-0">
-                        <thead class="table-light">
-                            <tr>
-                                <th>Product</th>
-                                <th>Stock</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for item in product_assignments %}
-                            <tr>
-                                <td>{{ item.product.product_name }}</td>
-                                <td>{{ item.stock|floatformat:-4 }}</td>
-                            </tr>
-                            {% empty %}
-                            <tr>
-                                <td colspan="2" class="text-center text-muted py-4">No product stock found</td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
+                    <div class="table-responsive">
+                        <table class="table mb-0 align-middle">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Product</th>
+                                    <th>Stock</th>
+                                    <th>Shortage</th>
+                                    <th>Recent buy price · vendor</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for item in product_assignments %}
+                                <tr class="{% if item.is_low_stock %}table-danger{% endif %}">
+                                    <td>
+                                        {{ item.product.product_name }}
+                                        {% if item.is_low_stock %}
+                                            <span class="badge text-bg-danger ms-1">Low stock</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="text-nowrap">{{ item.stock|floatformat:-4 }}</td>
+                                    <td class="small">
+                                        {% if item.is_low_stock %}
+                                            {{ item.shortage_display }}
+                                        {% else %}
+                                            <span class="text-muted">No shortage</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="small">
+                                        {% if item.recent_purchase %}
+                                            <strong>₹{{ item.recent_purchase.unit_cost|floatformat:2 }}</strong>
+                                            <span class="text-muted d-block">{{ item.recent_purchase.purchase.vendor.name }}</span>
+                                        {% else %}
+                                            <span class="text-muted">No purchases recorded</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% empty %}
+                                <tr>
+                                    <td colspan="4" class="text-center text-muted py-4">No product stock found</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
         </div>

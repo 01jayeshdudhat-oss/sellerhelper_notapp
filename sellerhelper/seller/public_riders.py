@@ -1,8 +1,11 @@
+from django.db.models import Q
+
 from .models import (
     DeliverySharingSettings,
     PublicRiderApplication,
     Shop,
     ShopStaff,
+    ShopOrder,
 )
 
 
@@ -19,11 +22,31 @@ def sync_public_rider_shop_memberships(application):
         user=application.user,
         is_public_rider=True,
     )
-    if (
-        application.status != PublicRiderApplication.STATUS_APPROVED
-        or not public_rider_service_enabled()
-    ):
+    if application.status != PublicRiderApplication.STATUS_APPROVED:
         public_memberships.update(is_active=False)
+        return
+
+    if not public_rider_service_enabled():
+        active_shop_ids = ShopOrder.objects.filter(
+            Q(assigned_rider__user=application.user)
+            | Q(
+                rider_accepted_at__isnull=False,
+                order__assigned_rider=application.user.username,
+            ),
+            status__in=[
+                "READY",
+                "RIDER_ASSIGNED",
+                "PICKED_UP",
+                "OUT_FOR_DELIVERY",
+            ],
+            delivery_completed_at__isnull=True,
+        ).values_list("shop_id", flat=True).distinct()
+        public_memberships.filter(shop_id__in=active_shop_ids).update(
+            is_active=True,
+        )
+        public_memberships.exclude(shop_id__in=active_shop_ids).update(
+            is_active=False,
+        )
         return
 
     network_shops = Shop.objects.filter(

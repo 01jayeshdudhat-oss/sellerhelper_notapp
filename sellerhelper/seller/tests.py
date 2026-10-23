@@ -1982,10 +1982,18 @@ class SellerProjectConfigTests(TestCase):
         session = self.client.session
         session["active_portal"] = "RIDER"
         session.save()
-        start_response = self.client.post(
-            reverse("rider_start_active_deliveries"),
+        qr_confirmation = self.client.post(
+            reverse("rider_scan_pickup_qr"),
+            {
+                "order_qr": (
+                    f"http://testserver"
+                    f"{reverse('shop_order_detail', kwargs={'shop_order_id': shop_order.pk})}"
+                ),
+            },
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
         )
-        self.assertEqual(start_response.status_code, 302)
+        self.assertEqual(qr_confirmation.status_code, 200)
+        self.assertTrue(qr_confirmation.json()["delivery_started"])
         shop_order.refresh_from_db()
         self.assertEqual(shop_order.status, "OUT_FOR_DELIVERY")
 
@@ -3451,12 +3459,54 @@ class SellerProjectConfigTests(TestCase):
         shop = Shop.objects.create(name="Assigned Shop", owner=owner)
         ShopStaff.objects.create(shop=shop, user=staff_user, role="MANAGER", is_active=True)
 
+        product = Product.objects.create(
+            product_name="Low stock rice",
+            price=Decimal("30.00"),
+            unit="500 g",
+            created_by=owner,
+        )
+        assignment = ProductShop.objects.create(
+            shop=shop,
+            product=product,
+            stock=Decimal("2.0000"),
+        )
+        ShopProductForecast.objects.create(
+            product_shop=assignment,
+            recommended_stock=Decimal("6.0000"),
+        )
+        vendor = ShopVendor.objects.create(shop=shop, name="Recent Rice Vendor")
+        purchase = VendorPurchase.objects.create(
+            shop=shop,
+            vendor=vendor,
+            subtotal_amount=Decimal("80.00"),
+            total_amount=Decimal("80.00"),
+        )
+        VendorPurchaseItem.objects.create(
+            purchase=purchase,
+            product_shop=assignment,
+            quantity=Decimal("4.0000"),
+            purchased_quantity=4,
+            unit_cost=Decimal("20.00"),
+            line_total=Decimal("80.00"),
+        )
+        Notification.objects.create(
+            user=staff_user,
+            title="Staff dashboard test alert",
+            message="Unread staff notification",
+        )
+
         self.client.force_login(staff_user)
         response = self.client.get(reverse("staff_dashboard"))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Assigned Shop")
         self.assertContains(response, "data-sellerhelper-scan-order")
+        self.assertContains(response, "Shortage")
+        self.assertContains(response, "2000 g")
+        self.assertContains(response, "Recent Rice Vendor")
+        self.assertContains(response, "₹20.00")
+        self.assertContains(response, "table-danger")
+        self.assertContains(response, 'data-unread-notifications-count>1<')
 
     def test_shop_staff_page_is_accessible_to_owner_and_staff_with_manage_permission(self):
         owner = User.objects.create_user(username="owner_staff_access", password="pass1234")
@@ -3982,7 +4032,7 @@ class SellerProjectConfigTests(TestCase):
         self.assertContains(
             dashboard_response,
             "centerOnCurrentLocation();",
-            count=3,
+            count=4,
         )
         self.assertContains(dashboard_response, 'workAreaForm?.addEventListener("submit"')
         self.assertContains(
@@ -4037,6 +4087,15 @@ class SellerProjectConfigTests(TestCase):
                 "public_rider_network_requested",
                 "updated_at",
             ])
+        other_shop_order.public_rider_offer_expires_at = (
+            timezone.now() + timedelta(seconds=20)
+        )
+        other_shop_order.public_rider_offer_user = rider_user
+        other_shop_order.save(update_fields=[
+            "public_rider_offer_expires_at",
+            "public_rider_offer_user",
+            "updated_at",
+        ])
         rider_application.public_rider_batch_started_at = (
             timezone.now() - timedelta(minutes=6)
         )
@@ -4049,9 +4108,42 @@ class SellerProjectConfigTests(TestCase):
             {"view": "available"},
         )
         self.assertEqual(expired_batch_response.context["available_order_count"], 0)
+        self.assertEqual(expired_batch_response.context["selected_view"], "active")
+        self.assertNotIn(
+            other_shop_order.pk,
+            [row.pk for row in expired_batch_response.context["orders"]],
+        )
+        self.assertFalse(
+            any(
+                row.is_collection_offer
+                for row in expired_batch_response.context["orders"]
+            )
+        )
+        self.assertTrue(
+            expired_batch_response.context[
+                "public_rider_collection_window_expired"
+            ]
+        )
+        self.assertContains(expired_batch_response, "Offer window closed")
+        self.assertNotContains(expired_batch_response, "<span>Available</span>")
+        self.assertTrue(
+            Notification.objects.filter(
+                user=rider_user,
+                title="Collection window closed",
+            ).exists()
+        )
         rider_application.public_rider_batch_started_at = timezone.now()
         rider_application.save(update_fields=[
             "public_rider_batch_started_at",
+            "updated_at",
+        ])
+        other_shop_order.public_rider_offer_expires_at = (
+            timezone.now() + timedelta(seconds=20)
+        )
+        other_shop_order.public_rider_offer_user = rider_user
+        other_shop_order.save(update_fields=[
+            "public_rider_offer_expires_at",
+            "public_rider_offer_user",
             "updated_at",
         ])
 
@@ -4060,6 +4152,7 @@ class SellerProjectConfigTests(TestCase):
             {"view": "available"},
         )
         self.assertEqual(batch_response.status_code, 200)
+        self.assertContains(batch_response, "Order collection window")
         self.assertEqual(batch_response.context["available_order_count"], 1)
         self.assertEqual(
             batch_response.context["orders"][0].pk,
@@ -4075,6 +4168,19 @@ class SellerProjectConfigTests(TestCase):
         )
         other_shop_order.refresh_from_db()
         self.assertEqual(other_shop_order.public_rider_offer_user_id, rider_user.pk)
+
+        active_batch_response = self.client.get(
+            reverse("rider_dashboard"),
+            {"view": "active"},
+        )
+        self.assertEqual(active_batch_response.status_code, 200)
+        active_batch_orders = {
+            row.pk: row for row in active_batch_response.context["orders"]
+        }
+        self.assertIn(shop_order.pk, active_batch_orders)
+        self.assertIn(other_shop_order.pk, active_batch_orders)
+        self.assertTrue(active_batch_orders[other_shop_order.pk].is_collection_offer)
+        self.assertContains(active_batch_response, "Accept delivery")
 
         close_batch_response = self.client.post(
             reverse("stop_public_rider_batch_offers"),
@@ -5142,6 +5248,241 @@ class SellerProjectConfigTests(TestCase):
         other_shop_order.refresh_from_db()
         self.assertEqual(other_shop_order.status, "RIDER_ASSIGNED")
 
+    def test_public_rider_can_start_delivery_after_both_pickup_checks(self):
+        owner = User.objects.create_user(
+            username="owner_public_start_delivery",
+            email="owner_public_start_delivery@example.com",
+            password="secret123",
+        )
+        rider_user = User.objects.create_user(
+            username="rider_public_start_delivery",
+            email="rider_public_start_delivery@example.com",
+            password="secret123",
+        )
+        PublicRiderApplication.objects.create(
+            user=rider_user,
+            full_name="Public Start Delivery Rider",
+            phone="9898989898",
+            address="Rider route",
+            vehicle_type="MOTORCYCLE",
+            driving_license_number="DL-PUBLIC-START",
+            work_area={
+                "type": "circle",
+                "center": {"lat": 21.17, "lng": 72.83},
+                "radius_km": 10,
+            },
+            status=PublicRiderApplication.STATUS_APPROVED,
+        )
+        shop = Shop.objects.create(name="Public Start Delivery Shop", owner=owner)
+        rider = ShopStaff.objects.create(
+            shop=shop,
+            user=rider_user,
+            role="RIDER",
+            is_active=True,
+            is_public_rider=True,
+        )
+        order = Order.objects.create(
+            order_id="ORD-PUBLIC-START-DELIVERY",
+            user="public_start_delivery_customer",
+            status="PICKED_UP",
+            assigned_rider=rider_user.username,
+            shop=shop,
+        )
+        shop_order = ShopOrder.objects.create(
+            order=order,
+            shop=shop,
+            assigned_rider=rider,
+            status="PICKED_UP",
+            rider_accepted_at=timezone.now(),
+            rider_order_acknowledged=True,
+        )
+        fallback_order = Order.objects.create(
+            order_id="ORD-PUBLIC-START-DELIVERY-FALLBACK",
+            user="public_start_delivery_customer",
+            status="PICKED_UP",
+            assigned_rider=rider_user.username,
+            shop=shop,
+        )
+        fallback_shop_order = ShopOrder.objects.create(
+            order=fallback_order,
+            shop=shop,
+            status="PICKED_UP",
+            rider_accepted_at=timezone.now(),
+            rider_order_acknowledged=True,
+        )
+        ShopOrder.objects.create(
+            order=order,
+            shop=shop,
+            status="READY",
+        )
+        self.client.force_login(rider_user)
+        session = self.client.session
+        session["active_portal"] = "RIDER"
+        session.save()
+
+        dashboard = self.client.get(
+            reverse("rider_dashboard"),
+            {"view": "active"},
+        )
+        self.assertTrue(dashboard.context["show_start_active_deliveries"])
+        self.assertContains(dashboard, 'id="rider-start-active-deliveries"')
+        response = self.client.post(
+            reverse("rider_start_active_deliveries"),
+        )
+
+        self.assertRedirects(
+            response,
+            f"{reverse('rider_dashboard')}?view=active",
+        )
+        shop_order.refresh_from_db()
+        self.assertEqual(shop_order.status, "OUT_FOR_DELIVERY")
+        fallback_shop_order.refresh_from_db()
+        self.assertEqual(fallback_shop_order.status, "OUT_FOR_DELIVERY")
+
+    def test_public_rider_can_finish_accepted_delivery_when_new_offers_are_disabled(self):
+        rider_user = User.objects.create_user(
+            username="public_rider_service_disabled_active",
+            email="public_rider_service_disabled_active@example.com",
+        )
+        application = PublicRiderApplication.objects.create(
+            user=rider_user,
+            full_name="Active Delivery Public Rider",
+            phone="9898989897",
+            address="Rider route",
+            vehicle_type="MOTORCYCLE",
+            driving_license_number="DL-PUBLIC-ACTIVE-DISABLED",
+            work_area={
+                "type": "circle",
+                "center": {"lat": 21.17, "lng": 72.83},
+                "radius_km": 10,
+            },
+            status=PublicRiderApplication.STATUS_APPROVED,
+        )
+        sharing_settings, _ = DeliverySharingSettings.objects.get_or_create(pk=1)
+        sharing_settings.public_rider_service_enabled = False
+        sharing_settings.save(update_fields=["public_rider_service_enabled"])
+        owner = User.objects.create_user(
+            username="owner_public_rider_service_disabled_active",
+        )
+        shop = Shop.objects.create(
+            name="Public Rider Existing Delivery Shop",
+            owner=owner,
+            public_rider_network_enabled=True,
+            rider_delivery_preference="PUBLIC",
+        )
+        rider = ShopStaff.objects.create(
+            shop=shop,
+            user=rider_user,
+            role="RIDER",
+            is_active=True,
+            is_public_rider=True,
+        )
+        order = Order.objects.create(
+            order_id="ORD-PUBLIC-RIDER-SERVICE-DISABLED-ACTIVE",
+            user="public_rider_existing_delivery_customer",
+            assigned_rider=rider_user.username,
+            status="PICKED_UP",
+            shop=shop,
+        )
+        shop_order = ShopOrder.objects.create(
+            order=order,
+            shop=shop,
+            assigned_rider=rider,
+            rider_accepted_at=timezone.now(),
+            rider_order_acknowledged=True,
+            status="PICKED_UP",
+        )
+        self.client.force_login(rider_user)
+        session = self.client.session
+        session["active_portal"] = "RIDER"
+        session.save()
+
+        dashboard = self.client.get(
+            reverse("rider_dashboard"),
+            {"view": "active"},
+        )
+
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertTrue(dashboard.context["show_start_active_deliveries"])
+        self.assertNotContains(
+            dashboard,
+            "No shops are currently accepting deliveries",
+        )
+        self.assertContains(dashboard, "ORD-PUBLIC-RIDER-SERVICE-DISABLED-ACTIVE")
+        rider.refresh_from_db()
+        self.assertTrue(rider.is_active)
+        response = self.client.post(reverse("rider_start_active_deliveries"))
+        self.assertRedirects(
+            response,
+            f"{reverse('rider_dashboard')}?view=active",
+        )
+        shop_order.refresh_from_db()
+        self.assertEqual(shop_order.status, "OUT_FOR_DELIVERY")
+
+    def test_public_rider_active_dashboard_hides_invalid_deleted_orders(self):
+        rider_user = User.objects.create_user(
+            username="public_rider_invalid_active_order",
+            email="public_rider_invalid_active_order@example.com",
+        )
+        PublicRiderApplication.objects.create(
+            user=rider_user,
+            full_name="Invalid Active Order Rider",
+            phone="9898989896",
+            address="Rider route",
+            vehicle_type="MOTORCYCLE",
+            driving_license_number="DL-PUBLIC-INVALID-ACTIVE",
+            work_area={
+                "type": "circle",
+                "center": {"lat": 21.17, "lng": 72.83},
+                "radius_km": 10,
+            },
+            status=PublicRiderApplication.STATUS_APPROVED,
+        )
+        owner = User.objects.create_user(
+            username="owner_public_rider_invalid_active_order",
+        )
+        shop = Shop.objects.create(
+            name="Invalid Active Order Shop",
+            owner=owner,
+            public_rider_network_enabled=True,
+            rider_delivery_preference="PUBLIC",
+        )
+        rider = ShopStaff.objects.create(
+            shop=shop,
+            user=rider_user,
+            role="RIDER",
+            is_active=True,
+            is_public_rider=True,
+        )
+        order = Order.objects.create(
+            order_id="ORD-PUBLIC-RIDER-DELETED-ACTIVE",
+            user="public_rider_invalid_order_customer",
+            assigned_rider=rider_user.username,
+            status="OUT_FOR_DELIVERY",
+            is_valid_order=False,
+            shop=shop,
+        )
+        ShopOrder.objects.create(
+            order=order,
+            shop=shop,
+            assigned_rider=rider,
+            rider_accepted_at=timezone.now(),
+            status="OUT_FOR_DELIVERY",
+        )
+        self.client.force_login(rider_user)
+        session = self.client.session
+        session["active_portal"] = "RIDER"
+        session.save()
+
+        response = self.client.get(
+            reverse("rider_dashboard"),
+            {"view": "active"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["orders"].count(), 0)
+        self.assertNotContains(response, "ORD-PUBLIC-RIDER-DELETED-ACTIVE")
+
     def test_rider_can_start_delivery_only_after_all_assigned_parcels_are_collected(self):
         owner = User.objects.create_user(
             username="owner_order_pickup_scope",
@@ -5207,7 +5548,33 @@ class SellerProjectConfigTests(TestCase):
         self.assertEqual(same_order_parcels[0].status, "PICKED_UP")
         self.assertEqual(same_order_parcels[1].status, "RIDER_ASSIGNED")
         self.assertEqual(customer_order.status, "PICKED_UP")
+        self.client.force_login(rider_user)
+        partial_pickup_dashboard = self.client.get(
+            reverse("rider_dashboard"),
+            {"view": "active"},
+        )
+        self.assertTrue(
+            partial_pickup_dashboard.context["show_start_active_deliveries"],
+        )
+        self.assertContains(
+            partial_pickup_dashboard,
+            '<button type="submit" class="btn btn-success">',
+        )
+        partial_pickup_start = self.client.post(
+            reverse("rider_start_active_deliveries"),
+        )
+        self.assertRedirects(
+            partial_pickup_start,
+            f"{reverse('rider_dashboard')}?view=active",
+        )
+        same_order_parcels[0].refresh_from_db()
+        same_order_parcels[1].refresh_from_db()
+        customer_order.refresh_from_db()
+        self.assertEqual(same_order_parcels[0].status, "OUT_FOR_DELIVERY")
+        self.assertEqual(same_order_parcels[1].status, "RIDER_ASSIGNED")
+        self.assertEqual(customer_order.status, "PICKED_UP")
 
+        self.client.force_login(owner)
         final_pickup = self.client.post(
             reverse(
                 "rider_pickup_order",
@@ -5220,9 +5587,10 @@ class SellerProjectConfigTests(TestCase):
             },
         )
         self.assertEqual(final_pickup.status_code, 302)
-        for parcel in same_order_parcels:
-            parcel.refresh_from_db()
-            self.assertEqual(parcel.status, "PICKED_UP")
+        same_order_parcels[0].refresh_from_db()
+        same_order_parcels[1].refresh_from_db()
+        self.assertEqual(same_order_parcels[0].status, "OUT_FOR_DELIVERY")
+        self.assertEqual(same_order_parcels[1].status, "PICKED_UP")
         customer_order.refresh_from_db()
         unrelated_parcel.refresh_from_db()
         unrelated_order.refresh_from_db()
@@ -5241,8 +5609,14 @@ class SellerProjectConfigTests(TestCase):
             reverse("rider_dashboard"),
             {"view": "active"},
         )
-        self.assertContains(blocked_dashboard, "Start delivery")
-        self.assertContains(blocked_dashboard, "Parcels awaiting pickup stay unchanged.")
+        self.assertContains(
+            blocked_dashboard,
+            'id="rider-start-active-deliveries"',
+        )
+        self.assertContains(
+            blocked_dashboard,
+            'disabled aria-describedby="rider-start-delivery-help"',
+        )
         for parcel in same_order_parcels:
             parcel.refresh_from_db()
             self.assertEqual(parcel.status, "OUT_FOR_DELIVERY")
@@ -5271,6 +5645,19 @@ class SellerProjectConfigTests(TestCase):
         )
         self.assertContains(ready_dashboard, "Ready to start delivery")
         self.assertContains(ready_dashboard, "Start delivery")
+        self.assertContains(
+            ready_dashboard,
+            '<button type="submit" class="btn btn-success">',
+        )
+        available_dashboard = self.client.get(reverse("rider_dashboard"))
+        self.assertTrue(
+            available_dashboard.context["show_start_active_deliveries"],
+        )
+        self.assertContains(
+            available_dashboard,
+            'id="rider-start-active-deliveries"',
+        )
+        self.assertContains(available_dashboard, "Start delivery")
         start_delivery = self.client.post(
             reverse("rider_start_active_deliveries"),
         )
@@ -8391,6 +8778,76 @@ class SellerProjectConfigTests(TestCase):
         ready_notification.refresh_from_db()
         self.assertTrue(ready_notification.is_read)
 
+    def test_packer_can_verify_rider_pickup_and_view_recently_verified_orders(self):
+        owner = User.objects.create_user(
+            username="owner_packer_verify_rider",
+            password="test-pass",
+        )
+        packer_user = User.objects.create_user(
+            username="packer_verify_rider",
+            password="test-pass",
+        )
+        rider_user = User.objects.create_user(
+            username="rider_verify_rider",
+            password="test-pass",
+        )
+        shop = Shop.objects.create(name="Packer Rider Verification Shop", owner=owner)
+        packer = ShopStaff.objects.create(
+            shop=shop,
+            user=packer_user,
+            role="PACKER",
+            is_active=True,
+            can_pack_orders=True,
+        )
+        rider = ShopStaff.objects.create(
+            shop=shop,
+            user=rider_user,
+            role="RIDER",
+            is_active=True,
+        )
+        order = Order.objects.create(
+            order_id="ORD-PACKER-VERIFY-RIDER",
+            user="packer_rider_customer",
+            status="RIDER_ASSIGNED",
+            shop=shop,
+        )
+        shop_order = ShopOrder.objects.create(
+            order=order,
+            shop=shop,
+            total_amount=Decimal("50.00"),
+            status="RIDER_ASSIGNED",
+            assigned_packer=packer,
+            assigned_rider=rider,
+            rider_accepted_at=timezone.now(),
+            rider_order_acknowledged=True,
+        )
+
+        self.client.force_login(packer_user)
+        verification_queue = self.client.get(
+            reverse("packer_dashboard"),
+            {"view": "verify"},
+        )
+        self.assertEqual(verification_queue.status_code, 200)
+        self.assertContains(verification_queue, "ORD-PACKER-VERIFY-RIDER")
+        self.assertContains(verification_queue, "Verify pickup")
+
+        pickup_otp = seller_views._ensure_rider_pickup_otp(shop_order)
+        verification_response = self.client.post(
+            reverse("verify_rider_pickup_otp"),
+            {"pickup_otp": pickup_otp},
+        )
+        self.assertEqual(verification_response.status_code, 302)
+        shop_order.refresh_from_db()
+        self.assertEqual(shop_order.status, "OUT_FOR_DELIVERY")
+
+        recently_verified = self.client.get(
+            reverse("packer_dashboard"),
+            {"view": "verified"},
+        )
+        self.assertEqual(recently_verified.status_code, 200)
+        self.assertContains(recently_verified, "ORD-PACKER-VERIFY-RIDER")
+        self.assertContains(recently_verified, "Rider and parcel verified")
+
     def test_owner_can_assign_and_packer_can_accept_order(self):
         owner = User.objects.create_user(username="owner_packer_assign", password="pass1234")
         packer_user = User.objects.create_user(username="packer_assigner", password="pass1234")
@@ -8433,6 +8890,32 @@ class SellerProjectConfigTests(TestCase):
         )
         shop_order.refresh_from_db()
         self.assertEqual(shop_order.assigned_packer_id, packer.id)
+        second_order = Order.objects.create(
+            order_id="ORD-PACKER-ASSIGN-SECOND",
+            user="packer_customer_assign",
+            status="CONFIRMED",
+            payment_status="PAID",
+            shop=shop,
+        )
+        second_shop_order = ShopOrder.objects.create(
+            order=second_order,
+            shop=shop,
+            total_amount="60.00",
+            status="CONFIRMED",
+        )
+        second_accept_response = self.client.post(
+            reverse("accept_packer_order", kwargs={"shop_order_id": second_shop_order.id}),
+        )
+        self.assertEqual(second_accept_response.status_code, 302)
+        second_shop_order.refresh_from_db()
+        self.assertEqual(second_shop_order.assigned_packer_id, packer.id)
+        multi_order_dashboard = self.client.get(
+            reverse("packer_dashboard"),
+            {"view": "active"},
+        )
+        self.assertContains(multi_order_dashboard, "ORD-PACKER-ASSIGN")
+        self.assertContains(multi_order_dashboard, "ORD-PACKER-ASSIGN-SECOND")
+
         older_order = Order.objects.create(
             order_id="ORD-PACKER-OLDER",
             user="packer_customer_assign",
@@ -14447,7 +14930,7 @@ class ShopOwnerOperationsTests(TestCase):
             },
             status=PublicRiderApplication.STATUS_APPROVED,
         )
-        ShopStaff.objects.create(
+        rider_membership = ShopStaff.objects.create(
             shop=self.shop,
             user=rider_user,
             role="RIDER",
@@ -14604,6 +15087,17 @@ class ShopOwnerOperationsTests(TestCase):
             },
         )
         self.assertEqual(acceptance_response.status_code, 302)
+        active_batch_response = self.client.get(
+            reverse("rider_dashboard"),
+            {"view": "active"},
+        )
+        remaining_offers = [
+            row
+            for row in active_batch_response.context["orders"]
+            if row.is_collection_offer
+        ]
+        self.assertTrue(remaining_offers)
+        self.assertContains(active_batch_response, "Accept delivery")
         rider_application.refresh_from_db()
         accept_cooldown_until = rider_application.public_rider_offer_cooldown_until
         self.assertIsNotNone(accept_cooldown_until)
@@ -14615,6 +15109,30 @@ class ShopOwnerOperationsTests(TestCase):
             (accept_cooldown_until - timezone.now()).total_seconds(),
             11,
         )
+        rider_application.public_rider_batch_started_at = (
+            timezone.now() - timedelta(minutes=6)
+        )
+        rider_application.save(update_fields=[
+            "public_rider_batch_started_at",
+            "updated_at",
+        ])
+        expired_active_dashboard = self.client.get(
+            reverse("rider_dashboard"),
+            {"view": "active"},
+        )
+        self.assertEqual(expired_active_dashboard.context["available_order_count"], 0)
+        self.assertFalse(
+            any(
+                row.is_collection_offer
+                for row in expired_active_dashboard.context["orders"]
+            )
+        )
+        self.assertNotContains(expired_active_dashboard, "Accept delivery")
+        rider_application.public_rider_batch_started_at = timezone.now()
+        rider_application.save(update_fields=[
+            "public_rider_batch_started_at",
+            "updated_at",
+        ])
         remaining_order = next(
             shop_order
             for shop_order in shop_orders
@@ -14916,7 +15434,7 @@ class ShopOwnerOperationsTests(TestCase):
             first_name="Legacy",
             last_name="Rider",
         )
-        ShopStaff.objects.create(
+        rider_membership = ShopStaff.objects.create(
             shop=self.shop,
             user=rider_user,
             role="RIDER",
@@ -15841,6 +16359,48 @@ class MobileBackgroundLocationTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertIsNone(response.json()["customer_location"])
+
+    def test_accepted_rider_without_assignment_link_can_read_live_location(self):
+        self.shop_order.assigned_rider = None
+        self.shop_order.rider_accepted_at = timezone.now()
+        self.shop_order.save(update_fields=["assigned_rider", "rider_accepted_at"])
+        self.rider.delete()
+        PublicRiderApplication.objects.create(
+            user=self.rider_user,
+            full_name="Background Location Public Rider",
+            phone="9876543210",
+            address="Rider route",
+            vehicle_type="MOTORCYCLE",
+            driving_license_number="DL-BACKGROUND-LOCATION",
+            work_area={
+                "type": "circle",
+                "center": {"lat": 21.2, "lng": 72.8},
+                "radius_km": 10,
+            },
+            status=PublicRiderApplication.STATUS_APPROVED,
+        )
+        self.order.assigned_rider = self.rider_user.username
+        self.order.customer_live_location = {
+            "lat": 21.31,
+            "lng": 72.91,
+            "observed_at": timezone.now().isoformat(),
+        }
+        self.order.save(update_fields=["assigned_rider", "customer_live_location"])
+
+        self.client.force_login(self.rider_user)
+        response = self.client.get(
+            reverse(
+                "shop_order_rider_location",
+                kwargs={"shop_order_id": self.shop_order.pk},
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["rider_name"], self.rider_user.username)
+        self.assertEqual(
+            response.json()["customer_location"]["lat"],
+            21.31,
+        )
 
     def test_rider_session_is_scoped_to_assigned_active_delivery(self):
         session_response = self.create_location_session(
@@ -17761,7 +18321,7 @@ class MarketplacePurchaseWorkflowTests(TestCase):
             },
             status=PublicRiderApplication.STATUS_APPROVED,
         )
-        ShopStaff.objects.create(
+        rider_membership = ShopStaff.objects.create(
             shop=self.shop,
             user=rider_user,
             role="RIDER",
@@ -17779,6 +18339,7 @@ class MarketplacePurchaseWorkflowTests(TestCase):
             order=order,
             shop=self.shop,
             status="RIDER_ASSIGNED",
+            assigned_rider=rider_membership,
             rider_accepted_at=timezone.now(),
         )
         self.client.force_login(rider_user)
@@ -17816,12 +18377,41 @@ class MarketplacePurchaseWorkflowTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["success"])
         self.assertTrue(response.json()["accepted_by_you"])
+        shop_order.refresh_from_db()
+        self.assertTrue(shop_order.rider_order_acknowledged)
+        self.assertEqual(shop_order.status, "RIDER_ASSIGNED")
+        pickup_otp = seller_views._ensure_rider_pickup_otp(shop_order)
+        self.client.force_login(self.owner)
+        shop_verification = self.client.post(
+            reverse("verify_rider_pickup_otp"),
+            {"pickup_otp": pickup_otp},
+        )
+        self.assertEqual(shop_verification.status_code, 302)
+        shop_order.refresh_from_db()
+        self.assertEqual(shop_order.status, "OUT_FOR_DELIVERY")
+        self.assertTrue(
+            shop_order.status_history.filter(status="OUT_FOR_DELIVERY").exists()
+        )
+        self.client.force_login(rider_user)
+        session = self.client.session
+        session["active_portal"] = "RIDER"
+        session.save()
         detail_response = self.client.get(response.json()["order_url"])
         self.assertEqual(detail_response.status_code, 200)
         self.assertEqual(detail_response.context["shop_order"].pk, shop_order.pk)
         self.assertTrue(detail_response.context["is_assigned_rider"])
         self.assertContains(detail_response, 'id="riderOrderQrScanForm"')
         self.assertContains(detail_response, "Delivery actions")
+        start_delivery_response = self.client.post(
+            reverse("rider_start_active_deliveries"),
+        )
+        self.assertRedirects(
+            start_delivery_response,
+            f"{reverse('rider_dashboard')}?view=active",
+            fetch_redirect_response=False,
+        )
+        shop_order.refresh_from_db()
+        self.assertEqual(shop_order.status, "OUT_FOR_DELIVERY")
 
     def test_scanning_pickup_task_qr_auto_verifies_rider_and_confirms_pickup(self):
         rider_user = User.objects.create_user(

@@ -8,11 +8,13 @@ Rider Dashboard
 
 <div class="rider-dashboard-tabs-wrap{% if is_public_rider %} public-rider-tabs-wrap{% endif %}">
 <nav class="nav nav-pills gap-2 mb-4 rider-dashboard-tabs" aria-label="Rider dashboard tabs">
+    {% if not public_rider_collection_window_expired %}
     <a href="{% url 'rider_dashboard' %}?view=available"
        class="nav-link {% if available_view %}active{% endif %}">
         <i class="bi bi-inbox me-1"></i><span>Available</span>
         <span class="badge rounded-pill ms-1 {% if available_view %}text-bg-light{% else %}text-bg-secondary{% endif %}">{{ available_order_count }}</span>
     </a>
+    {% endif %}
     <a href="{% url 'rider_dashboard' %}?view=active"
        class="nav-link {% if active_view %}active{% endif %}">
         <i class="bi bi-bicycle me-1"></i><span>Active</span>
@@ -54,6 +56,22 @@ Rider Dashboard
     </nav>
 </details>
 </div>
+
+{% if public_rider_batch_expires_at %}
+<div class="alert alert-info d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3"
+     data-public-rider-collection-window
+     data-expires-at="{{ public_rider_batch_expires_at|date:'c' }}"
+     role="status"
+     aria-live="polite">
+    <span><strong>Order collection window:</strong> accept any additional offers before the timer ends, then collect your parcels from the shops.</span>
+    <span class="badge text-bg-primary" data-collection-window-countdown>05:00</span>
+</div>
+{% elif public_rider_collection_window_expired %}
+<div class="alert alert-warning mb-3" role="status" aria-live="polite">
+    <strong>Offer window closed.</strong> No new delivery offers are available for this batch.
+    Go to each shop and collect the accepted parcel. Scan the shop's printed order QR after the shop verifies your pickup.
+</div>
+{% endif %}
 
 {% if is_public_rider and earnings_view %}
 <section class="card border-0 shadow-sm mb-4" aria-label="Public rider earnings overview">
@@ -520,6 +538,23 @@ Rider Dashboard
 }
 </style>
 
+{% if show_start_active_deliveries or active_view %}
+<section class="rider-start-delivery-bar mb-3" id="rider-start-active-deliveries" aria-label="Start delivery">
+    <form method="post" action="{% url 'rider_start_active_deliveries' %}">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-success"{% if not show_start_active_deliveries %} disabled aria-describedby="rider-start-delivery-help"{% endif %}>
+            <i class="bi bi-truck me-1" aria-hidden="true"></i>
+            Start delivery{% if pickup_start_count %} · {{ pickup_start_count }} parcel{{ pickup_start_count|pluralize }}{% endif %}
+        </button>
+        {% if not show_start_active_deliveries %}
+        <div id="rider-start-delivery-help" class="small text-muted mt-2">
+            Complete shop pickup verification and scan the shop's order QR to enable delivery.
+        </div>
+        {% endif %}
+    </form>
+</section>
+{% endif %}
+
 {% if active_view %}
 <section class="rider-active-actions mb-3" aria-label="Route and delivery actions">
     {% if navigation_stops %}
@@ -544,16 +579,6 @@ Rider Dashboard
                 <i class="bi bi-shop me-1" aria-hidden="true"></i>Pickups
             </button>
             <div id="pickupRouteNavigationStatus" class="small text-muted" role="status" aria-live="polite"></div>
-        </div>
-    {% endif %}
-    {% if show_start_active_deliveries %}
-        <div class="rider-active-action" id="rider-start-active-deliveries">
-            <form method="post" action="{% url 'rider_start_active_deliveries' %}">
-                {% csrf_token %}
-                <button type="submit" class="btn btn-success">
-                    <i class="bi bi-truck me-1"></i>Start delivery
-                </button>
-            </form>
         </div>
     {% endif %}
 </section>
@@ -737,7 +762,7 @@ Rider Dashboard
                         <strong>{{ order.pickup_location_data.name|default:order.shop.name }}</strong>
                         {% if order.pickup_location_data.address %}· {{ order.pickup_location_data.address }}{% endif %}
                     </div>
-                    {% if is_public_rider and available_view %}
+                    {% if is_public_rider and available_view or is_public_rider and order.is_collection_offer %}
                         <div class="alert alert-success small mb-3"
                              data-public-offer-route
                              data-rider-location-required="{% if order.public_rider_route_display.needs_rider_location %}true{% else %}false{% endif %}"
@@ -828,7 +853,7 @@ Rider Dashboard
                        href="{% if order.status == 'PICKED_UP' and pickup_pending_count and pickup_navigation_stops %}#pickupRouteNavigation{% elif order.status == 'PICKED_UP' %}#rider-start-active-deliveries{% else %}#rider-next-action-{{ order.id }}{% endif %}"
                        aria-label="Next step for order {{ order.shop_order_number|default:order.order.order_id }}. Jump to the required action.">
                         <div class="rider-next-step-icon" aria-hidden="true">
-                            {% if available_view or order.status == "READY" %}<i class="bi bi-check2-circle"></i>
+                            {% if available_view or order.is_collection_offer or order.status == "READY" %}<i class="bi bi-check2-circle"></i>
                             {% elif order.status == "RIDER_ASSIGNED" %}<i class="bi bi-shop"></i>
                             {% elif order.status == "PICKED_UP" %}<i class="bi bi-truck"></i>
                             {% elif order.status == "OUT_FOR_DELIVERY" and order.shop.require_customer_otp_verification and not order.customer_otp_verified %}<i class="bi bi-shield-lock"></i>
@@ -836,7 +861,10 @@ Rider Dashboard
                         </div>
                         <div>
                             <span class="rider-next-step-label">Next step</span>
-                            {% if available_view and order.is_assigned_to_current_rider or active_view and order.status == "READY" %}
+                            {% if order.is_collection_offer %}
+                                <h6 class="rider-next-step-title">Accept this delivery</h6>
+                                <p class="rider-next-step-description">Review the shop and customer details, then accept to add this delivery to your active orders.</p>
+                            {% elif available_view and order.is_assigned_to_current_rider or active_view and order.status == "READY" %}
                                 <h6 class="rider-next-step-title">Confirm this delivery</h6>
                                 <p class="rider-next-step-description">Confirm your assignment, then head to the shop to collect the parcel.</p>
                             {% elif available_view %}
@@ -844,10 +872,10 @@ Rider Dashboard
                                 <p class="rider-next-step-description">Review the shop and customer details, then accept to add this delivery to your active orders.</p>
                             {% elif order.status == "RIDER_ASSIGNED" %}
                                 <h6 class="rider-next-step-title">Go to the shop and collect the parcel</h6>
-                                <p class="rider-next-step-description">Show your pickup QR or OTP to shop staff. After they confirm handover, scan the slip to verify the order is in your active list.</p>
+                                <p class="rider-next-step-description">Show your pickup QR or OTP so shop staff can verify you. Then scan the shop's printed order QR to confirm you received the parcel. Delivery starts automatically after both checks.</p>
                             {% elif order.status == "PICKED_UP" %}
-                                <h6 class="rider-next-step-title">{% if pickup_pending_count %}Collect the remaining parcels{% else %}Start the delivery route{% endif %}</h6>
-                                <p class="rider-next-step-description">{% if pickup_pending_count %}Pick up the other assigned parcels first, then use Start delivery above.{% else %}All assigned parcels are picked up. Use Start delivery above to begin the customer drop-off.{% endif %}</p>
+                                <h6 class="rider-next-step-title">Scan the shop's printed order QR</h6>
+                                <p class="rider-next-step-description">The shop has verified your pickup. Scan the printed order QR to confirm the parcel; delivery will start automatically.</p>
                             {% elif order.status == "OUT_FOR_DELIVERY" and order.shop.require_customer_otp_verification and not order.customer_otp_verified %}
                                 <h6 class="rider-next-step-title">Reach the customer and verify their OTP</h6>
                                 <p class="rider-next-step-description">Navigate to the delivery address. Enter the customer's OTP after handing over the parcel to continue.</p>
@@ -901,7 +929,7 @@ Rider Dashboard
                             {% endif %}
                         </div>
                         <div><strong>Customer:</strong> {{ order.customer_display_name }}</div>
-                        {% if available_view %}
+                        {% if available_view or order.is_collection_offer %}
                             <div class="small text-muted">
                                     {{ order.load_estimate.item_count }} items · approx.
                                     {{ order.load_estimate.weight_kg|floatformat:2 }} kg ·
@@ -1209,7 +1237,7 @@ Rider Dashboard
                         </div>
                     {% endif %}
 
-                    {% if is_public_rider and available_view %}
+                    {% if is_public_rider and available_view or is_public_rider and order.is_collection_offer %}
                         {% if order.public_rider_route_display.estimated_pay != None %}
                             <form method="post" action="{% url 'accept_rider_order' order.id %}" class="mb-2">
                                 {% csrf_token %}
@@ -1269,14 +1297,14 @@ Rider Dashboard
                                 Route estimate: {{ order.delivery_estimated_arrival|date:"h:i A" }}
                             </div>
                         {% endif %}
-                    {% elif not order.assigned_rider and not order.rider_accepted_at %}
+                    {% elif not order.is_collection_offer and not order.assigned_rider and not order.rider_accepted_at %}
                         <form method="post" action="{% url 'accept_rider_order' order.id %}" class="mb-2" id="rider-next-action-{{ order.id }}">
                             {% csrf_token %}
                             <button type="submit" class="btn btn-success btn-lg w-100">
                                 <i class="bi bi-check-circle me-1"></i> Accept this delivery
                             </button>
                         </form>
-                    {% else %}
+                    {% elif not order.is_collection_offer %}
                         <div class="alert alert-secondary small mb-2">Assigned to another rider</div>
                     {% endif %}
 
@@ -1716,7 +1744,7 @@ Rider Dashboard
         offer ends. Offers go to one eligible rider at a time, starting with the nearest; turn on
         location to help determine rider distance.
     {% endif %}
-    Additional offers appear in the Available tab while this collection window is open.
+    Additional offers appear in the Available and Active tabs while this collection window is open.
     <span id="publicRiderLocationStatus" class="d-block mt-1" role="status" aria-live="polite">
         Waiting for current location…
     </span>
@@ -1805,6 +1833,10 @@ Rider Dashboard
             document.documentElement.style.setProperty(
                 "--rider-dashboard-tabs-top",
                 `${topOffset}px`,
+            );
+            document.documentElement.style.setProperty(
+                "--rider-dashboard-tabs-bottom",
+                `${topOffset + tabsWrap.offsetHeight}px`,
             );
             let spacer = tabsWrap.previousElementSibling;
             if (!spacer?.classList.contains("rider-dashboard-tabs-spacer")) {
@@ -2762,6 +2794,33 @@ window.setTimeout(
         );
     } else {
         window.__sellerHelperPublicRiderOfferPoll = null;
+    }
+
+    const collectionWindow = document.querySelector(
+        "[data-public-rider-collection-window]",
+    );
+    if (collectionWindow) {
+        const expiry = Date.parse(collectionWindow.dataset.expiresAt || "");
+        const countdown = collectionWindow.querySelector(
+            "[data-collection-window-countdown]",
+        );
+        const updateCollectionWindow = () => {
+            const remainingSeconds = Math.max(
+                0,
+                Math.ceil((expiry - Date.now()) / 1000),
+            );
+            if (countdown) {
+                const minutes = Math.floor(remainingSeconds / 60);
+                const seconds = remainingSeconds % 60;
+                countdown.textContent = `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+            }
+            if (remainingSeconds === 0) {
+                window.location.reload();
+                return;
+            }
+            window.setTimeout(updateCollectionWindow, 1000);
+        };
+        if (Number.isFinite(expiry)) updateCollectionWindow();
     }
 })();
 </script>
