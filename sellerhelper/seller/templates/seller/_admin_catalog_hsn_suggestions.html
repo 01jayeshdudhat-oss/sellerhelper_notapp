@@ -1,0 +1,126 @@
+<script>
+(() => {
+    const categoryMarketElement = document.getElementById("catalog-category-market-map");
+    const categoryMarkets = categoryMarketElement
+        ? JSON.parse(categoryMarketElement.textContent)
+        : {};
+
+    document.querySelectorAll("[data-hsn-product-name]").forEach((nameField) => {
+        const key = nameField.dataset.hsnProductName;
+        const categoryField = document.querySelector(
+            `[data-catalog-product-category="${CSS.escape(key)}"]`,
+        );
+        const hsnCodeField = document.querySelector(
+            `[data-hsn-product-code="${CSS.escape(key)}"]`,
+        );
+        const sacCodeField = document.querySelector(
+            `[data-sac-product-code="${CSS.escape(key)}"]`,
+        );
+        const hsnSuggestions = document.querySelector(
+            `[data-hsn-suggestions="${CSS.escape(key)}"]`,
+        );
+        const sacSuggestions = document.querySelector(
+            `[data-sac-suggestions="${CSS.escape(key)}"]`,
+        );
+        if (!hsnCodeField || !hsnSuggestions) return;
+
+        const hsnWrapper = hsnCodeField.closest(".catalog-code-field-hsn")
+            || document.querySelector(
+                `[data-hsn-code-container="${CSS.escape(key)}"]`,
+            );
+        const sacWrapper = sacCodeField?.closest(".catalog-code-field-sac")
+            || document.querySelector(
+                `[data-sac-code-container="${CSS.escape(key)}"]`,
+            );
+        let debounceTimer;
+        let activeRequest;
+        const isServiceCategory = () => (
+            categoryField
+            && categoryMarkets[categoryField.value] === "SERVICE MARKET"
+        );
+        const clearSuggestions = () => {
+            hsnSuggestions.replaceChildren();
+            sacSuggestions?.replaceChildren();
+        };
+        const updateCodeFields = () => {
+            const serviceCategory = isServiceCategory();
+            if (hsnWrapper) hsnWrapper.hidden = serviceCategory;
+            if (sacWrapper) sacWrapper.hidden = !serviceCategory;
+            clearSuggestions();
+        };
+
+        updateCodeFields();
+        categoryField?.addEventListener("change", updateCodeFields);
+        nameField.addEventListener("input", () => {
+            window.clearTimeout(debounceTimer);
+            if (activeRequest) activeRequest.abort();
+            clearSuggestions();
+            const query = nameField.value.trim();
+            if (query.length < 2) return;
+
+            debounceTimer = window.setTimeout(async () => {
+                const serviceCategory = isServiceCategory();
+                const codeField = serviceCategory ? sacCodeField : hsnCodeField;
+                const suggestions = serviceCategory ? sacSuggestions : hsnSuggestions;
+                if (!codeField || !suggestions) return;
+
+                activeRequest = new AbortController();
+                try {
+                    const url = new URL(
+                        suggestions.dataset.suggestionsUrl,
+                        window.location.origin,
+                    );
+                    url.searchParams.set("q", query);
+                    if (serviceCategory) {
+                        url.searchParams.set("category", categoryField.value);
+                    }
+                    const response = await fetch(url, {
+                        credentials: "same-origin",
+                        signal: activeRequest.signal,
+                        headers: {"Accept": "application/json"},
+                    });
+                    if (!response.ok) {
+                        throw new Error(
+                            `Code suggestion request failed (${response.status}).`,
+                        );
+                    }
+                    const payload = await response.json();
+                    if (
+                        nameField.value.trim() !== query
+                        || serviceCategory !== isServiceCategory()
+                    ) return;
+                    suggestions.replaceChildren();
+                    for (const result of payload.results || []) {
+                        const button = document.createElement("button");
+                        button.type = "button";
+                        button.className = "btn btn-sm btn-outline-secondary d-block text-start w-100 mb-1";
+                        button.setAttribute("role", "option");
+                        button.textContent = `${result.code} — ${result.description}`;
+                        button.addEventListener("click", () => {
+                            codeField.value = result.code;
+                            codeField.dispatchEvent(
+                                new Event("change", {bubbles: true}),
+                            );
+                            suggestions.replaceChildren();
+                        });
+                        suggestions.append(button);
+                    }
+                    if (!payload.results?.length) {
+                        const empty = document.createElement("span");
+                        empty.className = "text-muted";
+                        empty.textContent = serviceCategory
+                            ? "No SAC descriptions match this product name."
+                            : "No HSN descriptions match this product name.";
+                        suggestions.append(empty);
+                    }
+                } catch (error) {
+                    if (error.name !== "AbortError") {
+                        console.error("Could not load code suggestions.", error);
+                        suggestions.textContent = "Code suggestions could not be loaded.";
+                    }
+                }
+            }, 250);
+        });
+    });
+})();
+</script>

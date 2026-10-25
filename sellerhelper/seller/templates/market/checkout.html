@@ -222,6 +222,7 @@
     <form method="post" id="checkoutForm" enctype="multipart/form-data">
 
         {% csrf_token %}
+        <input type="hidden" name="checkout_attempt_key" value="{{ request.session.checkout_attempt_key }}">
         <input type="hidden" name="use_wallet_balance" value="0">
 
         <div class="row g-4 g-xl-5">
@@ -361,7 +362,11 @@
                     </summary>
                     <div class="checkout-collapsible-body">
                         {% for item in items %}
-                        <div class="d-flex align-items-center checkout-item">
+                        <div class="d-flex align-items-center checkout-item"
+                             data-checkout-cart-item
+                             data-cart-line-key="{{ item.line_key }}"
+                             data-cart-quantity="{{ item.quantity }}"
+                             data-product-name="{{ item.assignment.product.product_name }}">
                             {% if item.assignment.display_image_url %}
                                 <img
                                     src="{{ item.assignment.display_image_url }}"
@@ -402,61 +407,81 @@
 
                 <details class="card border-0 checkout-card checkout-collapsible mt-3">
                     <summary>
-                        Order instruction
-                        <span class="small fw-normal text-muted ms-2">Optional · note or audio</span>
+                        Order instructions
+                        <span class="small fw-normal text-muted ms-2">Optional · separate note or recording for each recipient</span>
                     </summary>
                     <div class="checkout-collapsible-body">
                         <p class="small text-muted">
-                            Add a written note or voice recording for the shop team or the rider assigned to one shop order. Audio is available until one hour after delivery.
+                            Add separate instructions for the shop team and the assigned rider (shop staff or public rider). Both instructions apply to the selected shop order. Audio is available until one hour after delivery.
                         </p>
-                        <label class="form-label" for="orderInstructionRecipient">Instruction for</label>
-                        <select class="form-select mb-3" id="orderInstructionRecipient" name="order_instruction_recipient">
-                            <option value="SHOP" {% if order_instruction_draft.recipient != "RIDER" %}selected{% endif %}>Shop team (owner and staff)</option>
-                            <option value="RIDER" {% if order_instruction_draft.recipient == "RIDER" %}selected{% endif %}>Assigned rider</option>
-                        </select>
                         <label class="form-label" for="orderInstructionShop">Shop order</label>
                         <select class="form-select mb-3" id="orderInstructionShop" name="order_instruction_shop">
                             <option value="">Select a shop</option>
                             {% for shop in checkout_shops %}
                                 <option value="{{ shop.id }}"
-                                        {% if order_instruction_draft.shop_id == shop.id %}selected{% endif %}>
+                                        {% if order_instruction_drafts.SHOP.shop_id == shop.id or order_instruction_drafts.RIDER.shop_id == shop.id %}selected{% endif %}>
                                     {{ shop.name }}
                                 </option>
                             {% endfor %}
                         </select>
-                        <label class="form-label" for="orderInstructionText">Written instruction (optional)</label>
-                        <textarea class="form-control mb-3" id="orderInstructionText" name="order_instruction_text"
-                                  rows="2" maxlength="1000"
-                                  placeholder="For example: Please call when you arrive.">{{ order_instruction_draft.instruction_text|default:"" }}</textarea>
-
-                        <div class="d-flex flex-wrap gap-2 align-items-center">
-                            <button class="btn btn-outline-primary" type="button" id="startInstructionRecording">
-                                <i class="bi bi-mic me-1"></i>Record audio instruction
-                            </button>
-                            <button class="btn btn-outline-danger" type="button" id="stopInstructionRecording" disabled>
-                                Stop recording
-                            </button>
-                            <label class="btn btn-outline-secondary mb-0" for="orderInstructionAudio">
-                                Choose audio file
-                            </label>
-                            <button class="btn btn-link text-danger" type="button" id="clearInstructionAudio">
-                                Clear recording
-                            </button>
-                        </div>
-                        <input class="visually-hidden" type="file" id="orderInstructionAudio"
-                               name="order_instruction_audio" accept="audio/*">
-                        <input type="hidden" id="clearOrderInstructionAudio"
-                               name="clear_order_instruction_audio" value="0">
-                        {% if order_instruction_draft.audio_file %}
-                            <div class="small text-success mt-2" id="instructionRecordingStatus">
-                                Voice recording ready to send with this order.
+                        <section class="border rounded p-3 mb-3" data-order-instruction-recorder>
+                            <h6>Shop team instruction</h6>
+                            <label class="form-label" for="orderInstructionTextSHOP">Written instruction (optional)</label>
+                            <textarea class="form-control mb-3" id="orderInstructionTextSHOP"
+                                      name="order_instruction_text_shop" rows="2" maxlength="1000"
+                                      placeholder="For example: Please pack the vegetables separately.">{{ order_instruction_drafts.SHOP.instruction_text|default:"" }}</textarea>
+                            <div class="d-flex flex-wrap gap-2 align-items-center">
+                                <button class="btn btn-outline-primary" type="button" data-start-instruction-recording>
+                                    <i class="bi bi-mic me-1"></i>Record shop instruction
+                                </button>
+                                <button class="btn btn-outline-danger" type="button" data-stop-instruction-recording disabled>
+                                    Stop recording
+                                </button>
+                                <label class="btn btn-outline-secondary mb-0" for="orderInstructionAudioSHOP">Choose audio file</label>
+                                <button class="btn btn-link text-danger" type="button" data-clear-instruction-audio>Clear recording</button>
                             </div>
-                        {% else %}
-                            <div class="small text-muted mt-2" id="instructionRecordingStatus" aria-live="polite">
-                                Recording limit: 2 minutes and 10 MB. Microphone access requires HTTPS.
+                            <input class="visually-hidden" type="file" id="orderInstructionAudioSHOP"
+                                   name="order_instruction_audio_shop" accept="audio/*">
+                            <input type="hidden" name="clear_order_instruction_audio_shop" value="0"
+                                   data-clear-instruction-audio-value>
+                            {% if order_instruction_drafts.SHOP.audio_file %}
+                                <div class="small text-success mt-2" data-instruction-recording-status>Voice recording ready to send with this order.</div>
+                            {% else %}
+                                <div class="small text-muted mt-2" data-instruction-recording-status aria-live="polite">
+                                    Recording limit: 2 minutes and 10 MB. Microphone access requires HTTPS.
+                                </div>
+                            {% endif %}
+                            <audio class="w-100 mt-2" data-instruction-audio-preview controls hidden></audio>
+                        </section>
+                        <section class="border rounded p-3" data-order-instruction-recorder>
+                            <h6>Assigned rider instruction</h6>
+                            <label class="form-label" for="orderInstructionTextRIDER">Written instruction (optional)</label>
+                            <textarea class="form-control mb-3" id="orderInstructionTextRIDER"
+                                      name="order_instruction_text_rider" rows="2" maxlength="1000"
+                                      placeholder="For example: Please call when you arrive.">{{ order_instruction_drafts.RIDER.instruction_text|default:"" }}</textarea>
+                            <div class="d-flex flex-wrap gap-2 align-items-center">
+                                <button class="btn btn-outline-primary" type="button" data-start-instruction-recording>
+                                    <i class="bi bi-mic me-1"></i>Record rider instruction
+                                </button>
+                                <button class="btn btn-outline-danger" type="button" data-stop-instruction-recording disabled>
+                                    Stop recording
+                                </button>
+                                <label class="btn btn-outline-secondary mb-0" for="orderInstructionAudioRIDER">Choose audio file</label>
+                                <button class="btn btn-link text-danger" type="button" data-clear-instruction-audio>Clear recording</button>
                             </div>
-                        {% endif %}
-                        <audio class="w-100 mt-2" id="instructionAudioPreview" controls hidden></audio>
+                            <input class="visually-hidden" type="file" id="orderInstructionAudioRIDER"
+                                   name="order_instruction_audio_rider" accept="audio/*">
+                            <input type="hidden" name="clear_order_instruction_audio_rider" value="0"
+                                   data-clear-instruction-audio-value>
+                            {% if order_instruction_drafts.RIDER.audio_file %}
+                                <div class="small text-success mt-2" data-instruction-recording-status>Voice recording ready to send with this order.</div>
+                            {% else %}
+                                <div class="small text-muted mt-2" data-instruction-recording-status aria-live="polite">
+                                    Recording limit: 2 minutes and 10 MB. Microphone access requires HTTPS.
+                                </div>
+                            {% endif %}
+                            <audio class="w-100 mt-2" data-instruction-audio-preview controls hidden></audio>
+                        </section>
                     </div>
                 </details>
 
@@ -634,6 +659,7 @@
                         >
                             🛍️ Place COD Order
                         </button>
+                        <div id="checkoutSubmitStatus" class="small mt-2" role="status" aria-live="polite" hidden></div>
 
 
                         <a
@@ -704,109 +730,110 @@
 {% block extra_js %}
 <script>
 (() => {
-    const fileInput = document.getElementById("orderInstructionAudio");
-    const startButton = document.getElementById("startInstructionRecording");
-    const stopButton = document.getElementById("stopInstructionRecording");
-    const clearButton = document.getElementById("clearInstructionAudio");
-    const clearValue = document.getElementById("clearOrderInstructionAudio");
-    const status = document.getElementById("instructionRecordingStatus");
-    const preview = document.getElementById("instructionAudioPreview");
-    if (!fileInput || !startButton || !stopButton || !status || !preview) return;
-
-    let recorder;
-    let mediaStream;
-    let chunks = [];
-    let recordingTimeout;
     const maximumBytes = 10 * 1024 * 1024;
     const maximumDurationMs = 2 * 60 * 1000;
+    document.querySelectorAll("[data-order-instruction-recorder]").forEach((container) => {
+        const fileInput = container.querySelector('input[type="file"]');
+        const startButton = container.querySelector("[data-start-instruction-recording]");
+        const stopButton = container.querySelector("[data-stop-instruction-recording]");
+        const clearButton = container.querySelector("[data-clear-instruction-audio]");
+        const clearValue = container.querySelector("[data-clear-instruction-audio-value]");
+        const status = container.querySelector("[data-instruction-recording-status]");
+        const preview = container.querySelector("[data-instruction-audio-preview]");
+        if (!fileInput || !startButton || !stopButton || !status || !preview) return;
 
-    const clearPreview = () => {
-        if (preview.dataset.objectUrl) URL.revokeObjectURL(preview.dataset.objectUrl);
-        preview.removeAttribute("src");
-        delete preview.dataset.objectUrl;
-        preview.hidden = true;
-    };
-    const stopTracks = () => {
-        mediaStream?.getTracks().forEach((track) => track.stop());
-        mediaStream = undefined;
-        startButton.disabled = false;
-        stopButton.disabled = true;
-        if (recordingTimeout) window.clearTimeout(recordingTimeout);
-    };
-    const stopRecording = () => {
-        if (recorder?.state === "recording") recorder.stop();
-    };
+        let recorder;
+        let mediaStream;
+        let chunks = [];
+        let recordingTimeout;
+        const clearPreview = () => {
+            if (preview.dataset.objectUrl) URL.revokeObjectURL(preview.dataset.objectUrl);
+            preview.removeAttribute("src");
+            delete preview.dataset.objectUrl;
+            preview.hidden = true;
+        };
+        const stopTracks = () => {
+            mediaStream?.getTracks().forEach((track) => track.stop());
+            mediaStream = undefined;
+            startButton.disabled = false;
+            stopButton.disabled = true;
+            if (recordingTimeout) window.clearTimeout(recordingTimeout);
+        };
+        const stopRecording = () => {
+            if (recorder?.state === "recording") recorder.stop();
+        };
 
-    startButton.addEventListener("click", async () => {
-        if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-            status.textContent = "Audio recording is not supported in this browser. Choose an audio file instead.";
-            return;
-        }
-        try {
-            mediaStream = await navigator.mediaDevices.getUserMedia({audio: true});
-            const preferredType = ["audio/webm;codecs=opus", "audio/mp4", "audio/ogg;codecs=opus"]
-                .find((type) => MediaRecorder.isTypeSupported(type));
-            recorder = new MediaRecorder(
-                mediaStream,
-                preferredType ? {mimeType: preferredType} : undefined
-            );
-            chunks = [];
-            recorder.addEventListener("dataavailable", (event) => {
-                if (event.data.size) chunks.push(event.data);
-            });
-            recorder.addEventListener("stop", () => {
-                stopTracks();
-                const blob = new Blob(chunks, {type: recorder.mimeType || "audio/webm"});
-                if (blob.size > maximumBytes) {
-                    fileInput.value = "";
+        startButton.addEventListener("click", async () => {
+            if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+                status.textContent = "Audio recording is not supported in this browser. Choose an audio file instead.";
+                return;
+            }
+            try {
+                mediaStream = await navigator.mediaDevices.getUserMedia({audio: true});
+                const preferredType = ["audio/webm;codecs=opus", "audio/mp4", "audio/ogg;codecs=opus"]
+                    .find((type) => MediaRecorder.isTypeSupported(type));
+                recorder = new MediaRecorder(
+                    mediaStream,
+                    preferredType ? {mimeType: preferredType} : undefined
+                );
+                chunks = [];
+                recorder.addEventListener("dataavailable", (event) => {
+                    if (event.data.size) chunks.push(event.data);
+                });
+                recorder.addEventListener("stop", () => {
+                    stopTracks();
+                    const blob = new Blob(chunks, {type: recorder.mimeType || "audio/webm"});
+                    if (blob.size > maximumBytes) {
+                        fileInput.value = "";
+                        clearPreview();
+                        status.textContent = "This recording is larger than 10 MB. Please record a shorter message.";
+                        return;
+                    }
+                    const extension = blob.type.includes("mp4") ? "m4a"
+                        : blob.type.includes("ogg") ? "ogg"
+                        : blob.type.includes("wav") ? "wav"
+                        : "webm";
+                    const file = new File([blob], `order-instruction.${extension}`, {type: blob.type});
+                    const transfer = new DataTransfer();
+                    transfer.items.add(file);
+                    fileInput.files = transfer.files;
+                    clearValue.value = "0";
                     clearPreview();
-                    status.textContent = "This recording is larger than 10 MB. Please record a shorter message.";
-                    return;
-                }
-                const extension = blob.type.includes("mp4") ? "m4a"
-                    : blob.type.includes("ogg") ? "ogg"
-                    : blob.type.includes("wav") ? "wav"
-                    : "webm";
-                const file = new File([blob], `order-instruction.${extension}`, {type: blob.type});
-                const transfer = new DataTransfer();
-                transfer.items.add(file);
-                fileInput.files = transfer.files;
-                clearValue.value = "0";
-                clearPreview();
-                preview.src = URL.createObjectURL(blob);
-                preview.dataset.objectUrl = preview.src;
-                preview.hidden = false;
-                status.textContent = "Voice recording ready to send with this order.";
-            }, {once: true});
-            recorder.start(1000);
-            startButton.disabled = true;
-            stopButton.disabled = false;
-            status.textContent = "Recording… Stop when your instruction is complete.";
-            recordingTimeout = window.setTimeout(stopRecording, maximumDurationMs);
-        } catch (error) {
-            stopTracks();
-            status.textContent = "Could not access the microphone. Allow microphone access or choose an audio file.";
-        }
-    });
-    stopButton.addEventListener("click", stopRecording);
-    fileInput.addEventListener("change", () => {
-        const file = fileInput.files?.[0];
-        if (!file) return;
-        clearValue.value = "0";
-        clearPreview();
-        preview.src = URL.createObjectURL(file);
-        preview.dataset.objectUrl = preview.src;
-        preview.hidden = false;
-        status.textContent = file.size > maximumBytes
-            ? "This audio file is larger than 10 MB."
-            : "Audio file ready to send with this order.";
-    });
-    clearButton?.addEventListener("click", () => {
-        stopRecording();
-        fileInput.value = "";
-        clearPreview();
-        clearValue.value = "1";
-        status.textContent = "Recording cleared.";
+                    preview.src = URL.createObjectURL(blob);
+                    preview.dataset.objectUrl = preview.src;
+                    preview.hidden = false;
+                    status.textContent = "Voice recording ready to send with this order.";
+                }, {once: true});
+                recorder.start(1000);
+                startButton.disabled = true;
+                stopButton.disabled = false;
+                status.textContent = "Recording… Stop when your instruction is complete.";
+                recordingTimeout = window.setTimeout(stopRecording, maximumDurationMs);
+            } catch (error) {
+                stopTracks();
+                status.textContent = "Could not access the microphone. Allow microphone access or choose an audio file.";
+            }
+        });
+        stopButton.addEventListener("click", stopRecording);
+        fileInput.addEventListener("change", () => {
+            const file = fileInput.files?.[0];
+            if (!file) return;
+            clearValue.value = "0";
+            clearPreview();
+            preview.src = URL.createObjectURL(file);
+            preview.dataset.objectUrl = preview.src;
+            preview.hidden = false;
+            status.textContent = file.size > maximumBytes
+                ? "This audio file is larger than 10 MB."
+                : "Audio file ready to send with this order.";
+        });
+        clearButton?.addEventListener("click", () => {
+            stopRecording();
+            fileInput.value = "";
+            clearPreview();
+            clearValue.value = "1";
+            status.textContent = "Recording cleared.";
+        });
     });
 })();
 </script>
@@ -831,11 +858,177 @@
     const shopRows = document.getElementById("confirmationShopRows");
     const shopCount = document.getElementById("confirmationShopCount");
     const grandTotal = document.getElementById("confirmationGrandTotal");
+    const submitStatus = document.getElementById("checkoutSubmitStatus");
+    const submitInitiallyDisabled = submitButton?.disabled ?? true;
     if (itemDetails && window.matchMedia("(min-width: 992px)").matches) {
         itemDetails.open = true;
     }
     if (!submitButton || !paymentChoices.length) return;
     let confirmed = false;
+    let submitting = false;
+    let orderSubmissionStarted = false;
+    const setSubmitting = (isSubmitting, finalSubmission = false) => {
+        submitting = isSubmitting;
+        if (submitButton) {
+            submitButton.disabled = isSubmitting || submitInitiallyDisabled;
+            if (isSubmitting) {
+                submitButton.textContent = finalSubmission
+                    ? "Submitting order…"
+                    : "Reviewing order…";
+            } else {
+                updateButtonLabel();
+            }
+        }
+        if (confirmOrderButton) {
+            confirmOrderButton.disabled = isSubmitting && finalSubmission;
+            if (isSubmitting && finalSubmission) {
+                confirmOrderButton.textContent = "Submitting order…";
+            }
+        }
+    };
+    const clearCartBadge = () => {
+        document.querySelectorAll("[data-cart-count]").forEach((badge) => {
+            badge.textContent = "0";
+            badge.classList.add("d-none");
+        });
+    };
+    const checkoutCartStorageKey = `sellerhelper:pending-checkout:{{ request.user.pk }}`;
+    let checkoutPendingView = null;
+    const saveTemporaryCart = () => {
+        const cartSnapshot = Array.from(
+            document.querySelectorAll("[data-checkout-cart-item]"),
+            (item) => ({
+                key: item.dataset.cartLineKey,
+                quantity: Number(item.dataset.cartQuantity),
+                product: item.dataset.productName,
+            }),
+        );
+        const snapshot = {
+            createdAt: Date.now(),
+            items: cartSnapshot,
+        };
+        try {
+            window.localStorage.setItem(checkoutCartStorageKey, JSON.stringify(snapshot));
+        } catch (error) {
+            console.warn("Could not save temporary checkout cart state.", error);
+        }
+        return snapshot;
+    };
+    const restoreTemporaryCart = (snapshot) => {
+        const itemCount = snapshot.items.reduce(
+            (total, item) => total + Math.max(0, Number(item.quantity) || 0),
+            0,
+        );
+        document.querySelectorAll("[data-cart-count]").forEach((badge) => {
+            badge.textContent = String(itemCount);
+            badge.classList.toggle("d-none", itemCount <= 0);
+        });
+        try {
+            window.localStorage.removeItem(checkoutCartStorageKey);
+        } catch (error) {
+            console.warn("Could not clear restored checkout state.", error);
+        }
+        checkoutPendingView?.remove();
+        checkoutPendingView = null;
+    };
+    const showCheckoutPending = () => {
+        const overlay = document.createElement("div");
+        overlay.className = "checkout-marketplace-pending";
+        overlay.setAttribute("role", "status");
+        overlay.setAttribute("aria-live", "polite");
+        Object.assign(overlay.style, {
+            position: "fixed",
+            inset: "0",
+            zIndex: "20000",
+            background: "#f5f7fb",
+        });
+        const panel = document.createElement("div");
+        panel.className = "position-absolute top-50 start-50 translate-middle text-center bg-white rounded-4 shadow p-4";
+        const spinner = document.createElement("div");
+        spinner.className = "spinner-border text-success mb-3";
+        spinner.setAttribute("aria-hidden", "true");
+        const notice = document.createElement("div");
+        notice.className = "fw-semibold";
+        notice.textContent = "Placing your order…";
+        const detail = document.createElement("div");
+        detail.className = "small text-muted mt-2";
+        detail.textContent = "Please wait while we confirm it.";
+        panel.append(spinner, notice, detail);
+        overlay.append(panel);
+        document.body.append(overlay);
+        checkoutPendingView = overlay;
+    };
+    const submitNativeCheckout = () => {
+        try {
+            window.localStorage.removeItem(checkoutCartStorageKey);
+        } catch (error) {
+            console.warn("Could not clear temporary checkout state before native submission.", error);
+        }
+        HTMLFormElement.prototype.submit.call(checkoutForm);
+    };
+    const submitCodOrder = async () => {
+        if (!checkoutForm.reportValidity()) {
+            orderSubmissionStarted = false;
+            confirmed = false;
+            setSubmitting(false);
+            return;
+        }
+        const cartSnapshot = saveTemporaryCart();
+        clearCartBadge();
+        showCheckoutPending();
+        setSubmitting(true, true);
+        if (submitStatus) {
+            submitStatus.hidden = false;
+            submitStatus.className = "small mt-2 text-muted";
+            submitStatus.textContent = "Sending your order to the server…";
+        }
+        let response;
+        try {
+            response = await fetch(checkoutForm.action || window.location.href, {
+                method: "POST",
+                body: new FormData(checkoutForm),
+                headers: {
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Accept": "application/json",
+                },
+                credentials: "same-origin",
+            });
+        } catch (error) {
+            console.warn("AJAX checkout could not reach the server; submitting the checkout form normally.", error);
+            submitNativeCheckout();
+            return;
+        }
+        try {
+            const responseBody = await response.text();
+            let result;
+            try {
+                result = JSON.parse(responseBody);
+            } catch {
+                const responseDocument = new DOMParser().parseFromString(responseBody, "text/html");
+                const serverMessage = responseDocument.querySelector(".alert")?.textContent.trim();
+                throw new Error(serverMessage || "The server could not place your order. Your cart has been restored.");
+            }
+            if (!response.ok || !result.success || !result.redirect_url) {
+                throw new Error(result.message || "The server could not place your order.");
+            }
+            try {
+                window.localStorage.removeItem(checkoutCartStorageKey);
+            } catch (error) {
+                console.warn("Could not clear temporary checkout cart state.", error);
+            }
+            window.location.assign(result.redirect_url);
+        } catch (error) {
+            restoreTemporaryCart(cartSnapshot);
+            orderSubmissionStarted = false;
+            confirmed = false;
+            setSubmitting(false);
+            if (submitStatus) {
+                submitStatus.hidden = false;
+                submitStatus.className = "small mt-2 text-danger";
+                submitStatus.textContent = error.message || "Order placement failed. Please try again.";
+            }
+        }
+    };
     const updateSelectedAddressStyle = () => {
         addressChoices.forEach((choice) => {
             choice.closest(".checkout-address-label")?.classList.toggle(
@@ -892,8 +1085,27 @@
         const shopSummary = JSON.parse(summaryElement.textContent);
 
         checkoutForm.addEventListener("submit", (event) => {
-            if (confirmed) return;
+            if (confirmed) {
+                if (document.querySelector('input[name="payment_method"]:checked')?.value === "COD") {
+                    event.preventDefault();
+                    if (!orderSubmissionStarted) {
+                        orderSubmissionStarted = true;
+                        submitCodOrder();
+                    }
+                    return;
+                }
+                if (!orderSubmissionStarted) {
+                    orderSubmissionStarted = true;
+                    setSubmitting(true, true);
+                }
+                return;
+            }
+            if (submitting) {
+                event.preventDefault();
+                return;
+            }
             event.preventDefault();
+            setSubmitting(true);
 
             shopRows.replaceChildren();
             shopSummary.forEach((shop) => {
@@ -934,17 +1146,38 @@
                     `Your order includes ${shopSummary.length} shop(s):\n${shopLines.join("\n")}\n\nTotal amount due: ${totalText}\n\nContinue?`
                 )) {
                     confirmed = true;
-                    checkoutForm.requestSubmit();
+                    orderSubmissionStarted = true;
+                    if (document.querySelector('input[name="payment_method"]:checked')?.value === "COD") {
+                        submitCodOrder();
+                    } else {
+                        setSubmitting(true, true);
+                        HTMLFormElement.prototype.submit.call(checkoutForm);
+                    }
+                } else {
+                    setSubmitting(false);
                 }
             }
         });
 
         confirmOrderButton.addEventListener("click", () => {
+            if (orderSubmissionStarted) return;
             confirmed = true;
+            orderSubmissionStarted = true;
+            const paymentMethod = document.querySelector('input[name="payment_method"]:checked')?.value;
             if (window.bootstrap?.Modal) {
                 window.bootstrap.Modal.getOrCreateInstance(confirmationModal).hide();
             }
-            checkoutForm.requestSubmit();
+            if (paymentMethod === "COD") {
+                submitCodOrder();
+            } else {
+                setSubmitting(true, true);
+                HTMLFormElement.prototype.submit.call(checkoutForm);
+            }
+        });
+        confirmationModal.addEventListener("hidden.bs.modal", () => {
+            if (!confirmed) {
+                setSubmitting(false);
+            }
         });
     }
 })();

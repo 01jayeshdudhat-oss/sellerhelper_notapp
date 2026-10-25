@@ -3,6 +3,7 @@ import logging
 import requests
 from django.db import transaction
 
+from .background_tasks import submit_background_task
 from .models import Notification, NotificationDeviceToken
 
 logger = logging.getLogger(__name__)
@@ -88,5 +89,9 @@ def queue_expo_push_notifications(notification_ids):
     if not notification_ids:
         return
     transaction.on_commit(
-        lambda: send_expo_push_notifications(notification_ids),
+        lambda: submit_background_task(
+            send_expo_push_notifications,
+            notification_ids,
+            task_name="Expo push delivery",
+        ),
     )

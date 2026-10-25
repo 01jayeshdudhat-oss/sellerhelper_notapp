@@ -8,6 +8,7 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from redis.exceptions import RedisError
 
+from .background_tasks import submit_background_task
 from .models import SharedRiderGroupShop, ShopOrder, ShopStaff
 
 
@@ -75,9 +76,25 @@ def _send_user_event(user_id, event_type, data=None):
 
 
 def queue_order_update(shop_order):
-    user_ids = _order_update_user_ids(shop_order)
-    for user_id in user_ids:
-        transaction.on_commit(partial(_send_user_event, user_id, "orders.updated"))
+    transaction.on_commit(
+        partial(
+            submit_background_task,
+            _publish_order_update,
+            shop_order.pk,
+            task_name="live order update",
+        )
+    )
+
+
+def _publish_order_update(shop_order_id):
+    shop_order = ShopOrder.objects.select_related(
+        "shop",
+        "order",
+        "assigned_packer__user",
+        "assigned_rider__user",
+    ).get(pk=shop_order_id)
+    for user_id in _order_update_user_ids(shop_order):
+        _send_user_event(user_id, "orders.updated")
 
 
 def queue_rider_location_update(shop_order):
@@ -108,20 +125,33 @@ def queue_rider_location_update(shop_order):
             "updated_at": shop_order.updated_at.isoformat(),
         },
     }
-    for user_id in user_ids:
-        transaction.on_commit(
-            partial(
-                _send_user_event,
-                user_id,
-                "rider.location.updated",
-                event_data,
-            )
+    transaction.on_commit(
+        partial(
+            submit_background_task,
+            _publish_rider_location_update,
+            tuple(user_ids),
+            event_data,
+            task_name="live rider location update",
         )
+    )
+
+
+def _publish_rider_location_update(user_ids, event_data):
+    for user_id in user_ids:
+        _send_user_event(user_id, "rider.location.updated", event_data)
 
 
 def queue_notification_update(notification):
     user_id = notification.user_id
-    transaction.on_commit(partial(_send_user_event, user_id, "notifications.created"))
+    transaction.on_commit(
+        partial(
+            submit_background_task,
+            _send_user_event,
+            user_id,
+            "notifications.created",
+            task_name="live notification update",
+        )
+    )
 
 
 def order_update_is_relevant(update_fields):

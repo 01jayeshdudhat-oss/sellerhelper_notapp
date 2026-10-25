@@ -16,6 +16,7 @@ from .push_notifications import queue_expo_push_notifications
 from .offline_keyword_dictionary import dictionary_is_ready
 from .models import (
     AdminProductCatalog,
+    HSNCodeDescription,
     DeliverySharingSettings,
     Order,
     PublicRiderApplication,
@@ -25,6 +26,7 @@ from .models import (
     Shop,
     Notification,
     ProductCategory,
+    SACCodeDescription,
     ShopStaff,
     UserActivity,
     StockMovement,
@@ -53,6 +55,7 @@ class AdminProductCatalogAdmin(admin.ModelAdmin):
         "product_name",
         "product_category",
         "hsn_code",
+        "sac_code",
         "gst_rate",
         "is_active",
         "updated_at",
@@ -63,10 +66,24 @@ class AdminProductCatalogAdmin(admin.ModelAdmin):
     ordering = ("product_category", "product_name")
 
 
+@admin.register(HSNCodeDescription)
+class HSNCodeDescriptionAdmin(admin.ModelAdmin):
+    list_display = ("hsn_code", "description")
+    search_fields = ("hsn_code", "description")
+    ordering = ("hsn_code", "description")
+
+
+@admin.register(SACCodeDescription)
+class SACCodeDescriptionAdmin(admin.ModelAdmin):
+    list_display = ("sac_code", "description")
+    search_fields = ("sac_code", "description")
+    ordering = ("sac_code", "description")
+
+
 @admin.register(ProductCategory)
 class ProductCategoryAdmin(admin.ModelAdmin):
-    list_display = ("name", "sort_order", "is_active", "updated_at")
-    list_filter = ("is_active",)
+    list_display = ("name", "market_category", "sort_order", "is_active", "updated_at")
+    list_filter = ("market_category", "is_active")
     search_fields = ("name",)
     list_editable = ("sort_order", "is_active")
     ordering = ("sort_order", "name")

@@ -645,6 +645,8 @@ Marketplace
 .qty-control { display:flex; align-items:center; justify-content:center; border:1px solid #16835f; border-radius:12px; overflow:hidden; background:#fff; }
 .qty-control button { border:0; background:#16835f; color:#fff; width:42px; height:42px; font-size:20px; touch-action: manipulation; }
 .qty-control span { width:48px; text-align:center; font-weight:700; }
+.qty-control input { width:58px; height:42px; padding:0 3px; border:0; text-align:center; font-weight:700; }
+.qty-control input:focus { outline:2px solid #16835f; outline-offset:-2px; }
 .market-empty { background:#fff; border:1px dashed #ccd8dc; border-radius:20px; padding:42px 18px; }
 .modal-product-image { width:100%; height:320px; object-fit:contain; background:#f8f9fa; }
 .modal-product-image-fallback { display:grid; min-height:180px; place-items:center; color:#64748b; background:#f3f6f5; border-radius:12px; font-size:2.5rem; }
@@ -825,6 +827,7 @@ Marketplace
     .qty-control { border-radius: 8px; }
     .qty-control button { width: 30px; height: 32px; font-size: 17px; }
     .qty-control span { width: 28px; }
+    .qty-control input { width: 42px; height: 32px; padding:0 2px; }
     .market-empty { padding: 28px 14px; }
     .modal-product-image { height: min(52vh, 260px); }
 }
@@ -899,6 +902,7 @@ Marketplace
     .product-card .btn-success { min-height: 22px; padding: 1px 3px; font-size: .62rem; }
     .qty-control button { width: 21px; height: 22px; font-size: 14px; }
     .qty-control span { width: 22px; font-size: .65rem; }
+    .qty-control input { width: 28px; height: 22px; padding:0; font-size:.65rem; }
 }
 @media (prefers-reduced-motion: reduce) {
     *, *:before, *:after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
@@ -1169,6 +1173,8 @@ Marketplace
             <input type="hidden" name="current_lat" value="{{ request.GET.current_lat }}">
             <input type="hidden" name="current_lng" value="{{ request.GET.current_lng }}">
         {% endif %}
+        {% if selected_market %}<input type="hidden" name="market" value="{{ selected_market }}">{% endif %}
+        {% if selected_shop_id %}<input type="hidden" name="shop" value="{{ selected_shop_id }}">{% endif %}
 
         <div class="input-group">
 
@@ -1206,6 +1212,28 @@ Marketplace
         </div>
         <div class="small text-muted mt-1" data-voice-search-status role="status" aria-live="polite"></div>
 
+    </form>
+    <form method="get" class="form-check mb-3" aria-label="Marketplace delivery filters">
+        {% if address %}<input type="hidden" name="address" value="{{ address.id }}">{% endif %}
+        {% if request.GET.current_lat and request.GET.current_lng %}
+            <input type="hidden" name="current_lat" value="{{ request.GET.current_lat }}">
+            <input type="hidden" name="current_lng" value="{{ request.GET.current_lng }}">
+        {% endif %}
+        {% if request.GET.q %}<input type="hidden" name="q" value="{{ request.GET.q }}">{% endif %}
+        {% if selected_market %}<input type="hidden" name="market" value="{{ selected_market }}">{% endif %}
+        {% if selected_shop_id %}<input type="hidden" name="shop" value="{{ selected_shop_id }}">{% endif %}
+        <input
+            class="form-check-input"
+            type="checkbox"
+            id="hideScheduledDelivery"
+            name="hide_scheduled"
+            value="1"
+            {% if hide_scheduled_delivery %}checked{% endif %}
+            onchange="this.form.submit()"
+        >
+        <label class="form-check-label" for="hideScheduledDelivery">
+            Hide products with scheduled delivery
+        </label>
     </form>
 
     {% if nearby_shops and marketplace_show_nearby_shops %}
@@ -1286,7 +1314,7 @@ Marketplace
         <div class="market-category-nav">
             <div class="nav nav-pills gap-2" aria-label="Marketplace markets">
                 {% for market_group in product_groups %}
-                    <a href="{% url 'marketplace' %}?market={{ market_group.market_name|urlencode }}{% if request.GET.q %}&amp;q={{ request.GET.q|urlencode }}{% endif %}{% if selected_shop_id %}&amp;shop={{ selected_shop_id }}{% endif %}{% if address %}&amp;address={{ address.id }}{% elif request.GET.current_lat and request.GET.current_lng %}&amp;current_lat={{ request.GET.current_lat }}&amp;current_lng={{ request.GET.current_lng }}{% endif %}"
+                    <a href="{% url 'marketplace' %}?market={{ market_group.market_name|urlencode }}{% if request.GET.q %}&amp;q={{ request.GET.q|urlencode }}{% endif %}{% if selected_shop_id %}&amp;shop={{ selected_shop_id }}{% endif %}{% if hide_scheduled_delivery %}&amp;hide_scheduled=1{% endif %}{% if address %}&amp;address={{ address.id }}{% elif request.GET.current_lat and request.GET.current_lng %}&amp;current_lat={{ request.GET.current_lat }}&amp;current_lng={{ request.GET.current_lng }}{% endif %}"
                        class="nav-link btn-sm {% if selected_market == market_group.market_name %}active{% endif %}">
                         {{ market_group.market_name }}
                     </a>
@@ -1394,8 +1422,8 @@ Marketplace
                                                                     {% if item.bulk_min_quantity > 1 %}<div class="product-bulk-minimum small text-muted" title="Minimum {{ item.bulk_min_quantity }} bulk unit(s)">Min {{ item.bulk_min_quantity }} units</div>{% endif %}
                                                                 </div>
                                                                 <div class="product-bulk-controls input-group input-group-sm">
-                                                                    <input type="number" class="form-control" id="bulk-qty-{{ item.id }}" min="{{ item.bulk_min_quantity }}" max="{{ item.marketplace_stock }}" value="{{ item.bulk_min_quantity }}" aria-label="Bulk quantity for {{ item.product.product_name }}" {% if item.marketplace_stock < item.bulk_min_quantity %}disabled{% endif %}>
-                                                                    <button type="button" class="btn btn-outline-success" onclick="addBulkToCart({{ item.id }})" {% if item.marketplace_stock < item.bulk_min_quantity %}disabled{% endif %}>Add bulk</button>
+                                                                    <input type="number" class="form-control" id="bulk-qty-{{ item.id }}" data-minimum="{{ item.bulk_min_quantity }}" min="{% if item.bulk_cart_quantity > 0 %}0{% else %}{{ item.bulk_min_quantity }}{% endif %}" max="{{ item.marketplace_stock }}" value="{% if item.bulk_cart_quantity > 0 %}{{ item.bulk_cart_quantity }}{% else %}{{ item.bulk_min_quantity }}{% endif %}" aria-label="Bulk quantity for {{ item.product.product_name }}" {% if item.marketplace_stock < item.bulk_min_quantity and item.bulk_cart_quantity == 0 %}disabled{% endif %}>
+                                                                    <button type="button" class="btn btn-outline-success" onclick="addBulkToCart({{ item.id }})" {% if item.marketplace_stock < item.bulk_min_quantity and item.bulk_cart_quantity == 0 %}disabled{% endif %}>{% if item.bulk_cart_quantity > 0 %}Update bulk{% else %}Add bulk{% endif %}</button>
                                                                 </div>
                                                             </div>
                                                         {% endif %}
@@ -1404,7 +1432,7 @@ Marketplace
                                                             {% if item.cart_quantity > 0 %}
                                                                 <div class="qty-control" id="qty-box-{{ item.id }}">
                                                                     <button type="button" onclick="changeQuantity({{ item.id }}, -1)">−</button>
-                                                                    <span id="qty-{{ item.id }}">{{ item.cart_quantity }}</span>
+                                                                    <input type="number" id="qty-{{ item.id }}" min="0" max="{{ item.marketplace_stock }}" value="{{ item.cart_quantity }}" aria-label="Cart quantity for {{ item.product.product_name }}" onchange="updateQuantity({{ item.id }}, this.value)">
                                                                     <button type="button" onclick="changeQuantity({{ item.id }}, 1)">+</button>
                                                                 </div>
                                                             {% else %}
@@ -1543,8 +1571,8 @@ Marketplace
                                 {% if item.bulk_min_quantity > 1 %}<div class="product-bulk-minimum small text-muted" title="Minimum {{ item.bulk_min_quantity }} bulk unit(s)">Min {{ item.bulk_min_quantity }} units</div>{% endif %}
                             </div>
                             <div class="product-bulk-controls input-group input-group-sm">
-                                <input type="number" class="form-control" id="bulk-qty-{{ item.id }}" min="{{ item.bulk_min_quantity }}" max="{{ item.marketplace_stock }}" value="{{ item.bulk_min_quantity }}" aria-label="Bulk quantity for {{ item.product.product_name }}" {% if item.marketplace_stock < item.bulk_min_quantity %}disabled{% endif %}>
-                                <button type="button" class="btn btn-outline-success" onclick="addBulkToCart({{ item.id }})" {% if item.marketplace_stock < item.bulk_min_quantity %}disabled{% endif %}>Add bulk</button>
+                                <input type="number" class="form-control" id="bulk-qty-{{ item.id }}" data-minimum="{{ item.bulk_min_quantity }}" min="{% if item.bulk_cart_quantity > 0 %}0{% else %}{{ item.bulk_min_quantity }}{% endif %}" max="{{ item.marketplace_stock }}" value="{% if item.bulk_cart_quantity > 0 %}{{ item.bulk_cart_quantity }}{% else %}{{ item.bulk_min_quantity }}{% endif %}" aria-label="Bulk quantity for {{ item.product.product_name }}" {% if item.marketplace_stock < item.bulk_min_quantity and item.bulk_cart_quantity == 0 %}disabled{% endif %}>
+                                <button type="button" class="btn btn-outline-success" onclick="addBulkToCart({{ item.id }})" {% if item.marketplace_stock < item.bulk_min_quantity and item.bulk_cart_quantity == 0 %}disabled{% endif %}>{% if item.bulk_cart_quantity > 0 %}Update bulk{% else %}Add bulk{% endif %}</button>
                             </div>
                         </div>
                     {% endif %}
@@ -1580,11 +1608,15 @@ Marketplace
                                 </button>
 
 
-                                <span
+                                <input
+                                    type="number"
                                     id="qty-{{ item.id }}"
+                                    min="0"
+                                    max="{{ item.marketplace_stock }}"
+                                    value="{{ item.cart_quantity }}"
+                                    aria-label="Cart quantity for {{ item.product.product_name }}"
+                                    onchange="updateQuantity({{ item.id }}, this.value)"
                                 >
-                                    {{ item.cart_quantity }}
-                                </span>
 
 
                                 <button
@@ -2031,11 +2063,15 @@ function renderProductDetails(productId, data) {
             document.getElementById("modalProductBulkPrice").textContent = data.bulk_price;
             document.getElementById("modalProductBulkUnit").textContent = data.bulk_unit;
             document.getElementById("modalProductBulkMinimum").textContent = data.bulk_min_quantity;
-            bulkQuantity.min = String(data.bulk_min_quantity);
+            bulkQuantity.dataset.minimum = String(data.bulk_min_quantity);
+            bulkQuantity.min = data.bulk_quantity > 0 ? "0" : String(data.bulk_min_quantity);
             bulkQuantity.max = String(data.stock);
-            bulkQuantity.value = String(data.bulk_min_quantity);
-            bulkQuantity.disabled = data.stock < data.bulk_min_quantity;
-            bulkAddButton.disabled = data.stock < data.bulk_min_quantity;
+            bulkQuantity.value = String(
+                data.bulk_quantity > 0 ? data.bulk_quantity : data.bulk_min_quantity
+            );
+            bulkQuantity.disabled = data.stock < data.bulk_min_quantity && data.bulk_quantity <= 0;
+            bulkAddButton.textContent = data.bulk_quantity > 0 ? "Update bulk" : "Add bulk";
+            bulkAddButton.disabled = data.stock < data.bulk_min_quantity && data.bulk_quantity <= 0;
             bulkAddButton.onclick = () => addBulkToCart(productId, "modalBulkQuantity");
             bulkOffer.style.display = "block";
         } else {
@@ -2153,8 +2189,36 @@ window.sellerHelperTryNextProductImage = function (image) {
    ADD TO CART
 ===================================================== */
 
-function addToCart(productId) {
+const marketplaceUserAuthenticated = {{ request.user.is_authenticated|yesno:"true,false" }};
+const marketplaceLoginUrl = "{% url 'login' %}?next={{ request.get_full_path|urlencode }}";
 
+function requireMarketplaceLogin() {
+    if (marketplaceUserAuthenticated) return true;
+    window.location.assign(marketplaceLoginUrl);
+    return false;
+}
+
+function redirectMarketplaceLoginResponse(response) {
+    if (!response.redirected) return false;
+    const loginPath = "{% url 'login' %}";
+    if (new URL(response.url, window.location.href).pathname !== loginPath) {
+        return false;
+    }
+    window.location.assign(response.url);
+    return true;
+}
+
+function currentMarketplaceCoordinates() {
+    const params = new URLSearchParams(window.location.search);
+    const latitude = params.get("current_lat");
+    const longitude = params.get("current_lng");
+    return latitude && longitude ? {current_lat: latitude, current_lng: longitude} : {};
+}
+
+function addToCart(productId) {
+    if (!requireMarketplaceLogin()) return Promise.resolve(null);
+
+    const body = new URLSearchParams(currentMarketplaceCoordinates());
     return fetch(
         `/cart/add/${productId}/`,
         {
@@ -2162,14 +2226,20 @@ function addToCart(productId) {
 
             headers: {
                 "X-CSRFToken": csrfToken,
-                "X-Requested-With": "XMLHttpRequest"
-            }
+                "X-Requested-With": "XMLHttpRequest",
+                "Content-Type": "application/x-www-form-urlencoded"
+            },
+            body
         }
     )
 
-    .then(response => response.json())
+    .then(response => {
+        if (redirectMarketplaceLoginResponse(response)) return null;
+        return response.json();
+    })
 
     .then(data => {
+        if (!data) return null;
 
         if (!data.success) {
 
@@ -2204,34 +2274,18 @@ function addToCart(productId) {
 }
 
 function addBulkToCart(productId, quantityInputId = `bulk-qty-${productId}`) {
+    if (!requireMarketplaceLogin()) return;
     const quantityInput = document.getElementById(quantityInputId);
     const quantity = Number.parseInt(quantityInput?.value || "0", 10);
-    if (!Number.isInteger(quantity) || quantity < Number(quantityInput?.min || "1")) {
+    if (!Number.isInteger(quantity) || quantity < 0 || quantity > Number(quantityInput?.max || "0")) {
+        alert("Enter a valid bulk quantity within available stock.");
+        return;
+    }
+    if (quantity > 0 && quantity < Number(quantityInput?.dataset.minimum || quantityInput?.min || "1")) {
         alert("Enter a bulk quantity at or above the minimum.");
         return;
     }
-
-    fetch(`/cart/add/${productId}/`, {
-        method: "POST",
-        headers: {
-            "X-CSRFToken": csrfToken,
-            "X-Requested-With": "XMLHttpRequest",
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: new URLSearchParams({
-            offer: "bulk",
-            quantity: String(quantity),
-        }),
-    })
-        .then(response => response.json())
-        .then(data => {
-            if (!data.success) {
-                alert(data.message || "Unable to add the bulk offer.");
-                return;
-            }
-            updateCartCount(data.cart_count);
-        })
-        .catch(() => alert("Unable to add the bulk offer. Please try again."));
+    updateQuantity(productId, quantity, "bulk");
 }
 
 
@@ -2250,10 +2304,7 @@ function changeQuantity(
             `qty-${productId}`
         );
 
-    let quantity =
-        parseInt(
-            quantityElement.innerText
-        ) || 0;
+    let quantity = Number.parseInt(quantityElement.value, 10) || 0;
 
 
     quantity += change;
@@ -2281,7 +2332,8 @@ function changeQuantity(
 
 function updateQuantity(
     productId,
-    quantity
+    quantity,
+    offer = "retail",
 ) {
 
     const formData =
@@ -2291,6 +2343,7 @@ function updateQuantity(
         "quantity",
         quantity
     );
+    formData.append("offer", offer);
 
 
     return fetch(
@@ -2322,17 +2375,44 @@ function updateQuantity(
         }
 
 
-        updateProductQuantity(
-            productId,
-            data.quantity
-        );
+        if (offer === "retail") {
+            updateProductQuantity(productId, data.quantity);
+        } else {
+            const bulkQuantityInputs = [
+                ...document.querySelectorAll(`#bulk-qty-${productId}`),
+                document.getElementById("modalBulkQuantity"),
+            ].filter(Boolean);
+            bulkQuantityInputs.forEach((bulkQuantity) => {
+                const pageProduct = document.getElementById(`market-product-data-${productId}`);
+                const productData = pageProduct ? JSON.parse(pageProduct.textContent) : {};
+                bulkQuantity.dataset.minimum = String(
+                    bulkQuantity.dataset.minimum || productData.bulk_min_quantity || bulkQuantity.min
+                );
+                bulkQuantity.min = data.quantity > 0 ? "0" : bulkQuantity.dataset.minimum;
+                bulkQuantity.value = String(
+                    data.quantity > 0 ? data.quantity : bulkQuantity.dataset.minimum
+                );
+                bulkQuantity.disabled = Number(bulkQuantity.max) < Number(bulkQuantity.dataset.minimum)
+                    && data.quantity <= 0;
+            });
+            const bulkButton = document.getElementById("modalBulkAddButton");
+            if (bulkButton) {
+                bulkButton.textContent = data.quantity > 0 ? "Update bulk" : "Add bulk";
+            }
+            bulkQuantityInputs.forEach((bulkQuantity) => {
+                const cardButton = bulkQuantity.nextElementSibling;
+                if (cardButton?.id !== "modalBulkAddButton") {
+                    cardButton.textContent = data.quantity > 0 ? "Update bulk" : "Add bulk";
+                }
+            });
+        }
 
 
         updateCartCount(
             data.cart_count
         );
 
-        syncProductDetailQuantity(productId, data.quantity);
+        syncProductDetailQuantity(productId, data.quantity, offer);
         return data;
     })
     .catch(error => {
@@ -2343,12 +2423,16 @@ function updateQuantity(
 
 }
 
-function syncProductDetailQuantity(productId, quantity) {
+function syncProductDetailQuantity(productId, quantity, offer = "retail") {
     const pageProduct = document.getElementById(`market-product-data-${productId}`);
     if (!pageProduct) return;
 
     const productData = JSON.parse(pageProduct.textContent);
-    productData.quantity = quantity;
+    if (offer === "bulk") {
+        productData.bulk_quantity = quantity;
+    } else {
+        productData.quantity = quantity;
+    }
     pageProduct.textContent = JSON.stringify(productData);
     try {
         localStorage.setItem(`market-product-${productId}`, JSON.stringify(productData));
@@ -2436,11 +2520,14 @@ function updateProductQuantity(
                     −
                 </button>
 
-                <span
+                <input
+                    type="number"
                     id="qty-${productId}"
+                    min="0"
+                    value="${quantity}"
+                    aria-label="Cart quantity"
+                    onchange="updateQuantity(${productId}, this.value)"
                 >
-                    ${quantity}
-                </span>
 
                 <button
                     type="button"
@@ -2468,8 +2555,7 @@ function updateProductQuantity(
 
     if (quantityElement) {
 
-        quantityElement.innerText =
-            quantity;
+        quantityElement.value = quantity;
 
     }
 

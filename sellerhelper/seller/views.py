@@ -11,6 +11,10 @@ import random
 import re
 import secrets
 import uuid
+import zipfile
+import posixpath
+from xml.sax.saxutils import escape
+from xml.etree import ElementTree
 from urllib.parse import quote, urlencode, urlsplit
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -63,6 +67,7 @@ from .forms import (
     JobApplicationForm,
     JobOpeningForm,
     MarketplaceLayoutSettingsForm,
+    ProductCloneSettingsForm,
     SiteBrandingSettingsForm,
     SiteThemeSettingsForm,
     CustomerSignupForm,
@@ -79,6 +84,7 @@ from .forms import (
 )
 from .models import (
     AdminProductCatalog,
+    HSNCodeDescription,
     ClientProfile,
     ClientDeliveryAddress,
     CheckoutAttempt,
@@ -86,6 +92,7 @@ from .models import (
     FavoriteProduct,
     FavoriteShop,
     MarketplaceLayoutSettings,
+    ProductCloneSettings,
     SiteBrandingSettings,
     SiteThemeRevision,
     SiteThemeSettings,
@@ -98,6 +105,7 @@ from .models import (
     OrderItem,
     Product,
     ProductCategory,
+    SACCodeDescription,
     Shop,
     SHOP_STOREFRONT_RESERVED_SLUGS,
     ShopOrder,
@@ -112,6 +120,7 @@ from .models import (
     Coupon,
     ClientWalletTransaction,
     UserActivity,
+    UserPresence,
     StockMovement,
     ShopProductForecast,
     ShopVendor,
@@ -152,6 +161,7 @@ from .public_riders import (
 from .road_routing import local_road_route_distance_km
 from .public_rider_dispatch import (
     PUBLIC_RIDER_OFFER_COOLDOWN_SECONDS,
+    RIDER_POST_DELIVERY_OFFER_DELAY_SECONDS,
     advance_public_rider_offer,
     eligible_public_riders,
     validate_work_area,
@@ -296,7 +306,11 @@ def _is_b2b_customer(request, client=None):
     if request.session.get("active_portal", "CUSTOMER") != "B2B_CUSTOMER":
         return False
     if client is None:
-        client = ClientProfile.objects.filter(user=request.user).first()
+        client = (
+            ClientProfile.objects.filter(user=request.user).first()
+            if request.user.is_authenticated
+            else None
+        )
     gstin = (getattr(client, "gstin", "") or "").strip().upper()
     return bool(re.fullmatch(r"\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]", gstin))
 
@@ -333,7 +347,11 @@ _UNASSIGNED_CART_ADDRESS = "unassigned"
 
 def _address_scoped_cart(request, client=None):
     if client is None and request.user.is_authenticated:
-        client = ClientProfile.objects.filter(user=request.user).first()
+        client = (
+            ClientProfile.objects.filter(user=request.user).first()
+            if request.user.is_authenticated
+            else None
+        )
 
     addresses = (
         client.delivery_addresses.filter(is_active=True).order_by("-is_default", "id")
@@ -400,6 +418,33 @@ def _save_address_scoped_cart(request, cart):
     request.session["cart_delivery_address_id"] = address_key
     request.session["cart"] = cart
     request.session.modified = True
+
+
+def _clear_address_scoped_carts(request, address):
+    address_key = str(address.pk) if address else _UNASSIGNED_CART_ADDRESS
+    empty_cart = {}
+    request.session["carts_by_delivery_address"] = {address_key: empty_cart}
+    request.session["cart_delivery_address_id"] = address_key
+    request.session["cart"] = empty_cart
+    request.session.modified = True
+
+
+def _cart_current_location(request):
+    latitude = request.POST.get("current_lat") or request.GET.get("current_lat")
+    longitude = request.POST.get("current_lng") or request.GET.get("current_lng")
+    if latitude and longitude:
+        submitted_location = {"lat": latitude, "lng": longitude}
+        if _valid_route_coordinates(submitted_location):
+            request.session["marketplace_current_location"] = {
+                "lat": float(latitude),
+                "lng": float(longitude),
+            }
+            request.session.modified = True
+
+    location = request.session.get("marketplace_current_location")
+    if not isinstance(location, dict) or not _valid_route_coordinates(location):
+        return None
+    return {"lat": float(location["lat"]), "lng": float(location["lng"])}
 
 
 def _switch_address_scoped_cart(request, address):
@@ -888,37 +933,68 @@ ORDER_INSTRUCTION_AUDIO_TYPES = {
 ORDER_INSTRUCTION_AUDIO_MAX_BYTES = 10 * 1024 * 1024
 
 
-def _checkout_order_instruction_draft(request, shop_ids):
-    draft_id = request.session.get("order_voice_instruction_draft_id")
-    if not draft_id:
-        return None
-    draft = (
-        OrderVoiceInstruction.objects
-        .filter(
+def _checkout_order_instruction_drafts(request, shop_ids):
+    draft_ids = request.session.get("order_voice_instruction_draft_ids", {})
+    if not isinstance(draft_ids, dict):
+        draft_ids = {}
+    legacy_draft_id = request.session.pop(
+        "order_voice_instruction_draft_id",
+        None,
+    )
+    drafts = {}
+    for recipient in (
+        OrderVoiceInstruction.RECIPIENT_SHOP,
+        OrderVoiceInstruction.RECIPIENT_RIDER,
+    ):
+        draft_id = draft_ids.get(recipient)
+        if not draft_id and legacy_draft_id:
+            legacy_draft = OrderVoiceInstruction.objects.filter(
+                pk=legacy_draft_id,
+                customer=request.user,
+                shop_order__isnull=True,
+            ).first()
+            if legacy_draft and legacy_draft.recipient == recipient:
+                draft_id = legacy_draft.pk
+        if not draft_id:
+            continue
+
+        draft = OrderVoiceInstruction.objects.filter(
             pk=draft_id,
             customer=request.user,
             shop_order__isnull=True,
-        )
-        .first()
-    )
-    if draft is None:
-        request.session.pop("order_voice_instruction_draft_id", None)
+            recipient=recipient,
+        ).first()
+        if draft is None:
+            continue
+        if draft.shop_id not in shop_ids:
+            if draft.audio_file:
+                draft.audio_file.delete(save=False)
+            draft.delete()
+            continue
+        drafts[recipient] = draft
+
+    normalized_ids = {
+        recipient: draft.pk for recipient, draft in drafts.items()
+    }
+    if draft_ids != normalized_ids or legacy_draft_id:
+        request.session["order_voice_instruction_draft_ids"] = normalized_ids
         request.session.modified = True
-        return None
-    if draft.shop_id not in shop_ids:
-        if draft.audio_file:
-            draft.audio_file.delete(save=False)
-        draft.delete()
-        request.session.pop("order_voice_instruction_draft_id", None)
-        request.session.modified = True
-        return None
-    return draft
+    return drafts
 
 
 def _track_checkout_attempt(request, items):
-    checkout_key = request.session.get("checkout_attempt_key")
+    posted_checkout_key = request.POST.get("checkout_attempt_key", "")
+    checkout_key = (
+        posted_checkout_key
+        if request.method == "POST"
+        and isinstance(posted_checkout_key, str)
+        and re.fullmatch(r"[0-9a-f]{32}", posted_checkout_key)
+        else request.session.get("checkout_attempt_key")
+    )
     if not isinstance(checkout_key, str) or not re.fullmatch(r"[0-9a-f]{32}", checkout_key):
         checkout_key = uuid.uuid4().hex
+        request.session["checkout_attempt_key"] = checkout_key
+    else:
         request.session["checkout_attempt_key"] = checkout_key
 
     grouped_items = defaultdict(list)
@@ -951,86 +1027,92 @@ def _track_checkout_attempt(request, items):
             defaults={
                 "cart_items": grouped_items[shop_id],
                 "total_amount": totals_by_shop[shop_id],
-                "order": None,
             },
         )
     request.session.modified = True
 
 
 def _save_checkout_order_instruction(request, checkout_shops):
-    draft_id = request.session.get("order_voice_instruction_draft_id")
-    draft = None
-    if draft_id:
-        draft = OrderVoiceInstruction.objects.filter(
-            pk=draft_id,
-            customer=request.user,
-            shop_order__isnull=True,
-        ).first()
-        if draft is None:
-            request.session.pop("order_voice_instruction_draft_id", None)
-
-    instruction_text = request.POST.get("order_instruction_text", "").strip()
-    if len(instruction_text) > 1000:
-        raise ValueError("Order instructions must be 1,000 characters or fewer.")
-
-    audio = request.FILES.get("order_instruction_audio")
-    clear_audio = request.POST.get("clear_order_instruction_audio") == "1"
+    drafts = _checkout_order_instruction_drafts(
+        request,
+        {shop.pk for shop in checkout_shops},
+    )
     shop_id = request.POST.get("order_instruction_shop", "").strip()
-    recipient = request.POST.get(
-        "order_instruction_recipient",
-        OrderVoiceInstruction.RECIPIENT_SHOP,
-    ).strip().upper()
-
-    if not instruction_text and not audio and not (draft and draft.audio_file and not clear_audio):
-        if draft:
-            if draft.audio_file:
-                draft.audio_file.delete(save=False)
-            draft.delete()
-            request.session.pop("order_voice_instruction_draft_id", None)
-        return None
-
-    if recipient not in {
-        OrderVoiceInstruction.RECIPIENT_SHOP,
-        OrderVoiceInstruction.RECIPIENT_RIDER,
-    }:
-        raise ValueError("Choose whether the instruction is for the shop team or assigned rider.")
-
     selected_shop = next(
         (shop for shop in checkout_shops if str(shop.pk) == shop_id),
         None,
     )
-    if selected_shop is None:
-        raise ValueError("Select the shop that should receive this order instruction.")
+    saved_drafts = {}
+    for recipient in (
+        OrderVoiceInstruction.RECIPIENT_SHOP,
+        OrderVoiceInstruction.RECIPIENT_RIDER,
+    ):
+        field_suffix = recipient.lower()
+        draft = drafts.get(recipient)
+        instruction_text = request.POST.get(
+            f"order_instruction_text_{field_suffix}",
+            "",
+        ).strip()
+        if len(instruction_text) > 1000:
+            raise ValueError("Each order instruction must be 1,000 characters or fewer.")
 
-    audio_content_type = ""
-    if audio:
-        audio_content_type = (audio.content_type or "").lower().split(";", 1)[0]
-        extension = ORDER_INSTRUCTION_AUDIO_TYPES.get(audio_content_type)
-        if not extension:
-            raise ValueError("Use a supported audio format such as WebM, MP3, MP4, OGG, or WAV.")
-        if audio.size > ORDER_INSTRUCTION_AUDIO_MAX_BYTES:
-            raise ValueError("Audio instructions must be 10 MB or smaller.")
-        audio.name = f"{uuid.uuid4().hex}{extension}"
-
-    if draft is None:
-        draft = OrderVoiceInstruction(
-            customer=request.user,
-            shop=selected_shop,
+        audio = request.FILES.get(
+            f"order_instruction_audio_{field_suffix}",
         )
-    draft.shop = selected_shop
-    draft.recipient = recipient
-    draft.instruction_text = instruction_text
-    if clear_audio and draft.audio_file:
-        draft.audio_file.delete(save=False)
-        draft.audio_content_type = ""
-    if audio:
-        if draft.audio_file:
+        clear_audio = (
+            request.POST.get(
+                f"clear_order_instruction_audio_{field_suffix}",
+            )
+            == "1"
+        )
+        has_existing_audio = bool(draft and draft.audio_file and not clear_audio)
+        if not instruction_text and not audio and not has_existing_audio:
+            if draft:
+                if draft.audio_file:
+                    draft.audio_file.delete(save=False)
+                draft.delete()
+            continue
+        if selected_shop is None:
+            raise ValueError(
+                "Select the shop that should receive these order instructions."
+            )
+
+        audio_content_type = ""
+        if audio:
+            audio_content_type = (audio.content_type or "").lower().split(";", 1)[0]
+            extension = ORDER_INSTRUCTION_AUDIO_TYPES.get(audio_content_type)
+            if not extension:
+                raise ValueError(
+                    "Use a supported audio format such as WebM, MP3, MP4, OGG, or WAV."
+                )
+            if audio.size > ORDER_INSTRUCTION_AUDIO_MAX_BYTES:
+                raise ValueError("Audio instructions must be 10 MB or smaller.")
+            audio.name = f"{uuid.uuid4().hex}{extension}"
+
+        if draft is None:
+            draft = OrderVoiceInstruction(
+                customer=request.user,
+                shop=selected_shop,
+                recipient=recipient,
+            )
+        draft.shop = selected_shop
+        draft.instruction_text = instruction_text
+        if clear_audio and draft.audio_file:
             draft.audio_file.delete(save=False)
-        draft.audio_file = audio
-        draft.audio_content_type = audio_content_type
-    draft.save()
-    request.session["order_voice_instruction_draft_id"] = draft.pk
-    return draft
+            draft.audio_content_type = ""
+        if audio:
+            if draft.audio_file:
+                draft.audio_file.delete(save=False)
+            draft.audio_file = audio
+            draft.audio_content_type = audio_content_type
+        draft.save()
+        saved_drafts[recipient] = draft
+
+    request.session["order_voice_instruction_draft_ids"] = {
+        recipient: draft.pk for recipient, draft in saved_drafts.items()
+    }
+    request.session.pop("order_voice_instruction_draft_id", None)
+    return saved_drafts
 
 
 def _instruction_audio_is_available(instruction, shop_order):
@@ -1481,6 +1563,186 @@ def _require_superuser(request):
 
 
 @login_required
+def admin_panel_dashboard(request):
+    _require_superuser(request)
+    return render(request, "seller/admin_panel.html")
+
+
+@login_required
+def user_presence_heartbeat(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required."}, status=405)
+    portal = request.session.get("active_portal", "CUSTOMER")
+    if portal not in PORTAL_LABELS:
+        portal = "CUSTOMER"
+    UserPresence.objects.update_or_create(
+        user=request.user,
+        defaults={
+            "last_seen": timezone.now(),
+            "active_portal": portal,
+        },
+    )
+    return JsonResponse({"success": True})
+
+
+@login_required
+def admin_user_presence_dashboard(request):
+    _require_superuser(request)
+    user_model = get_user_model()
+    now = timezone.now()
+    today = timezone.localdate()
+    online_cutoff = now - timedelta(minutes=5)
+    online_user_ids = set(
+        UserPresence.objects.filter(
+            user__is_active=True,
+            last_seen__gte=online_cutoff,
+        ).values_list("user_id", flat=True)
+    )
+    active_user_ids = set(
+        user_model.objects.filter(is_active=True).values_list("pk", flat=True)
+    )
+    logged_in_today_ids = set(
+        user_model.objects.filter(
+            is_active=True,
+            last_login__date=today,
+        ).values_list("pk", flat=True)
+    )
+    login_events_today = UserActivity.objects.filter(
+        event_type="AUTH_LOGIN",
+        created_at__date=today,
+        user__is_active=True,
+    )
+
+    role_user_ids = {
+        "Administrator": set(
+            user_model.objects.filter(is_active=True, is_superuser=True)
+            .values_list("pk", flat=True)
+        ),
+        "Customer": set(
+            ClientProfile.objects.filter(user__is_active=True)
+            .values_list("user_id", flat=True)
+        ),
+        "Shop owner": set(
+            Shop.objects.filter(owner__is_active=True)
+            .values_list("owner_id", flat=True)
+        ),
+        "Public rider": set(
+            PublicRiderApplication.objects.filter(
+                user__is_active=True,
+                status=PublicRiderApplication.STATUS_APPROVED,
+            ).values_list("user_id", flat=True)
+        ),
+    }
+    for role, label in ShopStaff.ROLE_CHOICES:
+        role_user_ids[label] = set(
+            ShopStaff.objects.filter(
+                user__is_active=True,
+                is_active=True,
+                role=role,
+            ).values_list("user_id", flat=True)
+        )
+
+    role_rows = [
+        {
+            "role": role,
+            "total": len(user_ids & active_user_ids),
+            "online": len(user_ids & online_user_ids),
+            "logged_in_today": len(user_ids & logged_in_today_ids),
+        }
+        for role, user_ids in role_user_ids.items()
+    ]
+
+    search_term = request.GET.get("q", "").strip()[:100]
+    users = user_model.objects.filter(is_active=True).filter(
+        Q(presence__last_seen__gte=now - timedelta(days=1))
+        | Q(last_login__date=today)
+    )
+    if search_term:
+        users = users.filter(
+            Q(username__icontains=search_term)
+            | Q(first_name__icontains=search_term)
+            | Q(last_name__icontains=search_term)
+            | Q(email__icontains=search_term)
+        )
+    users = users.select_related(
+        "presence",
+        "public_rider_application",
+    ).prefetch_related(
+        "shop_staff_memberships__shop",
+    ).order_by(
+        "-presence__last_seen",
+        "-last_login",
+        "username",
+    )
+    page = Paginator(users, 50).get_page(request.GET.get("page"))
+    page_user_ids = [user.pk for user in page.object_list]
+    customer_user_ids = set(
+        ClientProfile.objects.filter(user_id__in=page_user_ids)
+        .values_list("user_id", flat=True)
+    )
+    shop_owner_user_ids = set(
+        Shop.objects.filter(owner_id__in=page_user_ids)
+        .values_list("owner_id", flat=True)
+    )
+    presence_rows = []
+    for user in page.object_list:
+        memberships = list(
+            user.shop_staff_memberships.filter(is_active=True)
+            .values_list("role", "shop__name")
+        )
+        role_labels = []
+        if user.is_superuser:
+            role_labels.append("Administrator")
+        if user.pk in customer_user_ids:
+            role_labels.append("Customer")
+        if user.pk in shop_owner_user_ids:
+            role_labels.append("Shop owner")
+        role_labels.extend(
+            f"{dict(ShopStaff.ROLE_CHOICES).get(role, role)} · {shop_name}"
+            for role, shop_name in memberships
+        )
+        application = getattr(user, "public_rider_application", None)
+        if (
+            application
+            and application.status == PublicRiderApplication.STATUS_APPROVED
+        ):
+            availability = "available" if application.is_online else "offline"
+            role_labels.append(f"Public rider · {availability}")
+        if not role_labels:
+            role_labels.append("User")
+        presence = getattr(user, "presence", None)
+        is_online = bool(presence and presence.last_seen >= online_cutoff)
+        presence_rows.append({
+            "user": user,
+            "roles": role_labels,
+            "is_online": is_online,
+            "last_seen": presence.last_seen if presence else None,
+            "active_portal": (
+                PORTAL_LABELS.get(presence.active_portal, presence.active_portal)
+                if presence
+                else ""
+            ),
+        })
+
+    return render(
+        request,
+        "seller/admin_user_presence.html",
+        {
+            "role_rows": role_rows,
+            "presence_rows": presence_rows,
+            "page_obj": page,
+            "search_term": search_term,
+            "online_count": len(online_user_ids & active_user_ids),
+            "active_account_count": len(active_user_ids),
+            "logged_in_today_count": login_events_today.count(),
+            "last_login_today_count": len(logged_in_today_ids),
+            "online_window_minutes": 5,
+            "refreshed_at": now,
+        },
+    )
+
+
+@login_required
 def admin_catalog_dashboard(request):
     _require_superuser(request)
     category_form = ProductCategoryForm()
@@ -1489,6 +1751,10 @@ def admin_catalog_dashboard(request):
     marketplace_layout_settings, _ = MarketplaceLayoutSettings.objects.get_or_create(pk=1)
     marketplace_layout_form = MarketplaceLayoutSettingsForm(
         instance=marketplace_layout_settings,
+    )
+    product_clone_settings, _ = ProductCloneSettings.objects.get_or_create(pk=1)
+    product_clone_settings_form = ProductCloneSettingsForm(
+        instance=product_clone_settings,
     )
     if request.method == "POST":
         if "save_site_branding" in request.POST:
@@ -1509,6 +1775,18 @@ def admin_catalog_dashboard(request):
             if marketplace_layout_form.is_valid():
                 marketplace_layout_form.save()
                 messages.success(request, "Marketplace mobile layout settings saved.")
+                return redirect("admin_catalog_dashboard")
+        elif "save_product_clone_settings" in request.POST:
+            product_clone_settings_form = ProductCloneSettingsForm(
+                request.POST,
+                instance=product_clone_settings,
+            )
+            if product_clone_settings_form.is_valid():
+                product_clone_settings_form.save()
+                messages.success(
+                    request,
+                    "Shop product copy settings saved.",
+                )
                 return redirect("admin_catalog_dashboard")
         else:
             category_form = ProductCategoryForm(request.POST)
@@ -1557,12 +1835,20 @@ def admin_catalog_dashboard(request):
     return render(request, "seller/admin_catalog.html", {
         "category_form": category_form,
         "marketplace_layout_form": marketplace_layout_form,
+        "product_clone_settings_form": product_clone_settings_form,
         "site_branding_form": site_branding_form,
         "offline_product_dictionary_ready": dictionary_is_ready(),
         "categories": categories,
         "products": product_page,
         "product_page": product_page,
         "product_count": AdminProductCatalog.objects.count(),
+        "hsn_reference_count": HSNCodeDescription.objects.count(),
+        "hsn_reference_preview": HSNCodeDescription.objects.all()[:12],
+        "sac_reference_count": SACCodeDescription.objects.count(),
+        "sac_reference_preview": SACCodeDescription.objects.all()[:12],
+        "category_market_map": dict(
+            ProductCategory.objects.values_list("name", "market_category")
+        ),
         "active_product_count": AdminProductCatalog.objects.filter(is_active=True).count(),
         "active_category_count": ProductCategory.objects.filter(is_active=True).count(),
         "category_choices": get_product_category_choices(include_inactive=True),
@@ -1571,6 +1857,701 @@ def admin_catalog_dashboard(request):
         "search": search,
         "shops": shops,
         "shop_search": shop_search,
+    })
+
+
+@login_required
+def admin_catalog_product_export(request):
+    _require_superuser(request)
+    category = request.GET.get("category", "").strip()
+    products = AdminProductCatalog.objects.all()
+    if category:
+        products = products.filter(product_category=category)
+
+    headers = (
+        "Catalog ID",
+        "Category",
+        "Product name",
+        "Image URL 1",
+        "Image URL 2",
+        "Image URL 3",
+        "Image URL 4",
+        "Image URL 5",
+        "HSN code",
+        "GST rate (%)",
+        "Active",
+        "SAC code",
+    )
+    rows = [headers]
+    rows.extend(
+        (
+            product.pk,
+            product.product_category,
+            product.product_name,
+            product.image_url,
+            product.image_url_2,
+            product.image_url_3,
+            product.image_url_4,
+            product.image_url_5,
+            product.hsn_code,
+            product.gst_rate,
+            "Yes" if product.is_active else "No",
+            product.sac_code,
+        )
+        for product in products.order_by("product_category", "product_name")
+    )
+
+    def column_name(index):
+        name = ""
+        while index:
+            index, remainder = divmod(index - 1, 26)
+            name = chr(65 + remainder) + name
+        return name
+
+    worksheet_rows = []
+    for row_number, row in enumerate(rows, start=1):
+        cells = []
+        for column_number, value in enumerate(row, start=1):
+            cell_ref = f"{column_name(column_number)}{row_number}"
+            if isinstance(value, Decimal):
+                cells.append(
+                    f'<c r="{cell_ref}"><v>{value:f}</v></c>'
+                )
+            else:
+                text = escape(str(value))
+                cells.append(
+                    f'<c r="{cell_ref}" t="inlineStr"><is><t xml:space="preserve">'
+                    f"{text}</t></is></c>"
+                )
+        worksheet_rows.append(
+            f'<row r="{row_number}">{"".join(cells)}</row>'
+        )
+
+    workbook = io.BytesIO()
+    with zipfile.ZipFile(workbook, "w", zipfile.ZIP_DEFLATED) as excel_file:
+        excel_file.writestr(
+            "[Content_Types].xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            "</Types>",
+        )
+        excel_file.writestr(
+            "_rels/.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            "</Relationships>",
+        )
+        excel_file.writestr(
+            "xl/workbook.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            '<sheets><sheet name="Products" sheetId="1" r:id="rId1"/></sheets>'
+            "</workbook>",
+        )
+        excel_file.writestr(
+            "xl/_rels/workbook.xml.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            "</Relationships>",
+        )
+        excel_file.writestr(
+            "xl/worksheets/sheet1.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            f'<sheetData>{"".join(worksheet_rows)}</sheetData>'
+            "</worksheet>",
+        )
+
+    filename = (
+        f"product-catalog-{slugify(category) or 'category'}.xlsx"
+        if category
+        else "product-catalog-all.xlsx"
+    )
+    response = HttpResponse(
+        workbook.getvalue(),
+        content_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+    )
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+def _catalog_excel_text(element, shared_strings, number_formats):
+    namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    cell_type = element.get("t")
+    if cell_type == "inlineStr":
+        inline = element.find(f"{namespace}is")
+        return "".join(
+            text.text or ""
+            for text in inline.iter(f"{namespace}t")
+        ) if inline is not None else ""
+    value = element.findtext(f"{namespace}v", default="")
+    if cell_type == "s":
+        try:
+            return shared_strings[int(value)]
+        except (IndexError, ValueError):
+            raise ValueError("Workbook contains an invalid shared-string reference.")
+    if cell_type == "b":
+        return "TRUE" if value == "1" else "FALSE"
+    try:
+        style_index = int(element.get("s", "0"))
+    except ValueError:
+        style_index = 0
+    if cell_type in {None, "n"} and value and style_index < len(number_formats):
+        number_format = number_formats[style_index]
+        if re.fullmatch(r"0{2,8}", number_format):
+            try:
+                numeric_value = Decimal(value)
+                if numeric_value == numeric_value.to_integral_value():
+                    return str(int(numeric_value)).zfill(len(number_format))
+            except InvalidOperation:
+                pass
+    return value
+
+
+def _read_catalog_excel(
+    upload,
+    *,
+    required_fields=("product_category", "product_name"),
+    max_rows=5_000,
+    ignore_formulas=False,
+):
+    extension = upload.name.lower().rsplit(".", 1)[-1]
+    if extension not in {"xlsx", "csv"}:
+        raise ValueError("Choose an Excel .xlsx or .csv file.")
+    if upload.size > 10 * 1024 * 1024:
+        raise ValueError("The upload must be 10 MB or smaller.")
+
+    main_ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    rows = []
+    if extension == "csv":
+        try:
+            content = upload.read().decode("utf-8-sig")
+            first_line, separator, remaining_content = content.partition("\n")
+            if first_line.strip().casefold() in {
+                "sep=,",
+                "sep=;",
+                "sep=\t",
+                "sep=|",
+            }:
+                content = remaining_content
+            try:
+                dialect = csv.Sniffer().sniff(
+                    content[:8192],
+                    delimiters=",;\t|",
+                )
+            except csv.Error:
+                dialect = csv.excel
+            for row_number, values in enumerate(
+                csv.reader(io.StringIO(content, newline=""), dialect),
+                start=1,
+            ):
+                if any(value.strip() for value in values):
+                    rows.append((
+                        row_number,
+                        {
+                            column_number: value
+                            for column_number, value in enumerate(values, start=1)
+                        },
+                    ))
+                if len(rows) > max_rows + 1:
+                    raise ValueError(
+                        f"Upload at most {max_rows:,} data rows at a time."
+                    )
+        except UnicodeDecodeError as error:
+            raise ValueError("The CSV file must use UTF-8 encoding.") from error
+        except csv.Error as error:
+            raise ValueError("The CSV file could not be read.") from error
+    else:
+        try:
+            with zipfile.ZipFile(upload) as excel_file:
+                entries = excel_file.infolist()
+                if sum(entry.file_size for entry in entries) > 50 * 1024 * 1024:
+                    raise ValueError("The uncompressed Excel file is too large.")
+                names = {entry.filename for entry in entries}
+                workbook_path = "xl/workbook.xml"
+                relations_path = "xl/_rels/workbook.xml.rels"
+                if workbook_path not in names or relations_path not in names:
+                    raise ValueError("This file is not a valid Excel workbook.")
+
+                workbook_xml = excel_file.read(workbook_path)
+                relations_xml = excel_file.read(relations_path)
+                if b"<!DOCTYPE" in workbook_xml.upper() or b"<!ENTITY" in workbook_xml.upper():
+                    raise ValueError("The workbook contains unsupported XML declarations.")
+                if b"<!DOCTYPE" in relations_xml.upper() or b"<!ENTITY" in relations_xml.upper():
+                    raise ValueError("The workbook contains unsupported XML declarations.")
+                workbook_root = ElementTree.fromstring(workbook_xml)
+                relations_root = ElementTree.fromstring(relations_xml)
+                office_rel_ns = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+                package_rel_ns = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+                first_sheet = workbook_root.find(f"{main_ns}sheets/{main_ns}sheet")
+                if first_sheet is None:
+                    raise ValueError("The workbook has no worksheets.")
+                relation_id = first_sheet.get(f"{office_rel_ns}id")
+                relation = next(
+                    (
+                        item for item in relations_root.findall(
+                            f"{package_rel_ns}Relationship",
+                        )
+                        if item.get("Id") == relation_id
+                    ),
+                    None,
+                )
+                if relation is None:
+                    raise ValueError("The workbook's first worksheet could not be found.")
+                target = relation.get("Target", "")
+                sheet_path = (
+                    posixpath.normpath(target.lstrip("/"))
+                    if target.startswith("/")
+                    else posixpath.normpath(posixpath.join("xl", target))
+                )
+                if (
+                    not sheet_path.startswith("xl/worksheets/")
+                    or sheet_path not in names
+                ):
+                    raise ValueError("The workbook's first worksheet could not be read.")
+
+                shared_strings = []
+                shared_path = "xl/sharedStrings.xml"
+                if shared_path in names:
+                    shared_xml = excel_file.read(shared_path)
+                    if b"<!DOCTYPE" in shared_xml.upper() or b"<!ENTITY" in shared_xml.upper():
+                        raise ValueError("The workbook contains unsupported XML declarations.")
+                    shared_root = ElementTree.fromstring(shared_xml)
+                    shared_strings = [
+                        "".join(
+                            text.text or ""
+                            for text in item.iter(f"{main_ns}t")
+                        )
+                        for item in shared_root.findall(f"{main_ns}si")
+                    ]
+
+                number_formats = []
+                styles_path = "xl/styles.xml"
+                if styles_path in names:
+                    styles_xml = excel_file.read(styles_path)
+                    if b"<!DOCTYPE" in styles_xml.upper() or b"<!ENTITY" in styles_xml.upper():
+                        raise ValueError("The workbook contains unsupported XML declarations.")
+                    styles_root = ElementTree.fromstring(styles_xml)
+                    custom_formats = {
+                        int(item.get("numFmtId")): item.get("formatCode", "")
+                        for item in styles_root.findall(
+                            f"{main_ns}numFmts/{main_ns}numFmt",
+                        )
+                    }
+                    builtin_formats = {
+                        1: "0",
+                        2: "0.00",
+                        3: "#,##0",
+                        4: "#,##0.00",
+                    }
+                    cell_formats = styles_root.find(f"{main_ns}cellXfs")
+                    if cell_formats is not None:
+                        for style in cell_formats.findall(f"{main_ns}xf"):
+                            number_format_id = int(style.get("numFmtId", "0"))
+                            number_formats.append(
+                                custom_formats.get(
+                                    number_format_id,
+                                    builtin_formats.get(number_format_id, ""),
+                                ),
+                            )
+
+                sheet_xml = excel_file.read(sheet_path)
+                if b"<!DOCTYPE" in sheet_xml.upper() or b"<!ENTITY" in sheet_xml.upper():
+                    raise ValueError("The workbook contains unsupported XML declarations.")
+                sheet_root = ElementTree.fromstring(sheet_xml)
+
+                for row_element in sheet_root.findall(f".//{main_ns}sheetData/{main_ns}row"):
+                    row_number = int(row_element.get("r", len(rows) + 1))
+                    values = {}
+                    for cell in row_element.findall(f"{main_ns}c"):
+                        if (
+                            cell.find(f"{main_ns}f") is not None
+                            and not ignore_formulas
+                        ):
+                            raise ValueError(
+                                f"Formulas are not supported (row {row_number}). "
+                                "Paste formula results as values before importing."
+                            )
+                        reference = cell.get("r", "")
+                        column_letters = re.match(r"[A-Z]+", reference.upper())
+                        if not column_letters:
+                            continue
+                        column_number = 0
+                        for letter in column_letters.group(0):
+                            column_number = column_number * 26 + ord(letter) - ord("A") + 1
+                        if cell.find(f"{main_ns}f") is not None:
+                            continue
+                        values[column_number] = _catalog_excel_text(
+                            cell,
+                            shared_strings,
+                            number_formats,
+                        )
+                    if values:
+                        rows.append((row_number, values))
+                        if len(rows) > max_rows + 1:
+                            raise ValueError(
+                                f"Upload at most {max_rows:,} data rows at a time."
+                            )
+        except (zipfile.BadZipFile, ElementTree.ParseError, KeyError, OSError) as error:
+            raise ValueError("The uploaded file is not a readable .xlsx workbook.") from error
+
+    if not rows:
+        raise ValueError("The workbook has no product rows.")
+
+    headers = {
+        "catalog id": "catalog_id",
+        "category": "product_category",
+        "product name": "product_name",
+        "image url 1": "image_url",
+        "image url 2": "image_url_2",
+        "image url 3": "image_url_3",
+        "image url 4": "image_url_4",
+        "image url 5": "image_url_5",
+        "hsn code": "hsn_code",
+        "sac code": "sac_code",
+        "gst rate (%)": "gst_rate",
+        "active": "is_active",
+        "hsn cd": "hsn_cd",
+        "hsn description": "hsn_description",
+        "sac cd": "sac_cd",
+        "sac description": "sac_description",
+    }
+    if "hsn_cd" in required_fields:
+        headers["hsn code"] = "hsn_cd"
+        headers["hsn"] = "hsn_cd"
+        headers["description"] = "hsn_description"
+    if "sac_cd" in required_fields:
+        headers["sac code"] = "sac_cd"
+        headers["sac"] = "sac_cd"
+        headers["description"] = "sac_description"
+    header_row_number, header_values = rows[0]
+    columns = {}
+    unknown_headers = []
+    for column_number, value in header_values.items():
+        normalized = " ".join(
+            value.strip().casefold().replace("_", " ").split()
+        )
+        mapped_field = headers.get(normalized)
+        if mapped_field:
+            columns[column_number] = mapped_field
+        elif normalized:
+            unknown_headers.append(value.strip())
+    if unknown_headers:
+        raise ValueError(
+            "Unsupported column(s): " + ", ".join(unknown_headers) + "."
+        )
+    if not set(required_fields).issubset(columns.values()):
+        required_labels = {
+            "product_category": "Category",
+            "product_name": "Product name",
+            "hsn_cd": "HSN_CD",
+            "hsn_description": "HSN_Description",
+            "sac_cd": "SAC_CD",
+            "sac_description": "SAC_Description",
+        }
+        required_columns = " and ".join(
+            required_labels[field_name]
+            for field_name in required_fields
+        )
+        raise ValueError(
+            f"Row {header_row_number} must include {required_columns} columns."
+        )
+    return columns, rows[1:]
+
+
+@login_required
+def admin_catalog_product_import(request):
+    _require_superuser(request)
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
+    upload = request.FILES.get("catalog_excel")
+    if not upload:
+        messages.error(request, "Choose an Excel .xlsx file to import.")
+        return redirect("admin_catalog_dashboard")
+
+    try:
+        columns, rows = _read_catalog_excel(upload)
+    except ValueError as error:
+        messages.error(request, str(error))
+        return redirect("admin_catalog_dashboard")
+
+    allowed_fields = {
+        "product_category",
+        "product_name",
+        "image_url",
+        "image_url_2",
+        "image_url_3",
+        "image_url_4",
+        "image_url_5",
+        "hsn_code",
+        "sac_code",
+        "gst_rate",
+        "is_active",
+    }
+    provided_fields = set(columns.values()) & allowed_fields
+    validated = []
+    errors = []
+    seen_ids = set()
+    seen_keys = set()
+    for row_number, row_values in rows:
+        if not any(value.strip() for value in row_values.values()):
+            continue
+        row = {
+            field_name: row_values.get(column_number, "").strip()
+            for column_number, field_name in columns.items()
+        }
+        raw_id = row.pop("catalog_id", "")
+        instance = None
+        if raw_id:
+            try:
+                product_id = int(raw_id)
+            except ValueError:
+                errors.append(f"Row {row_number}: Catalog ID must be a whole number.")
+                continue
+            if product_id in seen_ids:
+                errors.append(f"Row {row_number}: Catalog ID {product_id} appears more than once.")
+                continue
+            seen_ids.add(product_id)
+            instance = AdminProductCatalog.objects.filter(pk=product_id).first()
+            if instance is None:
+                errors.append(f"Row {row_number}: Catalog ID {product_id} does not exist.")
+                continue
+        category = row.get("product_category", "")
+        product_name = row.get("product_name", "")
+        if not category or not product_name:
+            errors.append(
+                f"Row {row_number}: Category and Product name are required."
+            )
+            continue
+        product_key = (category.casefold(), product_name.casefold())
+        if product_key in seen_keys:
+            errors.append(
+                f"Row {row_number}: This category and product name are duplicated in the file."
+            )
+            continue
+        seen_keys.add(product_key)
+
+        if instance is None:
+            instance = AdminProductCatalog.objects.filter(
+                product_category=category,
+                product_name=product_name,
+            ).first()
+        form_data = {}
+        for field_name in allowed_fields:
+            if field_name in row:
+                form_data[field_name] = row[field_name]
+            elif instance is not None:
+                form_data[field_name] = getattr(instance, field_name)
+            elif field_name == "is_active":
+                form_data[field_name] = "on"
+        if "is_active" in provided_fields:
+            active_value = row.get("is_active", "").strip().casefold()
+            if active_value in {"yes", "true", "1", "active"}:
+                form_data["is_active"] = "on"
+            elif active_value in {"no", "false", "0", "inactive"}:
+                form_data["is_active"] = ""
+            else:
+                errors.append(
+                    f"Row {row_number}: Active must be Yes or No."
+                )
+                continue
+        form = AdminProductCatalogForm(data=form_data, instance=instance)
+        if not form.is_valid():
+            detail = "; ".join(
+                f"{field}: {', '.join(messages_list)}"
+                for field, messages_list in form.errors.items()
+            )
+            errors.append(f"Row {row_number}: {detail}")
+            continue
+        validated.append((form, instance is None))
+
+    if not validated and not errors:
+        errors.append("The workbook contains no product rows to import.")
+    if errors:
+        shown_errors = errors[:10]
+        if len(errors) > len(shown_errors):
+            shown_errors.append(
+                f"...and {len(errors) - len(shown_errors)} more row errors."
+            )
+        messages.error(
+            request,
+            "Import canceled; no products were changed. " + " ".join(shown_errors),
+        )
+        return redirect("admin_catalog_dashboard")
+
+    created_count = 0
+    updated_count = 0
+    unchanged_count = 0
+    with transaction.atomic():
+        for form, is_new in validated:
+            if not is_new and not form.has_changed():
+                unchanged_count += 1
+                continue
+            _save_admin_catalog_product(form)
+            if is_new:
+                created_count += 1
+            else:
+                updated_count += 1
+    messages.success(
+        request,
+        f"Excel import complete: {created_count} product(s) added and "
+        f"{updated_count} product(s) updated; "
+        f"{unchanged_count} unchanged.",
+    )
+    return redirect("admin_catalog_dashboard")
+
+
+@login_required
+def admin_catalog_hsn_reference_import(request):
+    _require_superuser(request)
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
+    upload = request.FILES.get("hsn_reference_excel")
+    if not upload:
+        messages.error(
+            request,
+            "Choose an .xlsx or .csv file with HSN code and description columns.",
+        )
+        return redirect("admin_catalog_dashboard")
+
+    try:
+        columns, rows = _read_catalog_excel(
+            upload,
+            required_fields=("hsn_cd", "hsn_description"),
+            max_rows=50_000,
+            ignore_formulas=True,
+        )
+    except ValueError as error:
+        messages.error(request, str(error))
+        return redirect("admin_catalog_dashboard")
+
+    imported_rows = []
+    errors = []
+    seen_entries = set()
+    for row_number, row_values in rows:
+        values = {
+            field_name: row_values.get(column_number, "").strip()
+            for column_number, field_name in columns.items()
+        }
+        hsn_code = values.get("hsn_cd", "")
+        description = values.get("hsn_description", "")
+        if not hsn_code and not description:
+            continue
+        hsn_code = re.sub(r"\s+", "", hsn_code)
+        if not re.fullmatch(r"\d{2}(?:\d{2}){0,3}", hsn_code):
+            errors.append(
+                f"Row {row_number}: HSN_CD must have 2, 4, 6, or 8 digits. "
+                "Format the Excel column as Text to preserve leading zeroes."
+            )
+            continue
+        if not description:
+            errors.append(f"Row {row_number}: HSN_Description is required.")
+            continue
+        if len(description) > 500:
+            errors.append(f"Row {row_number}: HSN_Description must be 500 characters or fewer.")
+            continue
+        entry = (hsn_code, description.casefold())
+        if entry in seen_entries:
+            continue
+        seen_entries.add(entry)
+        imported_rows.append(
+            HSNCodeDescription(hsn_code=hsn_code, description=description),
+        )
+
+    if not imported_rows and not errors:
+        errors.append("The workbook contains no HSN description rows.")
+    if errors and not imported_rows:
+        shown_errors = errors[:10]
+        if len(errors) > len(shown_errors):
+            shown_errors.append(
+                f"...and {len(errors) - len(shown_errors)} more row errors."
+            )
+        messages.error(
+            request,
+            "HSN upload canceled; existing suggestions were not changed. "
+            + " ".join(shown_errors),
+        )
+        return redirect("admin_catalog_dashboard")
+
+    with transaction.atomic():
+        HSNCodeDescription.objects.all().delete()
+        HSNCodeDescription.objects.bulk_create(imported_rows, batch_size=500)
+    messages.success(
+        request,
+        f"Imported {len(imported_rows)} HSN code description(s). "
+        "The previous HSN suggestion list was replaced.",
+    )
+    if errors:
+        shown_errors = errors[:10]
+        if len(errors) > len(shown_errors):
+            shown_errors.append(
+                f"...and {len(errors) - len(shown_errors)} more rows were skipped."
+            )
+        messages.warning(
+            request,
+            f"Skipped {len(errors)} invalid HSN row(s): " + " ".join(shown_errors),
+        )
+    return redirect("admin_catalog_dashboard")
+
+
+@login_required
+def admin_catalog_hsn_suggestions(request):
+    _require_superuser(request)
+    query = " ".join(request.GET.get("q", "").split())
+    if len(query) < 2:
+        return JsonResponse({"results": []})
+
+    terms = list(dict.fromkeys(
+        token.casefold()
+        for token in re.findall(r"\w+", query)
+        if len(token) >= 2
+    ))
+    search_terms = set(terms)
+    for term in terms:
+        if len(term) > 3 and term.endswith("ies"):
+            search_terms.add(term[:-3] + "y")
+        if len(term) > 3 and term.endswith("es"):
+            search_terms.add(term[:-2])
+        elif len(term) > 3 and term.endswith("s"):
+            search_terms.add(term[:-1])
+        else:
+            search_terms.add(term + "s")
+    if not terms:
+        return JsonResponse({"results": []})
+
+    matching_descriptions = HSNCodeDescription.objects.none()
+    for term in search_terms:
+        matching_descriptions = matching_descriptions | (
+            HSNCodeDescription.objects.filter(
+                description__icontains=term,
+            )
+        )
+    matches = list(matching_descriptions.distinct()[:200])
+    matches.sort(
+        key=lambda item: (
+            -ratio(query.casefold(), item.description.casefold()),
+            len(item.hsn_code),
+            item.hsn_code,
+        ),
+    )
+    return JsonResponse({
+        "results": [
+            {
+                "code": item.hsn_code,
+                "description": item.description,
+            }
+            for item in matches[:12]
+        ],
     })
 
 
@@ -1729,6 +2710,156 @@ def admin_site_theme_builder(request):
 
 
 @login_required
+def admin_catalog_sac_reference_import(request):
+    _require_superuser(request)
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
+    upload = request.FILES.get("sac_reference_excel")
+    if not upload:
+        messages.error(
+            request,
+            "Choose an .xlsx or .csv file with SAC_CD and SAC_Description columns.",
+        )
+        return redirect("admin_catalog_dashboard")
+
+    try:
+        columns, rows = _read_catalog_excel(
+            upload,
+            required_fields=("sac_cd", "sac_description"),
+            max_rows=50_000,
+            ignore_formulas=True,
+        )
+    except ValueError as error:
+        messages.error(request, str(error))
+        return redirect("admin_catalog_dashboard")
+
+    imported_rows = []
+    errors = []
+    seen_entries = set()
+    for row_number, row_values in rows:
+        values = {
+            field_name: row_values.get(column_number, "").strip()
+            for column_number, field_name in columns.items()
+        }
+        sac_code = re.sub(r"\s+", "", values.get("sac_cd", ""))
+        description = values.get("sac_description", "")
+        if not sac_code and not description:
+            continue
+        if not re.fullmatch(r"\d{2}(?:\d{2}){0,2}", sac_code):
+            errors.append(
+                f"Row {row_number}: SAC_CD must have 2, 4, or 6 digits."
+            )
+            continue
+        if not description:
+            errors.append(f"Row {row_number}: SAC_Description is required.")
+            continue
+        if len(description) > 500:
+            errors.append(
+                f"Row {row_number}: SAC_Description must be 500 characters or fewer."
+            )
+            continue
+        entry = (sac_code, description.casefold())
+        if entry in seen_entries:
+            continue
+        seen_entries.add(entry)
+        imported_rows.append(
+            SACCodeDescription(sac_code=sac_code, description=description),
+        )
+
+    if not imported_rows and not errors:
+        errors.append("The workbook contains no SAC description rows.")
+    if errors and not imported_rows:
+        shown_errors = errors[:10]
+        if len(errors) > len(shown_errors):
+            shown_errors.append(
+                f"...and {len(errors) - len(shown_errors)} more row errors."
+            )
+        messages.error(
+            request,
+            "SAC upload canceled; existing suggestions were not changed. "
+            + " ".join(shown_errors),
+        )
+        return redirect("admin_catalog_dashboard")
+
+    with transaction.atomic():
+        SACCodeDescription.objects.all().delete()
+        SACCodeDescription.objects.bulk_create(imported_rows, batch_size=500)
+    messages.success(
+        request,
+        f"Imported {len(imported_rows)} SAC code description(s). "
+        "The previous SAC suggestion list was replaced.",
+    )
+    if errors:
+        shown_errors = errors[:10]
+        if len(errors) > len(shown_errors):
+            shown_errors.append(
+                f"...and {len(errors) - len(shown_errors)} more rows were skipped."
+            )
+        messages.warning(
+            request,
+            f"Skipped {len(errors)} invalid SAC row(s): " + " ".join(shown_errors),
+        )
+    return redirect("admin_catalog_dashboard")
+
+
+@login_required
+def admin_catalog_sac_suggestions(request):
+    _require_superuser(request)
+    category = ProductCategory.objects.filter(
+        name=request.GET.get("category", ""),
+        market_category="SERVICE MARKET",
+        is_active=True,
+    ).first()
+    if category is None:
+        return JsonResponse({"results": []})
+
+    query = " ".join(request.GET.get("q", "").split())
+    if len(query) < 2:
+        return JsonResponse({"results": []})
+
+    terms = list(dict.fromkeys(
+        token.casefold()
+        for token in re.findall(r"\w+", query)
+        if len(token) >= 2
+    ))
+    search_terms = set(terms)
+    for term in terms:
+        if len(term) > 3 and term.endswith("ies"):
+            search_terms.add(term[:-3] + "y")
+        if len(term) > 3 and term.endswith("es"):
+            search_terms.add(term[:-2])
+        elif len(term) > 3 and term.endswith("s"):
+            search_terms.add(term[:-1])
+        else:
+            search_terms.add(term + "s")
+    if not terms:
+        return JsonResponse({"results": []})
+
+    matching_descriptions = SACCodeDescription.objects.none()
+    for term in search_terms:
+        matching_descriptions = matching_descriptions | (
+            SACCodeDescription.objects.filter(description__icontains=term)
+        )
+    matches = list(matching_descriptions.distinct()[:200])
+    matches.sort(
+        key=lambda item: (
+            -ratio(query.casefold(), item.description.casefold()),
+            len(item.sac_code),
+            item.sac_code,
+        ),
+    )
+    return JsonResponse({
+        "results": [
+            {
+                "code": item.sac_code,
+                "description": item.description,
+            }
+            for item in matches[:12]
+        ],
+    })
+
+
+@login_required
 def admin_catalog_shop_storefront_toggle(request, pk):
     _require_superuser(request)
     if request.method != "POST":
@@ -1755,11 +2886,51 @@ def admin_catalog_product_create(request):
     if request.method == "POST" and form.is_valid():
         form.save()
         messages.success(request, "Shared catalog product saved.")
-        return redirect("admin_catalog_dashboard")
+        return redirect(_admin_catalog_return_url(request))
     return render(request, "seller/admin_catalog_product_form.html", {
         "form": form,
         "form_title": "Add catalog product",
+        "return_to": _admin_catalog_return_url(request),
+        "category_market_map": dict(
+            ProductCategory.objects.values_list("name", "market_category")
+        ),
     })
+
+
+def _admin_catalog_return_url(request):
+    target = request.POST.get("return_to", "")
+    if not target or not url_has_allowed_host_and_scheme(
+        target,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        return reverse("admin_catalog_dashboard")
+    return urlsplit(target)._replace(fragment="catalog-products").geturl()
+
+
+def _save_admin_catalog_product(form):
+    previous_category = form.initial.get(
+        "product_category",
+        form.instance.product_category,
+    )
+    previous_name = form.initial.get(
+        "product_name",
+        form.instance.product_name,
+    )
+    product_name_changed = (
+        form.instance.pk is not None
+        and "product_name" in form.changed_data
+    )
+    catalog_product = form.save()
+    if product_name_changed:
+        shop_products = Product.objects.filter(
+            product_category=previous_category,
+            product_name=previous_name,
+        )
+        for shop_product in shop_products.iterator():
+            shop_product.product_name = catalog_product.product_name
+            shop_product.save(update_fields=["product_name", "updated_at"])
+    return catalog_product
 
 
 @login_required
@@ -1768,14 +2939,89 @@ def admin_catalog_product_edit(request, pk):
     product = get_object_or_404(AdminProductCatalog, pk=pk)
     form = AdminProductCatalogForm(request.POST or None, instance=product)
     if request.method == "POST" and form.is_valid():
-        form.save()
+        with transaction.atomic():
+            _save_admin_catalog_product(form)
         messages.success(request, "Shared catalog product updated.")
-        return redirect("admin_catalog_dashboard")
+        return redirect(_admin_catalog_return_url(request))
     return render(request, "seller/admin_catalog_product_form.html", {
         "form": form,
         "form_title": f"Edit {product.product_name}",
         "product": product,
+        "return_to": _admin_catalog_return_url(request),
+        "category_market_map": dict(
+            ProductCategory.objects.values_list("name", "market_category")
+        ),
     })
+
+
+@login_required
+def admin_catalog_products_save_all(request):
+    _require_superuser(request)
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
+
+    selected_product_id = request.POST.get("save_product")
+    if selected_product_id is not None:
+        if not selected_product_id.isdigit():
+            messages.error(request, "Invalid catalog product selected.")
+            return redirect(_admin_catalog_return_url(request))
+        product_ids = [int(selected_product_id)]
+    else:
+        product_ids = sorted({
+            int(match.group(1))
+            for key in request.POST
+            if (match := re.fullmatch(r"product-(\d+)-product_name", key))
+        })
+    if not product_ids:
+        messages.info(request, "No catalog products were submitted.")
+        return redirect(_admin_catalog_return_url(request))
+
+    products_by_id = AdminProductCatalog.objects.in_bulk(product_ids)
+    if len(products_by_id) != len(product_ids):
+        messages.error(request, "A catalog product no longer exists. No changes were saved.")
+        return redirect(_admin_catalog_return_url(request))
+
+    forms = [
+        AdminProductCatalogForm(
+            request.POST,
+            instance=products_by_id[product_id],
+            prefix=f"product-{product_id}",
+        )
+        for product_id in product_ids
+    ]
+    invalid_products = [
+        form.instance.product_name
+        for form in forms
+        if not form.is_valid()
+    ]
+    if invalid_products:
+        messages.error(
+            request,
+            "No products were saved. Correct invalid fields for: "
+            + ", ".join(invalid_products[:10])
+            + (" ..." if len(invalid_products) > 10 else ""),
+        )
+        return redirect(_admin_catalog_return_url(request))
+
+    updated_count = 0
+    with transaction.atomic():
+        for form in forms:
+            if form.has_changed():
+                _save_admin_catalog_product(form)
+                updated_count += 1
+    messages.success(
+        request,
+        (
+            "Catalog product saved."
+            if selected_product_id is not None and updated_count
+            else (
+                "Catalog product has no changes."
+                if selected_product_id is not None
+                else f"Saved changes to {updated_count} catalog product(s)."
+            )
+        ),
+    )
+    return redirect(_admin_catalog_return_url(request))
 
 
 @login_required
@@ -2531,20 +3777,6 @@ def public_rider_apply(request):
 
 @login_required
 def order_list(request):
-    is_shop_owner = Shop.objects.filter(owner=request.user).exists()
-    is_shop_staff = ShopStaff.objects.filter(
-        user=request.user,
-        is_active=True,
-        is_public_rider=False,
-    ).exists()
-    if request.session.get("active_portal") not in {
-        "CUSTOMER",
-        "B2B_CUSTOMER",
-    } and (
-        is_shop_owner or is_shop_staff
-    ):
-        return redirect("shop_order_list")
-
     orders = (
         Order.objects
         .filter(user=request.user.username)
@@ -2657,11 +3889,11 @@ def customer_reorder(request, order_id):
             current_quantity = 0
         quantity_available = max(
             0,
-            assignment.stock_for_customer(is_b2b=is_b2b)
+            int(assignment.stock_for_customer(is_b2b=is_b2b))
             - current_quantity
             - _cart_quantity(cart, assignment.pk, is_bulk_order=not is_bulk_order),
         )
-        quantity_to_add = min(historical_item.quantity, quantity_available)
+        quantity_to_add = min(int(historical_item.quantity), quantity_available)
         if quantity_to_add <= 0:
             unavailable.append(
                 f"{historical_item.product_name} (no additional stock available)"
@@ -2681,6 +3913,20 @@ def customer_reorder(request, order_id):
 
     if added_count:
         _save_address_scoped_cart(request, cart)
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        message = (
+            f"Added {added_count} available item(s) to your cart."
+            if added_count
+            else "This order has no items available to reorder."
+        )
+        return JsonResponse({
+            "success": bool(added_count),
+            "message": message,
+            "redirect_url": reverse("cart" if added_count else "order_list"),
+            "unavailable": unavailable,
+        })
+
+    if added_count:
         messages.success(
             request,
             f"Added {added_count} available item(s) to your cart. Review the cart before checkout.",
@@ -2692,7 +3938,6 @@ def customer_reorder(request, order_id):
         )
     if not added_count and not unavailable:
         messages.warning(request, "This order has no items available to reorder.")
-
     return redirect("cart" if added_count else "order_list")
 
 
@@ -3199,6 +4444,25 @@ def _order_edit_page(request, order, shop_order=None):
     })
 
 
+def _customer_order_action_response(
+    request,
+    level,
+    message,
+    redirect_name="order_list",
+    redirect_kwargs=None,
+    **data,
+):
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return JsonResponse({
+            "success": level == "success",
+            "message": message,
+            "redirect_url": reverse(redirect_name, kwargs=redirect_kwargs),
+            **data,
+        })
+    getattr(messages, level)(request, message)
+    return redirect(redirect_name, **(redirect_kwargs or {}))
+
+
 @login_required
 def customer_edit_placed_order(request, order_id):
     if request.method not in {"GET", "POST"}:
@@ -3238,10 +4502,16 @@ def customer_edit_placed_order(request, order_id):
                 order, shop_orders, order_items, changes, request.user, "CUSTOMER"
             )
     except OrderEditRejected as error:
+        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            return _customer_order_action_response(request, "error", str(error))
         messages.error(request, str(error))
         return redirect("order_list")
-    messages.success(request, f"Order updated. Revised total: ₹{revised_total:.2f}.")
-    return redirect("order_list")
+    return _customer_order_action_response(
+        request,
+        "success",
+        f"Order updated. Revised total: ₹{revised_total:.2f}.",
+        revised_total=str(revised_total),
+    )
 
 
 @login_required
@@ -3337,7 +4607,7 @@ def _restock_cancelled_shop_order(shop_order, actor):
         )
 
 
-def _refund_cancelled_shop_order(shop_order, actor):
+def _refund_cancelled_shop_order(shop_order, actor, *, cancellation_source="SHOP"):
     order = Order.objects.select_for_update().get(pk=shop_order.order_id)
     tax_amount = (
         shop_order.cgst_amount
@@ -3492,10 +4762,15 @@ def _refund_cancelled_shop_order(shop_order, actor):
             if refund_methods
             else f"Your amount due was reduced by ₹{refundable_amount:.2f}."
         )
+        cancellation_label = (
+            "Shop cancellation"
+            if cancellation_source == "SHOP"
+            else "Order cancellation"
+        )
         Notification.objects.create(
             user=customer_user,
-            title="Shop cancellation refund processed",
-            message=f"A shop cancellation for order {order.order_id} was processed. {refund_message}",
+            title=f"{cancellation_label} refund processed",
+            message=f"{cancellation_label} for order {order.order_id} was processed. {refund_message}",
             notification_type="ORDER",
             related_url=f"/orders/{order.tracking_code or order.order_id}/tracking/",
         )
@@ -3517,11 +4792,17 @@ def customer_cancel_order(request, order_id):
         .select_related("shop")
     )
     if not shop_orders or order.status.upper() == "CANCELLED":
-        messages.info(request, "This order is already cancelled or has no cancellable shop orders.")
-        return redirect("order_list")
+        return _customer_order_action_response(
+            request,
+            "error",
+            "This order is already cancelled or has no cancellable shop orders.",
+        )
     if any(shop_order.status.upper() != "PLACED" for shop_order in shop_orders):
-        messages.error(request, "Orders can only be cancelled before a shop confirms them.")
-        return redirect("order_list")
+        return _customer_order_action_response(
+            request,
+            "error",
+            "Orders can only be cancelled before a shop confirms them.",
+        )
 
     if order.payment_type == "RAZORPAY" and order.finally_received_amount > 0:
         try:
@@ -3534,8 +4815,11 @@ def customer_cancel_order(request, order_id):
             response.raise_for_status()
         except requests.RequestException:
             logger.exception("Could not refund Razorpay payment for cancelled order %s.", order.order_id)
-            messages.error(request, "The Razorpay refund could not be confirmed. The order was not cancelled; please contact support.")
-            return redirect("order_list")
+            return _customer_order_action_response(
+                request,
+                "error",
+                "The Razorpay refund could not be confirmed. The order was not cancelled; please contact support.",
+            )
 
     client = ClientProfile.objects.select_for_update().filter(user=request.user).first()
     if client and order.wallet_amount_used:
@@ -3565,8 +4849,85 @@ def customer_cancel_order(request, order_id):
     if order.payment_type == "RAZORPAY" and order.finally_received_amount > 0:
         order.payment_status = "REFUNDED"
     order.save(update_fields=["status", "cancellation_source", "payment_status", "updated_at"])
-    messages.success(request, "Order cancelled. Any wallet amount was returned; Razorpay refund has been requested.")
-    return redirect("order_list")
+    return _customer_order_action_response(
+        request,
+        "success",
+        "Order cancelled. Any wallet amount was returned; Razorpay refund has been requested.",
+    )
+
+
+@login_required
+@transaction.atomic
+def customer_cancel_shop_order(request, order_id, shop_order_id):
+    tracking_order_id = order_id
+    if request.method != "POST":
+        return redirect("order_tracking", order_id=tracking_order_id)
+
+    order = get_object_or_404(
+        Order.objects.select_for_update().filter(user=request.user.username),
+        Q(tracking_code=order_id) | Q(order_id=order_id),
+    )
+    shop_order = get_object_or_404(
+        ShopOrder.objects.select_for_update().select_related("shop", "order"),
+        pk=shop_order_id,
+        order=order,
+    )
+    if shop_order.status.upper() != "PLACED":
+        return _customer_order_action_response(
+            request,
+            "error",
+            "This shop order can only be cancelled before the shop confirms it.",
+            redirect_name="order_tracking",
+            redirect_kwargs={"order_id": tracking_order_id},
+            shop_order_id=shop_order.pk,
+        )
+
+    refund_ok, refund_message = _refund_cancelled_shop_order(
+        shop_order,
+        request.user,
+        cancellation_source="CUSTOMER",
+    )
+    if not refund_ok:
+        return _customer_order_action_response(
+            request,
+            "error",
+            refund_message,
+            redirect_name="order_tracking",
+            redirect_kwargs={"order_id": tracking_order_id},
+            shop_order_id=shop_order.pk,
+        )
+
+    _restock_cancelled_shop_order(shop_order, request.user)
+    shop_order.status = "CANCELLED"
+    shop_order.cancellation_source = "CUSTOMER"
+    shop_order.save(update_fields=["status", "cancellation_source", "updated_at"])
+    OrderStatusHistory.objects.create(
+        shop_order=shop_order,
+        status="CANCELLED",
+        remark="Cancelled by customer before shop confirmation.",
+    )
+
+    other_shop_orders = ShopOrder.objects.filter(order=order).exclude(
+        pk=shop_order.pk,
+    )
+    if not other_shop_orders.exclude(status__iexact="CANCELLED").exists():
+        order.status = "CANCELLED"
+        order.cancellation_source = (
+            "SHOP"
+            if other_shop_orders.filter(cancellation_source="SHOP").exists()
+            else "CUSTOMER"
+        )
+        order.save(update_fields=["status", "cancellation_source", "updated_at"])
+
+    return _customer_order_action_response(
+        request,
+        "success",
+        f"The order from {shop_order.shop.name} was cancelled.",
+        redirect_name="order_tracking",
+        redirect_kwargs={"order_id": tracking_order_id},
+        shop_order_id=shop_order.pk,
+        status="CANCELLED",
+    )
 
 
 @login_required
@@ -3583,8 +4944,11 @@ def customer_change_order_address(request, order_id):
         child.status.upper() not in {"PLACED", "CONFIRMED", "PACKING", "READY"}
         for child in shop_orders
     ):
-        messages.error(request, "Delivery address is locked after rider pickup.")
-        return redirect("order_list")
+        return _customer_order_action_response(
+            request,
+            "error",
+            "Delivery address is locked after rider pickup.",
+        )
     address = get_object_or_404(
         ClientDeliveryAddress,
         pk=request.POST.get("address_id"),
@@ -3603,8 +4967,7 @@ def customer_change_order_address(request, order_id):
     try:
         _refresh_order_gst_snapshots(order, address, buyer_gstin)
     except ValueError as error:
-        messages.error(request, str(error))
-        return redirect("order_list")
+        return _customer_order_action_response(request, "error", str(error))
     location = address.location or {}
     order.delivery_address = address.address
     order.delivery_location = (
@@ -3614,8 +4977,13 @@ def customer_change_order_address(request, order_id):
     )
     order.delivery_contact_no = address.client.contact_no
     order.save(update_fields=["delivery_address", "delivery_location", "delivery_contact_no", "updated_at"])
-    messages.success(request, "Delivery address updated for this order.")
-    return redirect("order_list")
+    return _customer_order_action_response(
+        request,
+        "success",
+        "Delivery address updated for this order.",
+        address=address.address,
+        address_label=address.label,
+    )
 
 
 @login_required
@@ -3632,15 +5000,13 @@ def customer_order_feedback(request, order_id):
     )
     feedback_type = request.POST.get("feedback_type", "").upper()
     if feedback_type not in {CustomerProductFeedback.COMPLAINT, CustomerProductFeedback.REJECTED}:
-        messages.error(request, "Select a valid feedback type.")
-        return redirect("order_list")
+        return _customer_order_action_response(request, "error", "Select a valid feedback type.")
     item = None
     item_id = (request.POST.get("order_item_id") or "").strip()
     if item_id:
         item = get_object_or_404(OrderItem, pk=item_id, shop_order=shop_order)
     if feedback_type == CustomerProductFeedback.REJECTED and item is None:
-        messages.error(request, "Select the product you rejected.")
-        return redirect("order_list")
+        return _customer_order_action_response(request, "error", "Select the product you rejected.")
     CustomerProductFeedback.objects.get_or_create(
         user=request.user,
         shop_order=shop_order,
@@ -3648,8 +5014,11 @@ def customer_order_feedback(request, order_id):
         feedback_type=feedback_type,
         defaults={"details": (request.POST.get("details") or "").strip()[:2000]},
     )
-    messages.success(request, "Thank you. Your feedback has been recorded.")
-    return redirect("order_list")
+    return _customer_order_action_response(
+        request,
+        "success",
+        "Thank you. Your feedback has been recorded.",
+    )
 
 
 @login_required
@@ -3678,7 +5047,7 @@ def toggle_favorite_product(request, product_shop_id):
 
 
 def _safe_favorites_return(request):
-    target = request.POST.get("return_to", "")
+    target = request.POST.get("return_to") or request.GET.get("return_to", "")
     if url_has_allowed_host_and_scheme(target, allowed_hosts={request.get_host()}):
         return target
     return redirect("customer_favorites").url
@@ -4708,12 +6077,22 @@ def shop_staff_create(request, shop_id=None):
     if request.method == "POST":
 
         form = ShopStaffForm(request.POST, shop=shop)
+        form.fields["existing_staff_user"].queryset = User.objects.filter(
+            shop_staff_memberships__shop__owner=request.user,
+            shop_staff_memberships__is_active=True,
+            shop_staff_memberships__is_public_rider=False,
+        ).exclude(
+            pk__in=ShopStaff.objects.filter(
+                shop=shop,
+            ).values("user_id"),
+        ).distinct().order_by("username")
 
         if form.is_valid():
 
             staff = form.save(commit=False)
 
             staff.shop = shop
+            staff.is_active = True
 
             staff.save()
 
@@ -4730,6 +6109,15 @@ def shop_staff_create(request, shop_id=None):
     else:
 
         form = ShopStaffForm(shop=shop)
+        form.fields["existing_staff_user"].queryset = User.objects.filter(
+            shop_staff_memberships__shop__owner=request.user,
+            shop_staff_memberships__is_active=True,
+            shop_staff_memberships__is_public_rider=False,
+        ).exclude(
+            pk__in=ShopStaff.objects.filter(
+                shop=shop,
+            ).values("user_id"),
+        ).distinct().order_by("username")
 
     return render(
         request,
@@ -4764,27 +6152,77 @@ def shop_staff_list(request):
     )
 
 @login_required
+@transaction.atomic
 def shop_staff_edit(request, shop_id, staff_id):
 
     shop = get_object_or_404(
         Shop,
-        id=shop_id
+        id=shop_id,
+        owner=request.user,
     )
 
-    if shop.owner != request.user:
-        messages.error(
-            request,
-            "You are not authorized to manage this shop."
-        )
-        return redirect("shop_list")
-
     staff = get_object_or_404(
-        ShopStaff.objects.select_related("user"),
+        ShopStaff.objects.select_for_update().select_related("user"),
         id=staff_id,
         shop=shop
     )
+    owner_shops = list(
+        Shop.objects.filter(owner=request.user).order_by("name")
+    )
+    owner_shop_ids = {owner_shop.pk for owner_shop in owner_shops}
+    memberships_by_shop = {
+        membership.shop_id: membership
+        for membership in ShopStaff.objects.filter(
+            user=staff.user,
+            shop_id__in=owner_shop_ids,
+            is_public_rider=False,
+        )
+    }
 
     if request.method == "POST":
+        selected_shop_values = request.POST.getlist("accessible_shop_ids")
+        try:
+            selected_shop_ids = {int(value) for value in selected_shop_values}
+        except (TypeError, ValueError):
+            messages.error(request, "Select valid shops for this staff member.")
+            return redirect(
+                "shop_staff_edit",
+                shop_id=shop.id,
+                staff_id=staff.id,
+            )
+        if not selected_shop_ids.issubset(owner_shop_ids):
+            messages.error(request, "You can only assign staff to shops you own.")
+            return redirect(
+                "shop_staff_edit",
+                shop_id=shop.id,
+                staff_id=staff.id,
+            )
+        role_choices = {
+            role_value
+            for role_value, _label in ShopStaff.ROLE_CHOICES
+        }
+        selected_shop_roles = {}
+        for selected_shop_id in selected_shop_ids:
+            if selected_shop_id == shop.pk:
+                continue
+            role_value = (
+                request.POST.get(f"shop_role_{selected_shop_id}") or ""
+            ).strip()
+            existing_membership = memberships_by_shop.get(selected_shop_id)
+            default_role = (
+                existing_membership.role
+                if existing_membership
+                else staff.role
+            )
+            role_value = role_value or default_role
+            if role_value not in role_choices:
+                messages.error(request, "Select a valid role for each shop.")
+                return redirect(
+                    "shop_staff_edit",
+                    shop_id=shop.id,
+                    staff_id=staff.id,
+                )
+            selected_shop_roles[selected_shop_id] = role_value
 
         role_map = {
             "STAFF": "MANAGER",
@@ -4820,6 +6258,9 @@ def shop_staff_edit(request, shop_id, staff_id):
         staff.can_manage_stock = (
             "can_manage_stock" in request.POST
         )
+        staff.can_confirm_rider_payments = (
+            "can_confirm_rider_payments" in request.POST
+        )
 
         staff.can_manage_staff = (
             "can_manage_staff" in request.POST
@@ -4847,9 +6288,81 @@ def shop_staff_edit(request, shop_id, staff_id):
 
         staff.save()
 
+        permission_fields = (
+            "can_manage_products",
+            "can_assign_staff",
+            "can_view_reports",
+            "can_view_orders",
+            "can_confirm_orders",
+            "can_pack_orders",
+            "can_change_order_status",
+            "can_manage_stock",
+            "can_manage_staff",
+            "can_cancel_orders",
+            "can_confirm_rider_payments",
+        )
+        for owner_shop in owner_shops:
+            membership = memberships_by_shop.get(owner_shop.pk)
+            if owner_shop.pk in selected_shop_ids:
+                selected_role = (
+                    staff.role
+                    if owner_shop.pk == shop.pk
+                    else selected_shop_roles[owner_shop.pk]
+                )
+                if membership is None:
+                    membership = ShopStaff.objects.create(
+                        shop=owner_shop,
+                        user=staff.user,
+                        role=selected_role,
+                        **{
+                            field: getattr(staff, field)
+                            for field in permission_fields
+                        },
+                    )
+                    memberships_by_shop[owner_shop.pk] = membership
+                elif (
+                    not membership.is_active
+                    or membership.role != selected_role
+                ):
+                    membership.is_active = True
+                    membership.role = selected_role
+                    membership.save(
+                        update_fields=["is_active", "role", "updated_at"],
+                    )
+                continue
+
+            if membership is None or not membership.is_active:
+                continue
+            if membership.is_public_rider:
+                continue
+
+            has_order_history = ShopOrder.objects.filter(
+                Q(assigned_rider=membership) | Q(assigned_packer=membership),
+            ).exists()
+            has_payment_history = (
+                CODPaymentApprovalRequest.objects.filter(rider=membership).exists()
+                or RiderCashLedgerEntry.objects.filter(rider=membership).exists()
+                or SharedRiderDeliveryPayment.objects.filter(rider=membership).exists()
+            )
+            staff_wallet = ShopStaffWallet.objects.filter(
+                staff=membership,
+            ).first()
+            has_wallet_history = bool(
+                staff_wallet
+                and (
+                    staff_wallet.balance != 0
+                    or staff_wallet.transactions.exists()
+                )
+            )
+            if has_order_history or has_payment_history or has_wallet_history:
+                membership.is_active = False
+                membership.save(update_fields=["is_active", "updated_at"])
+            else:
+                membership.delete()
+
         messages.success(
             request,
-            f"{staff.user.username} permissions updated successfully."
+            f"{staff.user.username} staff access and permissions updated successfully."
         )
 
         return redirect(
@@ -4857,12 +6370,30 @@ def shop_staff_edit(request, shop_id, staff_id):
             shop_id=shop.id
         )
 
+    shop_access_options = [
+        {
+            "shop": owner_shop,
+            "has_access": bool(
+                memberships_by_shop.get(owner_shop.pk)
+                and memberships_by_shop[owner_shop.pk].is_active
+            ),
+            "role": (
+                memberships_by_shop[owner_shop.pk].role
+                if memberships_by_shop.get(owner_shop.pk)
+                else staff.role
+            ),
+            "role_choices": ShopStaff.ROLE_CHOICES,
+        }
+        for owner_shop in owner_shops
+    ]
+
     return render(
         request,
         "seller/shop_staff_edit.html",
         {
             "shop": shop,
             "staff": staff,
+            "shop_access_options": shop_access_options,
         }
     )
 
@@ -4978,6 +6509,13 @@ def staff_dashboard(request):
             "can_manage_stock": staff.can_manage_stock,
             "can_manage_staff": staff.can_manage_staff,
             "can_manage_orders": staff.can_view_orders,
+            "can_review_rider_payments": ShopStaff.objects.filter(
+                user=request.user,
+                is_active=True,
+                is_public_rider=False,
+                role="PAYMENT_MANAGER",
+                can_confirm_rider_payments=True,
+            ).exists(),
             "product_assignments": inventory_assignments,
             "shop_orders": shop_orders[:10],
             "total_products": total_products,
@@ -4987,6 +6525,74 @@ def staff_dashboard(request):
             "delivered_orders": delivered_orders,
             "total_orders": shop_orders.count(),
         }
+    )
+
+
+@login_required
+def staff_payment_manager_dashboard(request):
+    authorized_memberships = ShopStaff.objects.filter(
+        user=request.user,
+        is_active=True,
+        is_public_rider=False,
+        role="PAYMENT_MANAGER",
+        can_confirm_rider_payments=True,
+    ).select_related("shop")
+    shop_ids = list(
+        authorized_memberships.values_list("shop_id", flat=True)
+    )
+    if not shop_ids:
+        raise PermissionDenied
+
+    pending_payment_requests = (
+        CODPaymentApprovalRequest.objects.filter(
+            shop_id__in=shop_ids,
+            status="PENDING",
+        )
+        .select_related(
+            "shop",
+            "shop_order",
+            "shop_order__order",
+            "rider__user",
+        )
+        .order_by("created_at", "pk")
+    )
+    cash_handover_requests = []
+    for collection in (
+        RiderCashLedgerEntry.objects.filter(
+            shop_id__in=shop_ids,
+            entry_type="COLLECTION",
+            shop_order__status="DELIVERED",
+            shop_order__order__payment_type__iexact="COD",
+        )
+        .select_related(
+            "shop",
+            "shop_order",
+            "shop_order__order",
+            "rider__user",
+        )
+        .order_by("created_at", "pk")
+    ):
+        collection.handed_over_amount = (
+            RiderCashLedgerEntry.objects.filter(
+                shop_order_id=collection.shop_order_id,
+                entry_type="HANDOVER",
+            ).aggregate(total=Sum("amount"))["total"]
+            or Decimal("0.00")
+        )
+        collection.remaining_amount = max(
+            Decimal("0.00"),
+            collection.amount - collection.handed_over_amount,
+        )
+        if collection.remaining_amount > 0:
+            cash_handover_requests.append(collection)
+    return render(
+        request,
+        "seller/staff_payment_manager_dashboard.html",
+        {
+            "authorized_shops": authorized_memberships,
+            "pending_payment_requests": pending_payment_requests,
+            "cash_handover_requests": cash_handover_requests,
+        },
     )
 
 
@@ -7360,11 +8966,15 @@ def _can_review_cod_payment(user, shop):
         ).filter(
             Q(role="MANAGER")
             | Q(role="ORDER", can_view_orders=True)
+            | Q(
+                role="PAYMENT_MANAGER",
+                can_confirm_rider_payments=True,
+            )
         ).exists()
     )
 
 
-def _notify_cod_payment_reviewers(payment_request):
+def _notify_cod_payment_reviewers(payment_request, *, reminder=False):
     shop = payment_request.shop
     reviewer_user_ids = set(
         ShopStaff.objects.filter(
@@ -7373,6 +8983,10 @@ def _notify_cod_payment_reviewers(payment_request):
         ).filter(
             Q(role="MANAGER")
             | Q(role="ORDER", can_view_orders=True)
+            | Q(
+                role="PAYMENT_MANAGER",
+                can_confirm_rider_payments=True,
+            )
         ).values_list("user_id", flat=True)
     )
     if shop.owner_id:
@@ -7384,11 +8998,24 @@ def _notify_cod_payment_reviewers(payment_request):
     for user_id in reviewer_user_ids:
         Notification.objects.create(
             user_id=user_id,
-            title="COD UPI payment needs approval",
+            title=(
+                "Rider payment reminder"
+                if reminder
+                else "COD UPI payment needs approval"
+            ),
             message=(
-                f"Rider reported a ₹{payment_request.qr_amount:.2f} UPI payment "
-                f"for order {order_reference}. Review it against the "
-                f"₹{payment_request.settlement_amount:.2f} COD balance."
+                (
+                    f"The rider is waiting for confirmation of the ₹"
+                    f"{payment_request.qr_amount:.2f} UPI payment for order "
+                    f"{order_reference}. Review it against the ₹"
+                    f"{payment_request.settlement_amount:.2f} COD balance."
+                )
+                if reminder
+                else (
+                    f"Rider reported a ₹{payment_request.qr_amount:.2f} UPI payment "
+                    f"for order {order_reference}. Review it against the "
+                    f"₹{payment_request.settlement_amount:.2f} COD balance."
+                )
             ),
             notification_type="ORDER",
             related_url=reverse(
@@ -7545,11 +9172,61 @@ def _rider_available_order_ids(
 ):
     if public_rider and not public_rider_service_enabled():
         return [], {}, None
-    group_shop_ids = (
-        set()
-        if public_rider
-        else set(_shared_rider_group_shop_ids(staff))
-    )
+    now = timezone.now()
+    if ShopOrder.objects.filter(
+        assigned_rider__user=user,
+        order__is_valid_order=True,
+        status="OUT_FOR_DELIVERY",
+        delivery_completed_at__isnull=True,
+    ).exists():
+        return [], {}, None
+    recent_delivery = ShopOrder.objects.filter(
+        assigned_rider__user=user,
+        order__is_valid_order=True,
+        delivery_completed_at__gte=(
+            now
+            - timedelta(
+                seconds=RIDER_POST_DELIVERY_OFFER_DELAY_SECONDS,
+            )
+        ),
+    ).aggregate(last_completed_at=Max("delivery_completed_at"))[
+        "last_completed_at"
+    ]
+    if recent_delivery:
+        remaining_seconds = max(
+            1,
+            math.ceil(
+                (
+                    recent_delivery
+                    + timedelta(
+                        seconds=RIDER_POST_DELIVERY_OFFER_DELAY_SECONDS,
+                    )
+                    - now
+                ).total_seconds()
+            ),
+        )
+        return [], {}, remaining_seconds
+    if public_rider:
+        rider_shop_ids = set()
+        group_shop_ids = set()
+    else:
+        rider_memberships = list(
+            ShopStaff.objects.filter(
+                user=user,
+                is_active=True,
+                role="RIDER",
+                is_public_rider=False,
+            ).only("id", "shop_id")
+        )
+        rider_shop_ids = {
+            rider_membership.shop_id
+            for rider_membership in rider_memberships
+        }
+        group_shop_ids = set()
+        for rider_membership in rider_memberships:
+            group_shop_ids.update(
+                _shared_rider_group_shop_ids(rider_membership),
+            )
     last_accepted_shop = (
         None if public_rider else _rider_last_accepted_shop(staff)
     )
@@ -7568,7 +9245,7 @@ def _rider_available_order_ids(
         )
         if public_rider
         else ShopOrder.objects.filter(
-            Q(shop_id=staff.shop_id)
+            Q(shop_id__in=rider_shop_ids)
             | Q(shop__share_riders_with_nearby_shops=True)
             | Q(shop_id__in=group_shop_ids),
         ).filter(
@@ -7606,19 +9283,22 @@ def _rider_available_order_ids(
         )
         .order_by("-created_at", "-id")
     )
-    now = timezone.now()
     available_order_ids = []
     shared_shop_distances = {}
     next_shared_order_available_in = None
     for candidate in ready_candidates:
-        is_home_shop_order = candidate.shop_id == staff.shop_id
-        if not public_rider and not _rider_can_accept_shop_orders(
-            staff,
-            candidate.shop,
-            origin_shop=last_accepted_shop,
-            group_shop_ids=group_shop_ids,
-            radius_km=shared_rider_radius_km,
-            customer_order=candidate.order,
+        is_home_shop_order = candidate.shop_id in rider_shop_ids
+        if (
+            not public_rider
+            and not is_home_shop_order
+            and not _rider_can_accept_shop_orders(
+                staff,
+                candidate.shop,
+                origin_shop=last_accepted_shop,
+                group_shop_ids=group_shop_ids,
+                radius_km=shared_rider_radius_km,
+                customer_order=candidate.order,
+            )
         ):
             continue
         if not public_rider and not is_home_shop_order:
@@ -7730,6 +9410,7 @@ def rider_dashboard(request):
     selected_view = request.GET.get("view", "available")
     performance_view = selected_view == "performance"
     completed_view = selected_view == "completed"
+    all_completed_view = selected_view == "all_completed"
     active_view = selected_view == "active"
     verified_view = selected_view == "verified"
     handover_view = selected_view == "handover"
@@ -7744,6 +9425,7 @@ def rider_dashboard(request):
     available_view = not (
         performance_view
         or completed_view
+        or all_completed_view
         or active_view
         or verified_view
         or handover_view
@@ -7766,6 +9448,19 @@ def rider_dashboard(request):
         .filter(order__is_valid_order=True)
     )
     assigned_orders = rider_orders
+    completed_orders_queryset = assigned_orders.filter(
+        Q(delivery_completed_at__isnull=False)
+        | Q(status__in=["DELIVERED", "COMPLETED", "RETURNED"])
+    )
+    today = timezone.localdate()
+    today_completed_orders_queryset = completed_orders_queryset.filter(
+        Q(delivery_completed_at__date=today)
+        | Q(
+            delivery_completed_at__isnull=True,
+            status__in=["DELIVERED", "COMPLETED", "RETURNED"],
+            updated_at__date=today,
+        )
+    )
     active_load_orders = list(
         assigned_orders.filter(
             status__in=["READY", "RIDER_ASSIGNED", "PICKED_UP", "OUT_FOR_DELIVERY"],
@@ -7774,6 +9469,60 @@ def rider_dashboard(request):
             status__in=["DELIVERED", "COMPLETED", "CANCELLED"],
         ).prefetch_related("order_items")
     )
+    if (
+        public_rider
+        and not active_load_orders
+        and (
+            public_rider.public_rider_batch_accepting
+            or public_rider.public_rider_batch_started_at
+        )
+    ):
+        public_rider.public_rider_batch_accepting = False
+        public_rider.public_rider_batch_started_at = None
+        public_rider.save(update_fields=[
+            "public_rider_batch_accepting",
+            "public_rider_batch_started_at",
+            "updated_at",
+        ])
+    active_delivery_in_progress = assigned_orders.filter(
+        status="OUT_FOR_DELIVERY",
+        delivery_completed_at__isnull=True,
+    ).exists()
+    now = timezone.now()
+    last_recent_delivery = assigned_orders.filter(
+        delivery_completed_at__gte=(
+            now
+            - timedelta(
+                seconds=RIDER_POST_DELIVERY_OFFER_DELAY_SECONDS,
+            )
+        ),
+    ).aggregate(last_completed_at=Max("delivery_completed_at"))[
+        "last_completed_at"
+    ]
+    rider_offer_cooldown_seconds = (
+        max(
+            1,
+            math.ceil(
+                (
+                    last_recent_delivery
+                    + timedelta(
+                        seconds=RIDER_POST_DELIVERY_OFFER_DELAY_SECONDS,
+                    )
+                    - now
+                ).total_seconds()
+            ),
+        )
+        if last_recent_delivery
+        else 0
+    )
+    if available_view and active_delivery_in_progress:
+        selected_view = "active"
+        available_view = False
+        active_view = True
+    elif available_view and rider_offer_cooldown_seconds:
+        selected_view = "completed"
+        available_view = False
+        completed_view = True
     public_rider_batch_window_elapsed = bool(
         public_rider
         and public_rider.public_rider_batch_accepting
@@ -7856,7 +9605,7 @@ def rider_dashboard(request):
     if public_rider_batch_window_elapsed or (
         public_rider and active_load_orders
         and not public_rider_collection_window_open
-    ):
+    ) or active_delivery_in_progress or rider_offer_cooldown_seconds:
         available_order_ids = []
     available_orders = ShopOrder.objects.filter(pk__in=available_order_ids)
     show_collection_offers = bool(
@@ -7867,10 +9616,9 @@ def rider_dashboard(request):
     if performance_view or handover_view or earnings_view:
         orders = ShopOrder.objects.none()
     elif completed_view:
-        orders = assigned_orders.filter(
-            Q(delivery_completed_at__isnull=False)
-            | Q(status__in=["DELIVERED", "COMPLETED", "RETURNED"])
-        )
+        orders = today_completed_orders_queryset
+    elif all_completed_view:
+        orders = completed_orders_queryset
     elif verified_view:
         orders = (
             assigned_orders
@@ -8138,6 +9886,26 @@ def rider_dashboard(request):
         order_obj.cod_payment_approval = cod_approval_by_order_id.get(
             order_obj.pk,
         )
+        if (
+            order_obj.cod_payment_approval
+            and order_obj.cod_payment_approval.status == "PENDING"
+        ):
+            last_reminded_at = (
+                order_obj.cod_payment_approval.last_reminded_at
+            )
+            order_obj.payment_reminder_wait_seconds = (
+                max(
+                    0,
+                    math.ceil(
+                        30
+                        - (
+                            timezone.now() - last_reminded_at
+                        ).total_seconds()
+                    ),
+                )
+                if last_reminded_at
+                else 0
+            )
         order_obj.rider_voice_instruction = rider_instruction_by_order_id.get(
             order_obj.pk,
         )
@@ -8254,7 +10022,7 @@ def rider_dashboard(request):
         order_obj.customer_wallet_transactions = []
         order_obj.customer_wallet_credits = Decimal("0.00")
         order_obj.customer_wallet_debits = Decimal("0.00")
-        if completed_view and customer_profile:
+        if (completed_view or all_completed_view) and customer_profile:
             order_reference = order_obj.order.order_id
             order_obj.customer_wallet_transactions = list(
                 customer_profile.wallet_transactions.filter(
@@ -8493,6 +10261,13 @@ def rider_dashboard(request):
             "public_rider_last_location": public_rider_last_location,
             "is_public_rider": bool(public_rider),
             "selected_view": selected_view,
+            "active_delivery_in_progress": active_delivery_in_progress,
+            "rider_offer_cooldown_seconds": rider_offer_cooldown_seconds,
+            "hide_available_tab": bool(
+                active_delivery_in_progress
+                or rider_offer_cooldown_seconds
+                or public_rider_collection_window_expired
+            ),
             "earnings_view": earnings_view,
             "earnings_period": earnings_period,
             "public_rider_earnings_summary": public_rider_earnings_summary,
@@ -8602,6 +10377,7 @@ def rider_dashboard(request):
             ).values("group_id").distinct().count(),
             "verify_need": verify_need,
             "completed_view": completed_view,
+            "all_completed_view": all_completed_view,
             "verified_view": verified_view,
             "active_view": active_view,
             "available_view": available_view,
@@ -8621,14 +10397,8 @@ def rider_dashboard(request):
                 ],
                 delivery_completed_at__isnull=True,
             ).exclude(status__in=["DELIVERED", "COMPLETED"]).count(),
-            "completed_order_count": ShopOrder.objects.filter(
-                Q(assigned_rider__user=request.user)
-                if public_rider
-                else Q(assigned_rider=staff),
-            ).filter(
-                Q(delivery_completed_at__isnull=False)
-                | Q(status__in=["DELIVERED", "COMPLETED", "RETURNED"])
-            ).count(),
+            "completed_order_count": today_completed_orders_queryset.count(),
+            "all_completed_order_count": completed_orders_queryset.count(),
             "handover_count": len(pending_cash_collections),
         }
     )
@@ -9336,6 +11106,14 @@ def shop_order_detail(request, shop_order_id):
             role="MANAGER",
             is_active=True,
         ).exists()
+        or ShopStaff.objects.filter(
+            shop=shop_order.shop,
+            user=request.user,
+            role="PAYMENT_MANAGER",
+            can_confirm_rider_payments=True,
+            is_active=True,
+            is_public_rider=False,
+        ).exists()
     )
     order_qr_data_uri = _qr_code_data_uri(
         request.build_absolute_uri(
@@ -9397,6 +11175,7 @@ def shop_order_detail(request, shop_order_id):
             "customer_coordinates": _get_order_delivery_coordinates(
                 shop_order.order,
             ),
+            "shop_coordinates": _get_shop_coordinates(shop_order.shop),
             "rider_coordinates": (
                 shop_order.rider_last_location
                 if _valid_route_coordinates(shop_order.rider_last_location)
@@ -9507,6 +11286,14 @@ def confirm_rider_cod_handover_total(request, shop_id, rider_id):
             user=request.user,
             role="MANAGER",
             is_active=True,
+        ).exists()
+        or ShopStaff.objects.filter(
+            shop=shop,
+            user=request.user,
+            role="PAYMENT_MANAGER",
+            can_confirm_rider_payments=True,
+            is_active=True,
+            is_public_rider=False,
         ).exists()
     )
     if not can_confirm:
@@ -9885,6 +11672,14 @@ def confirm_rider_cash_handover(request, shop_order_id):
             user=request.user,
             role="MANAGER",
             is_active=True,
+        ).exists()
+        or ShopStaff.objects.filter(
+            shop=shop_order.shop,
+            user=request.user,
+            role="PAYMENT_MANAGER",
+            can_confirm_rider_payments=True,
+            is_active=True,
+            is_public_rider=False,
         ).exists()
     )
     if not can_confirm:
@@ -12690,8 +14485,6 @@ def complete_delivery(request, shop_order_id):
 @login_required
 @transaction.atomic
 def request_cod_payment_approval(request, payment_request_id):
-    # existing function continues as before
-    
     if request.method != "POST":
         return HttpResponse("POST required.", status=405)
 
@@ -12729,6 +14522,58 @@ def request_cod_payment_approval(request, payment_request_id):
             request,
             "Payment confirmation sent to the shop. Keep the order open until shop staff approves it.",
         )
+    return redirect(
+        f"{reverse('rider_dashboard')}?view=active#order-{shop_order.pk}"
+    )
+
+
+@login_required
+@transaction.atomic
+def remind_cod_payment_reviewers(request, payment_request_id):
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
+
+    payment_request = get_object_or_404(
+        CODPaymentApprovalRequest.objects.select_for_update().select_related(
+            "shop_order",
+            "shop",
+            "rider",
+            "rider__user",
+        ),
+        pk=payment_request_id,
+        rider__user=request.user,
+        rider__is_active=True,
+        rider__role="RIDER",
+        status="PENDING",
+    )
+    shop_order = ShopOrder.objects.select_for_update().get(
+        pk=payment_request.shop_order_id,
+    )
+    if (
+        shop_order.status != "OUT_FOR_DELIVERY"
+        or shop_order.assigned_rider_id != payment_request.rider_id
+    ):
+        raise PermissionDenied
+
+    now = timezone.now()
+    if payment_request.last_reminded_at:
+        seconds_since_reminder = (
+            now - payment_request.last_reminded_at
+        ).total_seconds()
+        if seconds_since_reminder < 30:
+            wait_seconds = max(1, math.ceil(30 - seconds_since_reminder))
+            messages.info(
+                request,
+                f"You can remind the shop again in {wait_seconds} seconds.",
+            )
+            return redirect(
+                f"{reverse('rider_dashboard')}?view=active#order-{shop_order.pk}"
+            )
+
+    payment_request.last_reminded_at = now
+    payment_request.save(update_fields=["last_reminded_at", "updated_at"])
+    _notify_cod_payment_reviewers(payment_request, reminder=True)
+    messages.success(request, "Payment reminder sent to the shop.")
     return redirect(
         f"{reverse('rider_dashboard')}?view=active#order-{shop_order.pk}"
     )
@@ -13131,12 +14976,16 @@ def accept_rider_order(request, shop_order_id):
                 is_public_rider=True,
             )
     else:
-        rider_membership = ShopStaff.objects.filter(
+        rider_memberships = ShopStaff.objects.filter(
             user=request.user,
             is_active=True,
             role="RIDER",
             is_public_rider=False,
-        ).select_for_update().select_related("shop").first()
+        ).select_for_update().select_related("shop")
+        rider_membership = (
+            rider_memberships.filter(shop_id=shop_order.shop_id).first()
+            or rider_memberships.first()
+        )
     if not rider_membership:
         raise PermissionDenied
     if (
@@ -14289,6 +16138,58 @@ from .models import Shop
 from .utils import user_can_access_shop
 
 @login_required
+@require_POST
+@transaction.atomic
+def shop_staff_remove(request, shop_id, staff_id):
+    shop = get_object_or_404(
+        Shop,
+        pk=shop_id,
+        owner=request.user,
+    )
+    staff = get_object_or_404(
+        ShopStaff.objects.select_for_update().select_related("user"),
+        pk=staff_id,
+        shop=shop,
+    )
+    if staff.is_public_rider:
+        messages.error(
+            request,
+            "Public rider memberships are managed by the rider network and cannot be removed here.",
+        )
+        return redirect("shop_staff_list_shop", shop_id=shop.pk)
+
+    has_order_history = ShopOrder.objects.filter(
+        Q(assigned_rider=staff) | Q(assigned_packer=staff),
+    ).exists()
+    has_payment_history = (
+        CODPaymentApprovalRequest.objects.filter(rider=staff).exists()
+        or RiderCashLedgerEntry.objects.filter(rider=staff).exists()
+        or SharedRiderDeliveryPayment.objects.filter(rider=staff).exists()
+    )
+    staff_wallet = ShopStaffWallet.objects.filter(staff=staff).first()
+    has_wallet_history = bool(
+        staff_wallet
+        and (
+            staff_wallet.balance != 0
+            or staff_wallet.transactions.exists()
+        )
+    )
+    if has_order_history or has_payment_history or has_wallet_history:
+        messages.error(
+            request,
+            "This staff membership has order or payment history and cannot be deleted without affecting records. Disable the staff member to remove their access instead.",
+        )
+        return redirect("shop_staff_list_shop", shop_id=shop.pk)
+
+    username = staff.user.username
+    staff.delete()
+    messages.success(
+        request,
+        f"{username} was removed from {shop.name}. Their account and access to other shops were not changed.",
+    )
+    return redirect("shop_staff_list_shop", shop_id=shop.pk)
+
+@login_required
 def shop_staff_list(request, shop_id=None):
 
     if shop_id is not None:
@@ -14324,6 +16225,7 @@ def shop_staff_list(request, shop_id=None):
                 "shops": [shop],
                 "staff_members": staff_members,
                 "single_shop": True,
+                "is_owner": is_owner,
             }
         )
 
@@ -14553,9 +16455,13 @@ def verify_customer_otp(request, shop_order_id):
     else:
         valid = bool(customer and otp and otp == customer.verification_otp)
     if not valid:
-        messages.error(request, "Customer not verified: the OTP is incorrect. Please check it and try again.")
+        messages.error(
+            request,
+            "Incorrect customer OTP. Ask the customer to confirm their 4-digit code and try again.",
+        )
         return redirect(
-            f"{reverse('rider_dashboard')}?view=active#order-{shop_order.id}"
+            f"{reverse('rider_dashboard')}?view=active"
+            f"&otp_error={shop_order.id}#order-{shop_order.id}"
         )
     lat = request.POST.get("latitude")
     lng = request.POST.get("longitude")
@@ -15035,12 +16941,66 @@ from django.shortcuts import get_object_or_404, redirect, render
 
 from .forms import (
     ProductForm,
+    ProductShopQuickEditForm,
     ProductShopAssignmentForm,
 )
 from .models import Product, ProductShop, Shop
 
 @login_required
 def product_list(request):
+    if request.method == "POST":
+        assignment = get_object_or_404(
+            ProductShop.objects.select_related("product", "shop"),
+            pk=request.POST.get("assignment_id", ""),
+            product__created_by=request.user,
+            shop__owner=request.user,
+        )
+        form = ProductShopQuickEditForm(request.POST, instance=assignment)
+        if form.is_valid():
+            form.save()
+            messages.success(
+                request,
+                f"Saved price and stock for {assignment.product.product_name} "
+                f"at {assignment.shop.name}.",
+            )
+        else:
+            errors = " ".join(
+                str(error)
+                for field_errors in form.errors.values()
+                for error in field_errors
+            )
+            messages.error(
+                request,
+                f"Could not save price and stock: {errors}",
+            )
+
+        redirect_params = {
+            "focus_product": assignment.product_id,
+            "focus_shop": assignment.shop_id,
+        }
+        search_query = request.POST.get("q", "").strip()[:100]
+        if search_query:
+            redirect_params["q"] = search_query
+        selected_shop_id = request.POST.get("shop", "").strip()
+        if selected_shop_id.isascii() and selected_shop_id.isdigit():
+            if Shop.objects.filter(
+                pk=selected_shop_id,
+                owner=request.user,
+            ).exists():
+                redirect_params["shop"] = selected_shop_id
+        if request.POST.get("sort") == "stock_low":
+            redirect_params["sort"] = "stock_low"
+        return redirect(
+            f"{reverse('product_list')}?{urlencode(redirect_params)}"
+        )
+
+    shops = Shop.objects.filter(owner=request.user).order_by("name")
+    selected_shop_id = request.GET.get("shop", "").strip()
+    selected_shop = (
+        shops.filter(pk=selected_shop_id).first()
+        if selected_shop_id.isascii() and selected_shop_id.isdigit()
+        else None
+    )
     search_query = request.GET.get("q", "").strip()[:100]
     stock_sort = request.GET.get("sort") == "stock_low"
     products = (
@@ -15061,6 +17021,27 @@ def product_list(request):
             "shop_assignments__shop"
         )
     )
+    if selected_shop:
+        products = (
+            products
+            .filter(
+                pk__in=ProductShop.objects.filter(
+                    shop=selected_shop,
+                ).values("product_id"),
+            )
+            .annotate(
+                selected_shop_stock=Coalesce(
+                    Sum(
+                        "shop_assignments__stock",
+                        filter=Q(
+                            shop_assignments__shop=selected_shop,
+                            shop_assignments__is_active=True,
+                        ),
+                    ),
+                    Decimal("0.0000"),
+                ),
+            )
+        )
     if search_query:
         products = products.filter(
             Q(product_name__icontains=search_query)
@@ -15072,23 +17053,222 @@ def product_list(request):
             | Q(product_size__icontains=search_query)
             | Q(sku__icontains=search_query)
         )
-    products = (
-        products.order_by("total_shop_stock", "product_name")
-        if stock_sort
-        else products.order_by("-created_at")
-    )
+    if stock_sort:
+        stock_order_field = (
+            "selected_shop_stock" if selected_shop else "total_shop_stock"
+        )
+        products = products.order_by(stock_order_field, "product_name")
+    else:
+        products = products.order_by("-created_at")
 
     return render(
         request,
         "seller/product_list.html",
         {
             "products": products,
+            "shops": shops,
+            "selected_shop": selected_shop,
             "product_search_query": search_query,
             "product_stock_sort": stock_sort,
             "focus_product_id": request.GET.get("focus_product", ""),
             "focus_shop_id": request.GET.get("focus_shop", ""),
         }
     )
+
+
+@login_required
+@transaction.atomic
+def add_marketplace_products(request):
+    shops = Shop.objects.filter(owner=request.user).order_by("name")
+    selected_shop_id = request.POST.get(
+        "shop",
+        request.GET.get("shop", ""),
+    ).strip()
+    selected_shop = (
+        shops.filter(pk=int(selected_shop_id)).first()
+        if selected_shop_id.isascii() and selected_shop_id.isdigit()
+        else None
+    )
+    marketplace_shop_ids = [
+        shop.pk
+        for shop in Shop.objects.filter(
+            Q(is_shop_open=True) | Q(allow_scheduled_delivery=True)
+        )
+        .filter(
+            market_category=(
+                selected_shop.market_category if selected_shop else ""
+            ),
+        )
+        if is_shop_currently_open(shop) or shop.allow_scheduled_delivery
+    ]
+    matching_category_names = (
+        ProductCategory.objects.filter(
+            Q(market_category=selected_shop.market_category)
+            | Q(market_category=""),
+            is_active=True,
+        ).values_list("name", flat=True)
+        if selected_shop
+        else []
+    )
+    search_query = request.GET.get("q", "").strip()[:100]
+
+    if request.method == "POST":
+        if selected_shop is None:
+            messages.error(request, "Select one of your shops.")
+            return redirect("add_marketplace_products")
+        selected_ids = list(dict.fromkeys(
+            value
+            for value in request.POST.getlist("source_listing")
+            if value.isdigit()
+        ))
+        if not selected_ids:
+            messages.error(request, "Select at least one available marketplace product.")
+            return redirect(
+                f"{reverse('add_marketplace_products')}?shop={selected_shop.pk}"
+            )
+
+        source_listings = list(
+            ProductShop.objects
+            .select_for_update()
+            .select_related("product", "shop")
+            .filter(
+                pk__in=selected_ids,
+                shop_id__in=marketplace_shop_ids,
+                product__product_category__in=matching_category_names,
+                is_active=True,
+                product__is_active=True,
+                stock__gt=0,
+            )
+            .filter(
+                Q(product__expiry_management_enabled=False)
+                | Q(expires_at__isnull=True)
+                | Q(expires_at__gt=timezone.now())
+            )
+            .order_by("pk")
+        )
+        if len(source_listings) != len(selected_ids):
+            messages.error(
+                request,
+                "One or more selected listings are no longer available. Refresh and select products again.",
+            )
+            return redirect(
+                f"{reverse('add_marketplace_products')}?shop={selected_shop.pk}"
+            )
+
+        copy_settings, _ = ProductCloneSettings.objects.get_or_create(pk=1)
+        allowed_fields = set(copy_settings.allowed_fields or [])
+        copied_count = 0
+        already_added_count = 0
+        with transaction.atomic():
+            for source_listing in source_listings:
+                source_product = source_listing.product
+                product = Product.objects.filter(
+                    created_by=request.user,
+                    product_category=source_product.product_category,
+                    product_name__iexact=source_product.product_name,
+                ).first()
+
+                if product is None:
+                    source_price = source_listing.effective_price_for_customer(
+                        is_b2b=False,
+                    )
+                    product_values = {
+                        field_name: getattr(source_product, field_name)
+                        for field_name in allowed_fields
+                    }
+                    if "image_url" in allowed_fields:
+                        product_values["image_url"] = (
+                            source_listing.display_image_url
+                            or source_product.image_url
+                        )
+                    product = Product.objects.create(
+                        created_by=request.user,
+                        product_category=source_product.product_category,
+                        product_name=source_product.product_name,
+                        price=source_price,
+                        **product_values,
+                    )
+                else:
+                    product.is_active = True
+                    product.save(update_fields=["is_active", "updated_at"])
+
+                if ProductShop.objects.filter(
+                    shop=selected_shop,
+                    product=product,
+                ).exists():
+                    already_added_count += 1
+                    continue
+
+                ProductShop.objects.create(
+                    product=product,
+                    shop=selected_shop,
+                    price=source_listing.effective_price_for_customer(
+                        is_b2b=False,
+                    ),
+                    stock=0,
+                    is_active=True,
+                    pricing_mode="MANUAL",
+                )
+                copied_count += 1
+
+        if copied_count:
+            messages.success(
+                request,
+                f"Added {copied_count} product(s) to {selected_shop.name} with zero stock. Update stock before making them available to customers.",
+            )
+        if already_added_count:
+            messages.info(
+                request,
+                f"{already_added_count} selected product(s) were already assigned to {selected_shop.name}.",
+            )
+        return redirect(
+            f"{reverse('product_list')}?focus_shop={selected_shop.pk}"
+        )
+
+    listings = ProductShop.objects.none()
+    if selected_shop and matching_category_names:
+        listings = (
+            ProductShop.objects
+            .filter(
+                shop_id__in=marketplace_shop_ids,
+                shop__market_category=selected_shop.market_category,
+                product__product_category__in=matching_category_names,
+                is_active=True,
+                product__is_active=True,
+                stock__gt=0,
+            )
+            .filter(
+                Q(product__expiry_management_enabled=False)
+                | Q(expires_at__isnull=True)
+                | Q(expires_at__gt=timezone.now())
+            )
+            .select_related("product", "shop")
+            .order_by(
+                "product__product_category",
+                "product__product_name",
+                "shop__name",
+            )
+        )
+    if search_query:
+        listings = listings.filter(
+            Q(product__product_name__icontains=search_query)
+            | Q(product__product_category__icontains=search_query)
+            | Q(shop__name__icontains=search_query)
+        )
+
+    return render(
+        request,
+        "seller/add_marketplace_products.html",
+        {
+            "shops": shops,
+            "selected_shop": selected_shop,
+            "listings": Paginator(listings, 30).get_page(
+                request.GET.get("page"),
+            ),
+            "search_query": search_query,
+        },
+    )
+
 
 @login_required
 @transaction.atomic
@@ -15771,6 +17951,7 @@ def market_product_detail(request, product_shop_id):
     is_b2b = _is_b2b_customer(request)
 
     quantity = _cart_quantity(cart, item.id)
+    bulk_quantity = _cart_quantity(cart, item.id, is_bulk_order=True)
     bulk_price = item.effective_bulk_price_for_customer(is_b2b=is_b2b)
 
     return JsonResponse(
@@ -15789,6 +17970,7 @@ def market_product_detail(request, product_shop_id):
             "bulk_unit": item.bulk_unit_for_customer(is_b2b=is_b2b),
             "bulk_min_quantity": item.bulk_min_quantity,
             "bulk_available": bulk_price is not None and bool(item.bulk_unit_for_customer(is_b2b=is_b2b)),
+            "bulk_quantity": bulk_quantity,
             "stock": _json_stock_quantity(
                 item.stock_for_customer(is_b2b=is_b2b)
             ),
@@ -16073,8 +18255,6 @@ def mark_notification_read(request, notification_id):
 
 from rapidfuzz.fuzz import ratio
 
-@login_required
-@login_required
 def marketplace(request):
     is_theme_preview = (
         request.GET.get("theme_preview") == "1"
@@ -16089,9 +18269,11 @@ def marketplace(request):
     if not is_theme_preview and request.session.get("active_portal") == "SHOP_OWNER":
         return redirect("home")
 
-    client = ClientProfile.objects.filter(user=request.user).first()
-    if client is None and not is_theme_preview:
-        raise Http404("Customer profile not found.")
+    client = (
+        ClientProfile.objects.filter(user=request.user).first()
+        if request.user.is_authenticated
+        else None
+    )
     is_b2b = _is_b2b_customer(request, client)
     marketplace_layout_settings = MarketplaceLayoutSettings.objects.first()
     marketplace_theme = SiteThemeSettings.objects.first()
@@ -16195,6 +18377,9 @@ def marketplace(request):
                 lat = None
                 lng = None
 
+    if not address:
+        _cart_current_location(request)
+
     shops = (
         Shop.objects
         .filter(
@@ -16229,10 +18414,14 @@ def marketplace(request):
         shop.pk: shop.is_scheduled_delivery
         for shop in shops
     }
-    favorite_shop_ids = set() if is_theme_preview else set(
+    favorite_shop_ids = set() if (
+        is_theme_preview or not request.user.is_authenticated
+    ) else set(
         FavoriteShop.objects.filter(user=request.user).values_list("shop_id", flat=True)
     )
-    favorite_product_ids = set() if is_theme_preview else set(
+    favorite_product_ids = set() if (
+        is_theme_preview or not request.user.is_authenticated
+    ) else set(
         FavoriteProduct.objects.filter(user=request.user).values_list(
             "product_shop_id",
             flat=True,
@@ -16251,10 +18440,11 @@ def marketplace(request):
     valid_markets = {value for value, _label in Shop.MARKET_CATEGORY_CHOICES}
     if selected_market not in valid_markets:
         selected_market = ""
+    hide_scheduled_delivery = request.GET.get("hide_scheduled") == "1"
 
     if not is_theme_preview:
         UserActivity.objects.create(
-            user=request.user,
+            user=request.user if request.user.is_authenticated else None,
             event_type="MARKETPLACE_SEARCH" if search else "MARKETPLACE_VIEW",
             path=request.path,
             search_term=search,
@@ -16293,18 +18483,23 @@ def marketplace(request):
 
     search = search.lower()
     search_terms = [term for term in search.split() if term]
+    normalized_search_terms = [
+        normalize_search_text(term) for term in search_terms
+    ]
 
-    def matches_search(values):
+    def matches_search(values, match_any_term=False):
         searchable_text = normalize_search_text(
             " ".join(str(value or "") for value in values)
         )
         normalized_search = normalize_search_text(search)
-        normalized_terms = [
-            normalize_search_text(term) for term in search_terms
-        ]
+        terms_match = (
+            any(term in searchable_text for term in normalized_search_terms)
+            if match_any_term
+            else all(term in searchable_text for term in normalized_search_terms)
+        )
         return bool(normalized_search and (
             normalized_search in searchable_text
-            or all(term in searchable_text for term in normalized_terms)
+            or terms_match
         ))
 
     def shop_search_fields(shop):
@@ -16329,7 +18524,6 @@ def marketplace(request):
             product.product_size,
             product.sku,
             product.unit,
-            *shop_search_fields(assignment.shop),
         ]
 
     def product_catalog_fields(assignment):
@@ -16388,28 +18582,49 @@ def marketplace(request):
                 if assignment.stock_for_customer(is_b2b=is_b2b) <= 0:
                     continue
                 fields = product_search_fields(assignment)
-                if matches_search(fields):
+                if matches_search(fields, match_any_term=True):
                     shop_matches.append(assignment)
                     continue
 
+                normalized_fields = [
+                    normalize_search_text(str(value).strip())
+                    for value in product_catalog_fields(assignment)
+                    if value
+                ]
                 best_score = max(
                     (
                         ratio(
                             normalize_search_text(search),
-                            normalize_search_text(str(value).strip()),
+                            field,
                         )
-                        for value in product_catalog_fields(assignment)
-                        if value
+                        for field in normalized_fields
                     ),
                     default=0,
                 )
-                if best_score >= 60:
-                    assignment.fuzzy_score = best_score
+                fuzzy_word_score = max(
+                    (
+                        ratio(term, candidate)
+                        for term in normalized_search_terms
+                        if len(term) >= 4
+                        for field in normalized_fields
+                        for candidate in field.split()
+                        if len(candidate) >= 4
+                    ),
+                    default=0,
+                )
+                if best_score >= 60 or fuzzy_word_score >= 75:
+                    assignment.fuzzy_score = max(best_score, fuzzy_word_score)
                     shop_matches.append(assignment)
 
         if shop_matches:
             products.extend(shop_matches)
             matching_shop_ids.add(shop.id)
+
+    if hide_scheduled_delivery:
+        products = [
+            item for item in products
+            if not scheduled_delivery_by_shop_id.get(item.shop_id, False)
+        ]
 
     if search:
         nearby_shops = [
@@ -16588,6 +18803,12 @@ def marketplace(request):
 
     for item in products:
         product = item.product
+        item.cart_quantity = _cart_quantity(cart, item.id)
+        item.bulk_cart_quantity = _cart_quantity(
+            cart,
+            item.id,
+            is_bulk_order=True,
+        )
         item.marketplace_search_keywords = format_search_keywords_by_language(
             product.search_keywords
         )
@@ -16643,7 +18864,8 @@ def marketplace(request):
             "image_urls": item.display_image_urls,
             "shop": item.shop.name,
             "scheduled_delivery": item.shop.is_scheduled_delivery,
-            "quantity": int(cart.get(str(item.id), 0)),
+            "quantity": item.cart_quantity,
+            "bulk_quantity": item.bulk_cart_quantity,
             "is_favorited": item.id in favorite_product_ids,
         }
         item.is_favorited = item.id in favorite_product_ids
@@ -16696,6 +18918,7 @@ def marketplace(request):
             "nearby_shops": nearby_shops,
             "selected_shop_id": selected_shop_id,
             "selected_market": selected_market,
+            "hide_scheduled_delivery": hide_scheduled_delivery,
             "cart_count": cart_count,
 
             "has_location": (
@@ -17564,7 +19787,12 @@ def cart_add(request, product_shop_id):
             raise Http404("This product is not available in this shop storefront.")
 
     cart, active_delivery_address = _address_scoped_cart(request)
-    if not _shop_can_deliver_to_address(item.shop, active_delivery_address):
+    current_location = _cart_current_location(request)
+    if not _shop_can_deliver_to_address(
+        item.shop,
+        active_delivery_address,
+        current_location=current_location,
+    ):
         return JsonResponse(
             {
                 "success": False,
@@ -17658,6 +19886,7 @@ def cart(request):
     is_b2b = _is_b2b_customer(request, client)
 
     cart_data, active_delivery_address = _address_scoped_cart(request, client=client)
+    current_location = _cart_current_location(request)
 
     parsed_lines = {
         key: parsed
@@ -17700,6 +19929,7 @@ def cart(request):
 
     assignments_by_id = {assignment.pk: assignment for assignment in assignments}
     unavailable_cart_lines = []
+    cart_quantities_changed = False
     for line_key, (assignment_id, is_bulk_order) in parsed_lines.items():
         assignment = assignments_by_id.get(assignment_id)
         if assignment is None:
@@ -17711,6 +19941,21 @@ def cart(request):
             quantity = 0
         available_stock = assignment.stock_for_customer(is_b2b=is_b2b)
         quantity = min(quantity, available_stock)
+        available_for_delivery = _shop_can_deliver_to_address(
+            assignment.shop,
+            active_delivery_address,
+            current_location=current_location,
+        )
+        is_scheduled_delivery = (
+            available_for_delivery
+            and assignment.shop.allow_scheduled_delivery
+            and not is_shop_currently_open(assignment.shop)
+        )
+        if not available_for_delivery and quantity:
+            quantity = 0
+            cart_data[line_key] = 0
+            cart_quantities_changed = True
+
         bulk_price = (
             assignment.effective_bulk_price_for_customer(is_b2b=is_b2b)
             if is_bulk_order
@@ -17727,14 +19972,11 @@ def cart(request):
         price = bulk_price if is_bulk_order else assignment.effective_price_for_customer(is_b2b=is_b2b)
         total = price * quantity
         subtotal += total
-        available_for_delivery = _shop_can_deliver_to_address(
-            assignment.shop,
-            active_delivery_address,
-        )
         items.append({
             "assignment": assignment,
             "quantity": quantity,
             "available_for_delivery": available_for_delivery,
+            "is_scheduled_delivery": is_scheduled_delivery,
             "availability_label": (
                 ""
                 if available_for_delivery
@@ -17769,14 +20011,20 @@ def cart(request):
             "total": total,
         })
 
-    if unavailable_cart_lines:
+    if unavailable_cart_lines or cart_quantities_changed:
         for line_key in unavailable_cart_lines:
             cart_data.pop(line_key, None)
         _save_address_scoped_cart(request, cart_data)
+    if unavailable_cart_lines:
         messages.warning(
             request,
             "Unavailable cart offer(s) were removed. Review your remaining cart items.",
         )
+
+    items.sort(key=lambda item: (
+        item["available_for_delivery"],
+        not item["is_scheduled_delivery"],
+    ))
 
     saved_baskets = (
         SavedBasket.objects.filter(user=request.user)
@@ -17791,6 +20039,10 @@ def cart(request):
         cart_shop_delivery_fees[shop.pk] = {
             "shop_name": shop.name,
             "delivery_fee": shop.delivery_fee,
+            "is_scheduled_delivery": (
+                shop.allow_scheduled_delivery
+                and not is_shop_currently_open(shop)
+            ),
         }
     cart_shop_summary = list(cart_shop_delivery_fees.values())
     delivery_charge = sum(
@@ -17821,6 +20073,7 @@ def cart(request):
                 else []
             ),
             "active_delivery_address": active_delivery_address,
+            "current_delivery_location": current_location,
         }
     )
 
@@ -18237,6 +20490,7 @@ def cart_update(request, product_shop_id):
     if quantity > 0 and not _shop_can_deliver_to_address(
         item.shop,
         active_delivery_address,
+        current_location=_cart_current_location(request),
     ):
         return JsonResponse(
             {
@@ -18457,25 +20711,45 @@ def _checkout_delivery_issues(items, address):
     ]
 
 
-def _shop_can_deliver_to_address(shop, address):
-    location = address.location if isinstance(address.location, dict) else {}
-    latitude = address.latitude if address.latitude is not None else location.get("lat")
-    longitude = address.longitude if address.longitude is not None else location.get("lng")
+def _checkout_failure_response(request, message, *, redirect_to="checkout", status=400):
+    messages.error(request, message)
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return JsonResponse(
+            {"success": False, "message": message},
+            status=status,
+        )
+    return redirect(redirect_to)
+
+
+def _shop_can_deliver_to_address(shop, address, *, current_location=None):
+    location = (
+        address.location
+        if address and isinstance(address.location, dict)
+        else current_location or {}
+    )
+    latitude = (
+        address.latitude
+        if address and address.latitude is not None
+        else location.get("lat")
+    )
+    longitude = (
+        address.longitude
+        if address and address.longitude is not None
+        else location.get("lng")
+    )
     pincode = (
         address.pincode
-        or location.get("pincode")
+        if address and address.pincode
+        else location.get("pincode")
         or location.get("postal_code")
         or location.get("postcode")
         or location.get("zip")
-    )
-    has_delivery_rules = bool(shop.delivery_area) or bool(
-        normalize_pincodes(shop.delivery_pincode)
     )
     has_customer_location = (
         latitude is not None
         and longitude is not None
     ) or bool(pincode)
-    if not has_customer_location and not has_delivery_rules:
+    if not has_customer_location:
         return bool(shop.is_shop_open or shop.allow_scheduled_delivery)
     return shop_delivers_to_location(
             shop,
@@ -18499,6 +20773,56 @@ def checkout(request):
 
     cart_data, cart_delivery_address = _address_scoped_cart(request, client=client)
 
+    if request.method == "POST":
+        posted_checkout_key = request.POST.get("checkout_attempt_key", "")
+        checkout_key = (
+            posted_checkout_key
+            if isinstance(posted_checkout_key, str)
+            and re.fullmatch(r"[0-9a-f]{32}", posted_checkout_key)
+            else request.session.get("checkout_attempt_key")
+        )
+        if isinstance(checkout_key, str) and re.fullmatch(r"[0-9a-f]{32}", checkout_key):
+            completed_attempt = (
+                CheckoutAttempt.objects
+                .filter(
+                    customer=request.user,
+                    checkout_key=checkout_key,
+                    order__isnull=False,
+                )
+                .select_related("order")
+                .first()
+            )
+            if completed_attempt:
+                _clear_address_scoped_carts(request, cart_delivery_address)
+                request.session.pop("checkout_attempt_key", None)
+                request.session.modified = True
+                if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                    return JsonResponse({
+                        "success": True,
+                        "message": "This order was already placed.",
+                        "order_id": completed_attempt.order.order_id,
+                        "redirect_url": reverse(
+                            "order_list",
+                        ),
+                    })
+                return redirect(
+                    "order_list",
+                )
+
+    if not isinstance(cart_data, dict):
+        cart_data = {}
+    removed_empty_lines = False
+    for line_key, raw_quantity in list(cart_data.items()):
+        try:
+            quantity = int(raw_quantity)
+        except (TypeError, ValueError):
+            quantity = 0
+        if quantity <= 0:
+            cart_data.pop(line_key, None)
+            removed_empty_lines = True
+    if removed_empty_lines:
+        _save_address_scoped_cart(request, cart_data)
+
     if not cart_data:
         messages.warning(
             request,
@@ -18506,8 +20830,6 @@ def checkout(request):
         )
         return redirect("marketplace")
 
-    if not isinstance(cart_data, dict):
-        cart_data = {}
     parsed_lines = {
         key: parsed
         for key in cart_data
@@ -18610,12 +20932,12 @@ def checkout(request):
         })
 
     if not items:
-
-        messages.warning(
-            request,
-            "Your cart is empty."
-        )
-
+        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            return JsonResponse(
+                {"success": False, "message": "Your cart is empty. Add items and try again."},
+                status=400,
+            )
+        messages.warning(request, "Your cart is empty.")
         return redirect("marketplace")
 
     scheduled_delivery_shops = {}
@@ -18636,7 +20958,7 @@ def checkout(request):
         key=lambda shop: shop.name.casefold(),
     )
     checkout_shop_ids = {shop.pk for shop in checkout_shops}
-    order_instruction_draft = _checkout_order_instruction_draft(
+    order_instruction_drafts = _checkout_order_instruction_drafts(
         request,
         checkout_shop_ids,
     )
@@ -18651,12 +20973,13 @@ def checkout(request):
         assignment = item["assignment"]
         available_stock = assignment.stock_for_customer(is_b2b=is_b2b)
         if quantities_by_assignment[assignment.pk] > available_stock:
-            messages.error(
+            return _checkout_failure_response(
                 request,
                 f"Combined retail and bulk quantities for {assignment.product.product_name} "
                 f"exceed available stock ({available_stock}).",
+                redirect_to="cart",
+                status=409,
             )
-            return redirect("cart")
 
     _track_checkout_attempt(request, items)
 
@@ -18682,13 +21005,10 @@ def checkout(request):
         )
 
         if not address_id:
-
-            messages.error(
+            return _checkout_failure_response(
                 request,
-                "Please select a delivery address."
+                "Please select a delivery address.",
             )
-
-            return redirect("checkout")
 
         address = get_object_or_404(
             ClientDeliveryAddress,
@@ -18698,34 +21018,42 @@ def checkout(request):
         )
         if cart_delivery_address is None or address.pk != cart_delivery_address.pk:
             _switch_address_scoped_cart(request, address)
+            message = (
+                "This address has its own cart. Review the items and total for the selected "
+                "address before placing the order."
+            )
+            if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                return JsonResponse(
+                    {"success": False, "message": message},
+                    status=409,
+                )
             messages.info(
                 request,
-                "This address has its own cart. Review the items and total for the selected address before placing the order.",
+                message,
             )
             return redirect("checkout")
 
         delivery_issues = _checkout_delivery_issues(items, address)
         if delivery_issues:
-            messages.error(
+            return _checkout_failure_response(
                 request,
                 "Delivery is unavailable at this address from: "
                 + ", ".join(delivery_issues)
                 + ". Change the delivery address or remove those shops' items.",
+                status=409,
             )
-            return redirect("checkout")
 
         buyer_gstin = (
             address.gstin
             or (client.gstin if is_b2b else "")
         )
         try:
-            order_instruction_draft = _save_checkout_order_instruction(
+            order_instruction_drafts = _save_checkout_order_instruction(
                 request,
                 checkout_shops,
             )
         except ValueError as error:
-            messages.error(request, str(error))
-            return redirect("checkout")
+            return _checkout_failure_response(request, str(error))
 
         coupon_code = request.POST.get("coupon_code", "").strip()
         payment_method = request.POST.get("payment_method", "COD").upper()
@@ -18740,8 +21068,10 @@ def checkout(request):
                     valid_until__gte=timezone.now(),
                 ).first()
                 if not coupon or subtotal < coupon.minimum_order_amount:
-                    messages.error(request, "This coupon is invalid or does not meet the minimum order amount.")
-                    return redirect("checkout")
+                    return _checkout_failure_response(
+                        request,
+                        "This coupon is invalid or does not meet the minimum order amount.",
+                    )
                 if coupon.discount_type == "PERCENT":
                     coupon_discount = subtotal * coupon.discount_value / Decimal("100")
                     if coupon.maximum_discount is not None:
@@ -18759,8 +21089,7 @@ def checkout(request):
                     buyer_gstin_override=buyer_gstin,
                 )
             except ValueError as error:
-                messages.error(request, str(error))
-                return redirect("checkout")
+                return _checkout_failure_response(request, str(error))
             checkout_extra = gst_breakdown["total_gst"] + gst_breakdown["delivery_total"]
             no_wallet_charges = _checkout_charge_totals(
                 subtotal,
@@ -18803,8 +21132,10 @@ def checkout(request):
                     buyer_gstin_override=buyer_gstin,
                 )
             if not settings.RAZORPAY_KEY_ID or not settings.RAZORPAY_KEY_SECRET:
-                messages.error(request, "Online payment is not configured. Please choose Cash on Delivery or contact the shop.")
-                return redirect("checkout")
+                    return _checkout_failure_response(
+                        request,
+                        "Online payment is not configured. Please choose Cash on Delivery or contact the shop.",
+                    )
 
             amount_paise = int(
                 (payable_total * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
@@ -18830,15 +21161,20 @@ def checkout(request):
                     raise ValueError("Razorpay returned an invalid order response.")
             except (requests.RequestException, ValueError):
                 logger.exception("Could not create Razorpay checkout order for customer %s.", request.user.pk)
-                messages.error(request, "Could not start online payment. Please try again or choose Cash on Delivery.")
-                return redirect("checkout")
+                return _checkout_failure_response(
+                    request,
+                    "Could not start online payment. Please try again or choose Cash on Delivery.",
+                )
 
             request.session["razorpay_checkout_intent"] = {
                 "user_id": request.user.pk,
                 "razorpay_order_id": razorpay_order_id,
                 "amount_paise": amount_paise,
-                "order_instruction_draft_id": (
-                    order_instruction_draft.pk if order_instruction_draft else None
+                "order_instruction_draft_ids": (
+                    {
+                        recipient: draft.pk
+                        for recipient, draft in order_instruction_drafts.items()
+                    }
                 ),
                 "address_id": address.pk,
                 "coupon_code": coupon_code,
@@ -18906,12 +21242,14 @@ def checkout(request):
                     ),
                     "scheduled_delivery_shop_names": scheduled_delivery_shop_names,
                     "checkout_shops": checkout_shops,
-                    "order_instruction_draft": order_instruction_draft,
+                    "order_instruction_drafts": order_instruction_drafts,
                 },
             )
         if payment_method != "COD":
-            messages.error(request, "Choose a valid payment method.")
-            return redirect("checkout")
+            return _checkout_failure_response(
+                request,
+                "Choose a valid payment method.",
+            )
 
         return create_order(
             request=request,
@@ -19014,7 +21352,7 @@ def checkout(request):
             ),
             "scheduled_delivery_shop_names": scheduled_delivery_shop_names,
             "checkout_shops": checkout_shops,
-            "order_instruction_draft": order_instruction_draft,
+            "order_instruction_drafts": order_instruction_drafts,
         }
     )
 @login_required
@@ -19038,16 +21376,47 @@ def create_order(
 ):
 
     client = ClientProfile.objects.select_for_update().get(pk=client.pk)
+    checkout_key = request.session.get("checkout_attempt_key")
+    if isinstance(checkout_key, str) and re.fullmatch(r"[0-9a-f]{32}", checkout_key):
+        completed_attempt = (
+            CheckoutAttempt.objects
+            .filter(
+                customer=request.user,
+                checkout_key=checkout_key,
+                order__isnull=False,
+            )
+            .select_related("order")
+            .first()
+        )
+        if completed_attempt:
+            _clear_address_scoped_carts(request, address)
+            if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                messages.info(
+                    request,
+                    f"Order {completed_attempt.order.order_id} was already placed.",
+                )
+                return JsonResponse({
+                    "success": True,
+                    "message": "This order was already placed.",
+                    "order_id": completed_attempt.order.order_id,
+                    "redirect_url": reverse(
+                        "order_list",
+                    ),
+                })
+            return redirect(
+                "order_list",
+            )
+
     _switch_address_scoped_cart(request, address)
     delivery_issues = _checkout_delivery_issues(items, address)
     if delivery_issues:
-        messages.error(
+        return _checkout_failure_response(
             request,
             "Delivery is unavailable at this address from: "
             + ", ".join(delivery_issues)
             + ". Change the delivery address or remove those shops' items.",
+            status=409,
         )
-        return redirect("checkout")
 
     is_b2b = _is_b2b_customer(request, client)
     coupon = None
@@ -19061,8 +21430,10 @@ def create_order(
             valid_until__gte=timezone.now(),
         ).first()
         if not coupon or subtotal < coupon.minimum_order_amount:
-            messages.error(request, "This coupon is invalid or does not meet the minimum order amount.")
-            return redirect("checkout")
+            return _checkout_failure_response(
+                request,
+                "This coupon is invalid or does not meet the minimum order amount.",
+            )
         if coupon_discount_override is None:
             if coupon.discount_type == "PERCENT":
                 coupon_discount = subtotal * coupon.discount_value / Decimal("100")
@@ -19077,8 +21448,10 @@ def create_order(
                 subtotal,
             )
     elif coupon_discount_override not in (None, Decimal("0.00"), "0", "0.00"):
-        messages.error(request, "The coupon used for this payment is no longer valid.")
-        return redirect("checkout")
+        return _checkout_failure_response(
+            request,
+            "The coupon used for this payment is no longer valid.",
+        )
 
     discounted_total = max(Decimal("0.00"), subtotal - coupon_discount)
     try:
@@ -19090,14 +21463,16 @@ def create_order(
             buyer_gstin_override=buyer_gstin_override,
         )
     except ValueError as error:
-        messages.error(request, str(error))
-        return redirect("checkout")
+        return _checkout_failure_response(request, str(error))
     checkout_extra = gst_breakdown["total_gst"] + gst_breakdown["delivery_total"]
     if checkout_extra_override is not None and (
         Decimal(str(checkout_extra_override)) != checkout_extra
     ):
-        messages.error(request, "The tax or delivery total changed during checkout. Please review your updated order.")
-        return redirect("checkout")
+        return _checkout_failure_response(
+            request,
+            "The tax or delivery total changed during checkout. Please review your updated order.",
+            status=409,
+        )
     no_wallet_charges = _checkout_charge_totals(
         subtotal,
         coupon_discount,
@@ -19115,8 +21490,11 @@ def create_order(
             Decimal(str(wallet_amount_override)),
         )
         if requested_wallet_amount > client.wallet_balance:
-            messages.error(request, "Your wallet balance changed during checkout. Please review the updated total and try again.")
-            return redirect("checkout")
+            return _checkout_failure_response(
+                request,
+                "Your wallet balance changed during checkout. Please review the updated total and try again.",
+                status=409,
+            )
         wallet_amount_used = min(
             requested_wallet_amount,
             wallet_limit,
@@ -19126,8 +21504,11 @@ def create_order(
     else:
         wallet_amount_used = min(client.wallet_balance, wallet_limit)
     if wallet_amount_used > client.wallet_balance:
-        messages.error(request, "Your wallet balance changed during checkout. Please contact support about your payment before trying again.")
-        return redirect("checkout")
+        return _checkout_failure_response(
+            request,
+            "Your wallet balance changed during checkout. Please contact support about your payment before trying again.",
+            status=409,
+        )
     charges = _checkout_charge_totals(
         subtotal,
         coupon_discount,
@@ -19138,16 +21519,20 @@ def create_order(
     if platform_charge_override is not None and (
         Decimal(str(platform_charge_override)) != charges["platform_charge"]
     ):
-        messages.error(request, "The platform charge changed during checkout. Please review the updated total.")
-        return redirect("checkout")
+        return _checkout_failure_response(
+            request,
+            "The platform charge changed during checkout. Please review the updated total.",
+            status=409,
+        )
     if razorpay_fee_override is not None and (
         Decimal(str(razorpay_fee_override)) != charges["razorpay_fee"]
     ):
-        messages.error(request, "The online payment fee changed during checkout. Please review the updated total.")
-        return redirect("checkout")
+        return _checkout_failure_response(
+            request,
+            "The online payment fee changed during checkout. Please review the updated total.",
+            status=409,
+        )
     payable_total = charges["amount_due"]
-
-    locked_assignments = {}
 
     requested_by_assignment = {}
     for item in items:
@@ -19156,75 +21541,98 @@ def create_order(
             requested_by_assignment.get(assignment_id, 0) + item["quantity"]
         )
 
-    for item in items:
-        assignment_id = item["assignment"].id
-        if assignment_id in locked_assignments:
-            continue
-        assignment = (
+    locked_assignments = {
+        assignment.id: assignment
+        for assignment in (
             ProductShop.objects
             .select_for_update()
-            .select_related(
-                "product",
-                "shop"
-            )
-            .get(
-                id=item["assignment"].id
-            )
+            .select_related("product", "shop")
+            .filter(id__in=requested_by_assignment)
         )
-
-        quantity = requested_by_assignment[assignment_id]
-
+    }
+    for assignment_id, quantity in requested_by_assignment.items():
+        assignment = locked_assignments.get(assignment_id)
+        if assignment is None:
+            return _checkout_failure_response(
+                request,
+                "A product in your cart is no longer available. Review your cart and try again.",
+                redirect_to="cart",
+                status=409,
+            )
         available_stock = assignment.stock_for_customer(is_b2b=is_b2b)
         if available_stock < quantity:
-
-            messages.error(
+            return _checkout_failure_response(
                 request,
                 f"{assignment.product.product_name} "
-                f"is no longer available in the requested quantity."
+                f"is no longer available in the requested quantity.",
+                redirect_to="cart",
+                status=409,
             )
-
-            return redirect("cart")
-
-        locked_assignments[
-            assignment_id
-        ] = assignment
 
     order_now = timezone.now()
     shops_in_order = {}
     for assignment in locked_assignments.values():
         shops_in_order.setdefault(assignment.shop_id, assignment.shop)
     shop_ids_in_order = list(shops_in_order)
-    instruction_draft_id = request.session.get("order_voice_instruction_draft_id")
+    instruction_draft_ids = request.session.get(
+        "order_voice_instruction_draft_ids",
+        {},
+    )
+    if not isinstance(instruction_draft_ids, dict):
+        instruction_draft_ids = {}
     if payment_id:
         payment_intent = request.session.get("razorpay_checkout_intent")
         if (
             isinstance(payment_intent, dict)
             and payment_intent.get("user_id") == request.user.pk
         ):
-            instruction_draft_id = payment_intent.get(
-                "order_instruction_draft_id"
+            intent_draft_ids = payment_intent.get(
+                "order_instruction_draft_ids",
             )
-    instruction_draft = None
-    if instruction_draft_id:
-        instruction_draft = (
+            if isinstance(intent_draft_ids, dict):
+                instruction_draft_ids = intent_draft_ids
+    legacy_instruction_draft_id = request.session.get(
+        "order_voice_instruction_draft_id",
+    )
+    if legacy_instruction_draft_id and not instruction_draft_ids:
+        legacy_instruction = OrderVoiceInstruction.objects.filter(
+            pk=legacy_instruction_draft_id,
+            customer=request.user,
+            shop_order__isnull=True,
+        ).first()
+        if legacy_instruction:
+            instruction_draft_ids = {
+                legacy_instruction.recipient: legacy_instruction.pk,
+            }
+
+    instruction_drafts = {}
+    for recipient, draft_id in instruction_draft_ids.items():
+        if recipient not in {
+            OrderVoiceInstruction.RECIPIENT_SHOP,
+            OrderVoiceInstruction.RECIPIENT_RIDER,
+        }:
+            return _checkout_failure_response(
+                request,
+                "An order instruction could not be matched. Please review checkout and try again.",
+            )
+        draft = (
             OrderVoiceInstruction.objects
             .select_for_update()
             .filter(
-                pk=instruction_draft_id,
+                pk=draft_id,
                 customer=request.user,
                 shop_order__isnull=True,
+                recipient=recipient,
             )
             .first()
         )
-        if (
-            instruction_draft is None
-            or instruction_draft.shop_id not in shops_in_order
-        ):
-            messages.error(
+        if draft is None or draft.shop_id not in shops_in_order:
+            return _checkout_failure_response(
                 request,
                 "The selected shop instruction could not be matched to this order. Please review checkout and try again.",
+                status=409,
             )
-            return redirect("checkout")
+        instruction_drafts[recipient] = draft
     shop_order_numbers = {
         shop_id: generate_shop_order_number(
             shops_in_order[shop_id],
@@ -19499,9 +21907,10 @@ def create_order(
 
             status="PLACED",
         )
-        if instruction_draft and instruction_draft.shop_id == shop_id:
-            instruction_draft.shop_order = shop_order
-            instruction_draft.save(update_fields=["shop_order"])
+        for instruction_draft in instruction_drafts.values():
+            if instruction_draft.shop_id == shop_id:
+                instruction_draft.shop_order = shop_order
+                instruction_draft.save(update_fields=["shop_order"])
 
         shop_items_json = []
         estimated_shop_weight_kg = Decimal("0.000")
@@ -19722,7 +22131,6 @@ def create_order(
             ]
         )
 
-    checkout_key = request.session.get("checkout_attempt_key")
     if checkout_key:
         CheckoutAttempt.objects.filter(
             customer=request.user,
@@ -19734,8 +22142,9 @@ def create_order(
         )
         request.session.pop("checkout_attempt_key", None)
 
-    _save_address_scoped_cart(request, {})
+    _clear_address_scoped_carts(request, address)
     request.session.pop("razorpay_checkout_intent", None)
+    request.session.pop("order_voice_instruction_draft_ids", None)
     request.session.pop("order_voice_instruction_draft_id", None)
 
     request.session.modified = True
@@ -19744,11 +22153,23 @@ def create_order(
         request,
         f"Order {order.order_id} placed successfully!"
     )
-
-    return redirect(
-        "order_tracking",
-        order_id=order.order_id
+    Notification.objects.create(
+        user=request.user,
+        title="Order placed successfully",
+        message=f"Order {order.order_id} has been placed successfully.",
+        notification_type="ORDER",
+        related_url=f"/orders/{order.tracking_code or order.order_id}/tracking/",
     )
+
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return JsonResponse({
+            "success": True,
+            "message": f"Order {order.order_id} placed successfully!",
+            "order_id": order.order_id,
+            "redirect_url": reverse("order_list"),
+        })
+
+    return redirect("order_list")
 
 
 @login_required
@@ -20018,6 +22439,15 @@ def order_tracking(request, order_id):
     for tracked_shop_order in shop_orders:
         tracked_shop_order.pickup_location_data = _get_shop_order_pickup_location(
             tracked_shop_order
+        )
+        tracked_shop_order.customer_delivery_otp = (
+            client.verification_otp
+            if (
+                tracked_shop_order.shop.require_customer_otp_verification
+                and tracked_shop_order.status == "OUT_FOR_DELIVERY"
+                and not tracked_shop_order.customer_otp_verified
+            )
+            else None
         )
         for item in tracked_shop_order.order_items.all():
             unit = item.unit or (item.product.unit if item.product_id else "")

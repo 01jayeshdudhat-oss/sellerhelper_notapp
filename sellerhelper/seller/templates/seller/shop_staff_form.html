@@ -20,7 +20,7 @@ Add Shop Staff
                 </h3>
 
                 <p class="text-muted">
-                    Create an account for a packer or authorized employee.
+                    Add a new staff account or choose active staff from another shop you own to share them with this shop. Choose Packer below to give them the Packer role here; their role and permissions remain specific to each shop.
                 </p>
 
 
@@ -51,8 +51,36 @@ Add Shop Staff
                             Staff will be added to this shop.
                         </div>
 
-                    <!-- <div class="mb-3"> -->
+                    </div>
 
+                    <div class="mb-3">
+                        <label class="form-label" for="id_existing_staff_user">
+                            Add existing staff account
+                        </label>
+                        <select
+                            name="existing_staff_user"
+                            id="id_existing_staff_user"
+                            class="form-select"
+                        >
+                            <option value="">Choose an employee from another shop</option>
+                            {% for employee in form.fields.existing_staff_user.queryset %}
+                                <option value="{{ employee.pk }}"
+                                    {% if form.existing_staff_user.value|stringformat:"s" == employee.pk|stringformat:"s" %}selected{% endif %}>
+                                    {{ employee.get_full_name|default:employee.username }} (@{{ employee.username }})
+                                </option>
+                            {% endfor %}
+                        </select>
+                        {% if form.existing_staff_user.errors %}
+                            <div class="invalid-feedback d-block">{{ form.existing_staff_user.errors|join:", " }}</div>
+                        {% endif %}
+                        <div class="form-text">
+                            Only active staff from your other shops are listed. Select one, then choose their role for this shop; they will use their existing password.
+                        </div>
+                    </div>
+
+                    <div class="text-center text-muted small mb-3">OR CREATE A NEW STAFF ACCOUNT</div>
+
+                    <div class="mb-3">
                         <label class="form-label">
                             Username
                         </label>
@@ -61,8 +89,14 @@ Add Shop Staff
                             type="text"
                             name="username"
                             class="form-control"
-                            required
+                            value="{{ form.username.value|default_if_none:'' }}"
                         >
+                        {% if form.username.errors %}
+                            <div class="invalid-feedback d-block">{{ form.username.errors|join:", " }}</div>
+                        {% endif %}
+                        <div class="form-text">
+                            Use the same username as an existing account to add an existing employee without changing their password.
+                        </div>
 
                     </div>
 
@@ -77,39 +111,13 @@ Add Shop Staff
                             type="password"
                             name="password"
                             class="form-control"
-                            required
                         >
-
-                    </div>
-
-
-                    <div class="mb-3">
-
-                        <label class="form-label">
-                            Shop
-                        </label>
-
-                        <select
-                            name="shop"
-                            class="form-select"
-                            required
-                        >
-
-                            <option value="{{ shop.name }}" selected>
-                                {{ shop.name }}
-                            </option>
-
-                            {% for shop in shops %}
-
-                            <option value="{{ shop.id }}">
-
-                                {{ shop.name }}
-
-                            </option>
-
-                            {% endfor %}
-
-                        </select>
+                        {% if form.password.errors %}
+                            <div class="invalid-feedback d-block">{{ form.password.errors|join:", " }}</div>
+                        {% endif %}
+                        <div class="form-text">
+                            Required only when creating a new account. Leave blank for an existing username or selected employee.
+                        </div>
 
                     </div>
 
@@ -134,6 +142,9 @@ Add Shop Staff
                             </option>
                             <option value="PURCHASE_MANAGER">
                                 Purchase Manager
+                            </option>
+                            <option value="PAYMENT_MANAGER">
+                                Payment Manager
                             </option>
 
                             <option value="ORDER">
@@ -165,6 +176,19 @@ Add Shop Staff
                         <div class="form-text">Used only when a customer pays this rider's COD to their personal UPI.</div>
                     </div>
 
+                    <div class="form-check form-switch mb-4">
+                        <input class="form-check-input" type="checkbox"
+                               name="can_confirm_rider_payments"
+                               id="canConfirmRiderPayments">
+                        <label class="form-check-label" for="canConfirmRiderPayments">
+                            <strong>Allow rider payment confirmations for this shop</strong>
+                            <br>
+                            <small class="text-muted">
+                                Applies only when the staff role is Payment Manager. This permission must be granted separately by each shop owner.
+                            </small>
+                        </label>
+                    </div>
+
                     <div class="d-flex gap-2">
 
                         <a
@@ -178,7 +202,7 @@ Add Shop Staff
                             type="submit"
                             class="btn btn-primary"
                         >
-                            Create Staff
+                            Add Staff to Shop
                         </button>
 
                     </div>

@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+
+{% block title %}User Presence & Logins{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+        <div>
+            <h1 class="h3 mb-1">User presence &amp; logins</h1>
+            <p class="text-muted mb-0">
+                Online means a heartbeat in the last {{ online_window_minutes }} minutes.
+                Role totals can overlap when an account has more than one role.
+            </p>
+        </div>
+        <div class="small text-muted">Updated {{ refreshed_at|date:"M j, Y · g:i:s A" }}</div>
+    </div>
+
+    <div class="row g-3 mb-4">
+        <div class="col-6 col-xl-3">
+            <div class="card h-100 border-0 shadow-sm">
+                <div class="card-body">
+                    <div class="small text-muted">Online now</div>
+                    <div class="fs-3 fw-bold">{{ online_count }}</div>
+                    <div class="small text-muted">of {{ active_account_count }} active accounts</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-xl-3">
+            <div class="card h-100 border-0 shadow-sm">
+                <div class="card-body">
+                    <div class="small text-muted">Successful logins today</div>
+                    <div class="fs-3 fw-bold">{{ logged_in_today_count }}</div>
+                    <div class="small text-muted">tracked from rollout; includes repeat logins</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-xl-3">
+            <div class="card h-100 border-0 shadow-sm">
+                <div class="card-body">
+                    <div class="small text-muted">Last login today</div>
+                    <div class="fs-3 fw-bold">{{ last_login_today_count }}</div>
+                    <div class="small text-muted">distinct active accounts</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-xl-3">
+            <div class="card h-100 border-0 shadow-sm">
+                <div class="card-body">
+                    <div class="small text-muted">Presence window</div>
+                    <div class="fs-3 fw-bold">{{ online_window_minutes }} min</div>
+                    <div class="small text-muted">heartbeats run once a minute</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <section class="card border-0 shadow-sm mb-4">
+        <div class="card-header bg-white">
+            <h2 class="h5 mb-0">Role overview</h2>
+        </div>
+        <div class="table-responsive">
+            <table class="table align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th scope="col">Role</th>
+                        <th scope="col" class="text-end">Active accounts</th>
+                        <th scope="col" class="text-end">Online</th>
+                        <th scope="col" class="text-end">Last login today</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in role_rows %}
+                    <tr>
+                        <th scope="row">{{ row.role }}</th>
+                        <td class="text-end">{{ row.total }}</td>
+                        <td class="text-end"><span class="badge text-bg-success">{{ row.online }}</span></td>
+                        <td class="text-end">{{ row.logged_in_today }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="card border-0 shadow-sm">
+        <div class="card-header bg-white d-flex flex-wrap justify-content-between align-items-center gap-3">
+            <h2 class="h5 mb-0">Recent users</h2>
+            <form method="get" class="d-flex gap-2" role="search">
+                <label class="visually-hidden" for="presence-search">Search users</label>
+                <input
+                    id="presence-search"
+                    name="q"
+                    value="{{ search_term }}"
+                    class="form-control form-control-sm"
+                    type="search"
+                    placeholder="Name, username, or email"
+                >
+                <button class="btn btn-sm btn-outline-primary" type="submit">Search</button>
+            </form>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th scope="col">User</th>
+                        <th scope="col">Roles / availability</th>
+                        <th scope="col">Presence</th>
+                        <th scope="col">Active portal</th>
+                        <th scope="col">Last login</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in presence_rows %}
+                    <tr>
+                        <th scope="row">
+                            <div>{{ row.user.get_full_name|default:row.user.username }}</div>
+                            <div class="small text-muted">{{ row.user.username }}{% if row.user.email %} · {{ row.user.email }}{% endif %}</div>
+                        </th>
+                        <td>
+                            {% for role in row.roles %}
+                            <span class="badge rounded-pill text-bg-light border me-1 mb-1">{{ role }}</span>
+                            {% endfor %}
+                        </td>
+                        <td>
+                            {% if row.is_online %}
+                            <span class="badge text-bg-success">Online</span>
+                            <div class="small text-muted">{{ row.last_seen|timesince }} ago</div>
+                            {% elif row.last_seen %}
+                            <span class="badge text-bg-secondary">Offline</span>
+                            <div class="small text-muted">{{ row.last_seen|timesince }} ago</div>
+                            {% else %}
+                            <span class="badge text-bg-secondary">Not tracked</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ row.active_portal|default:"—" }}</td>
+                        <td>{% if row.user.last_login %}{{ row.user.last_login|date:"M j, Y · g:i A" }}{% else %}—{% endif %}</td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="5" class="text-center text-muted py-5">No recent users found.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% if page_obj.has_other_pages %}
+        <nav class="card-footer bg-white" aria-label="Recent users pages">
+            <ul class="pagination pagination-sm justify-content-end mb-0">
+                {% if page_obj.has_previous %}
+                <li class="page-item">
+                    <a class="page-link" href="?{% if search_term %}q={{ search_term|urlencode }}&amp;{% endif %}page={{ page_obj.previous_page_number }}">Previous</a>
+                </li>
+                {% endif %}
+                <li class="page-item disabled"><span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span></li>
+                {% if page_obj.has_next %}
+                <li class="page-item">
+                    <a class="page-link" href="?{% if search_term %}q={{ search_term|urlencode }}&amp;{% endif %}page={{ page_obj.next_page_number }}">Next</a>
+                </li>
+                {% endif %}
+            </ul>
+        </nav>
+        {% endif %}
+    </section>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+{{ block.super }}
+<script>
+    window.setTimeout(() => window.location.reload(), 60 * 1000);
+</script>
+{% endblock %}

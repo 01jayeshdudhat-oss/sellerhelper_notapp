@@ -10,7 +10,7 @@
     <section class="bg-white border rounded-4 shadow-sm p-3 p-md-4">
         <span class="badge rounded-pill text-bg-primary-subtle text-primary mb-2">ADMIN CATALOG</span>
         <h1 class="h3 fw-bold mb-1">Edit category</h1>
-        <p class="text-muted mb-4">Renaming updates this category on catalog products and seller products.</p>
+        <p class="text-muted mb-4">Renaming updates this category on catalog products and seller products. Set its marketplace to enable the correct HSN or SAC suggestions.</p>
         <form method="post" novalidate>
             {% csrf_token %}
             {% if form.non_field_errors %}<div class="alert alert-danger">{{ form.non_field_errors }}</div>{% endif %}

@@ -149,6 +149,41 @@ INDIAN_GST_STATE_CHOICES = [
     ("38", "Ladakh"),
 ]
 
+MARKET_CATEGORY_CHOICES = [
+    ("DAILY MARKET", "DAILY MARKET"),
+    ("OCCATIONAL MARKET", "OCCATIONAL MARKET"),
+    ("SERVICE MARKET", "SERVICE MARKET"),
+]
+
+PRODUCT_CLONE_FIELD_CHOICES = [
+    ("product_title", "Product title"),
+    ("product_alias_name", "Alias name"),
+    ("product_description", "Description"),
+    ("product_color", "Color"),
+    ("product_size", "Size"),
+    ("sku", "SKU"),
+    ("unit", "Unit"),
+    ("image_url", "Image"),
+    ("hsn_code", "HSN code"),
+    ("gst_rate", "GST rate"),
+    ("shelf_life_days", "Shelf life"),
+    ("expiry_price_drop_percent", "Expiry price drop"),
+    ("expiry_management_enabled", "Expiry management"),
+    ("is_approximate_weight", "Approximate-weight setting"),
+]
+
+DEFAULT_PRODUCT_CLONE_FIELDS = [
+    "unit",
+    "image_url",
+    "hsn_code",
+    "gst_rate",
+]
+
+
+def default_product_clone_fields():
+    return DEFAULT_PRODUCT_CLONE_FIELDS.copy()
+
+
 PRODUCT_CATEGORY_CHOICES = [
     ("SABJI", "SABJI"),
     ("FRUITS", "FRUITS"),
@@ -176,7 +211,15 @@ PRODUCT_CATEGORY_CHOICES = [
 ]
 
 class ProductCategory(models.Model):
+    MARKET_CHOICES = MARKET_CATEGORY_CHOICES
+
     name = models.CharField(max_length=80, unique=True)
+    market_category = models.CharField(
+        max_length=50,
+        choices=MARKET_CHOICES,
+        blank=True,
+        default="",
+    )
     is_active = models.BooleanField(default=True)
     sort_order = models.PositiveSmallIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -229,11 +272,7 @@ def generate_otp_code():
 
 
 class Shop(models.Model):
-    MARKET_CATEGORY_CHOICES = [
-        ("DAILY MARKET", "DAILY MARKET"),
-        ("OCCATIONAL MARKET", "OCCATIONAL MARKET"),
-        ("SERVICE MARKET", "SERVICE MARKET"),
-    ]
+    MARKET_CATEGORY_CHOICES = MARKET_CATEGORY_CHOICES
 
     SHOP_CATEGORY_CHOICES = [
         ("SABJI", "SABJI"),
@@ -612,6 +651,30 @@ class MarketplaceLayoutSettings(models.Model):
 
     def __str__(self):
         return "Marketplace layout settings"
+
+
+class ProductCloneSettings(models.Model):
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    allowed_fields = models.JSONField(
+        default=default_product_clone_fields,
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "shop product copy settings"
+        verbose_name_plural = "shop product copy settings"
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        self.allowed_fields = [
+            field_name
+            for field_name in self.allowed_fields
+            if field_name in dict(PRODUCT_CLONE_FIELD_CHOICES)
+        ]
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return "Shop product copy settings"
 
 
 class SiteBrandingSettings(models.Model):
@@ -1250,6 +1313,7 @@ class ShopStaff(models.Model):
         ("MANAGER", "Manager"),
         ("PURCHASE_MANAGER", "Purchase Manager"),
         ("ORDER", "Order Manager"),
+        ("PAYMENT_MANAGER", "Payment Manager"),
         ("DELIVERY", "Delivery Staff"),
         ("RIDER", "Rider"),
     ]
@@ -1328,6 +1392,10 @@ class ShopStaff(models.Model):
     can_manage_stock = models.BooleanField(default=False)
     can_manage_staff = models.BooleanField(default=False)
     can_cancel_orders = models.BooleanField(default=False)
+    can_confirm_rider_payments = models.BooleanField(
+        default=False,
+        help_text="Allows a payment manager to review rider COD payment requests for this shop.",
+    )
 
     created_at = models.DateTimeField(
         auto_now_add=True
@@ -1462,6 +1530,7 @@ class AdminProductCatalog(models.Model):
     image_url_4 = models.URLField(max_length=1000, blank=True, default="")
     image_url_5 = models.URLField(max_length=1000, blank=True, default="")
     hsn_code = models.CharField(max_length=8, blank=True, default="")
+    sac_code = models.CharField(max_length=6, blank=True, default="")
     gst_rate = models.DecimalField(
         max_digits=5,
         decimal_places=2,
@@ -1496,6 +1565,46 @@ class AdminProductCatalog(models.Model):
             )
             if image_url
         ]
+
+
+class HSNCodeDescription(models.Model):
+    hsn_code = models.CharField(max_length=8)
+    description = models.CharField(max_length=500)
+
+    class Meta:
+        ordering = ["hsn_code", "description"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["hsn_code", "description"],
+                name="unique_hsn_code_description",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["hsn_code"]),
+        ]
+
+    def __str__(self):
+        return f"{self.hsn_code} - {self.description}"
+
+
+class SACCodeDescription(models.Model):
+    sac_code = models.CharField(max_length=6)
+    description = models.CharField(max_length=500)
+
+    class Meta:
+        ordering = ["sac_code", "description"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sac_code", "description"],
+                name="unique_sac_code_description",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["sac_code"]),
+        ]
+
+    def __str__(self):
+        return f"{self.sac_code} - {self.description}"
 
 
 class Product(models.Model):
@@ -2933,7 +3042,7 @@ class OrderVoiceInstruction(models.Model):
         on_delete=models.CASCADE,
         related_name="order_voice_instructions",
     )
-    shop_order = models.OneToOneField(
+    shop_order = models.ForeignKey(
         ShopOrder,
         on_delete=models.CASCADE,
         null=True,
@@ -2956,6 +3065,13 @@ class OrderVoiceInstruction(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["shop_order", "recipient"],
+                condition=models.Q(shop_order__isnull=False),
+                name="unique_order_voice_instruction_recipient",
+            ),
+        ]
 
     def __str__(self):
         return f"Order instruction for {self.shop.name}"
@@ -3350,6 +3466,7 @@ class CODPaymentApprovalRequest(models.Model):
         related_name="reviewed_cod_payment_requests",
     )
     reviewed_at = models.DateTimeField(null=True, blank=True)
+    last_reminded_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -3573,6 +3690,19 @@ class UserActivity(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+
+
+class UserPresence(models.Model):
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="presence",
+    )
+    last_seen = models.DateTimeField(db_index=True)
+    active_portal = models.CharField(max_length=40, blank=True, default="")
+
+    class Meta:
+        ordering = ["-last_seen"]
 
 
 class StockMovement(models.Model):

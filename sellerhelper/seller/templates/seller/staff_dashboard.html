@@ -73,7 +73,12 @@
                 </a>
                 {% if can_manage_orders %}
                 <a href="{% url 'shop_order_list' %}?shop={{ shop.id }}" class="btn btn-primary">
-                    <i class="bi bi-receipt me-1"></i> Manage orders
+                    <i class="bi bi-receipt me-1"></i> Orders
+                </a>
+                {% endif %}
+                {% if can_review_rider_payments %}
+                <a href="{% url 'staff_payment_manager_dashboard' %}" class="btn btn-outline-success">
+                    <i class="bi bi-cash-coin me-1"></i> Rider payments
                 </a>
                 {% endif %}
                 <a href="{% url 'product_list' %}?shop={{ shop.id }}" class="btn btn-outline-secondary">

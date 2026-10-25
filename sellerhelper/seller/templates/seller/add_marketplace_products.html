@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+
+{% block title %}Add marketplace products{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
+        <div>
+            <h1 class="h3 mb-1">Add products from marketplace</h1>
+            <p class="text-muted mb-0">
+                Select products from shops in the same market as your selected shop.
+                New listings start with zero stock.
+            </p>
+        </div>
+        <a class="btn btn-outline-secondary" href="{% url 'product_list' %}">
+            <i class="bi bi-arrow-left me-1"></i>Back to products
+        </a>
+    </div>
+
+    {% if not shops %}
+        <div class="alert alert-info">Create a shop first to add marketplace products.</div>
+    {% else %}
+        <form method="get" class="card border-0 shadow-sm mb-3">
+            <div class="card-body row g-2 align-items-end">
+                <div class="col-12 col-md-5">
+                    <label class="form-label fw-semibold" for="destinationShop">Select your shop</label>
+                    <select class="form-select" id="destinationShop" name="shop" required
+                            onchange="this.form.requestSubmit()">
+                        <option value="">Select your shop</option>
+                        {% for shop in shops %}
+                            <option value="{{ shop.pk }}" {% if selected_shop.pk == shop.pk %}selected{% endif %}>
+                                {{ shop.name }} · {{ shop.market_category }}
+                            </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-12 col-md-5">
+                    <label class="form-label" for="marketplaceProductSearch">Search marketplace products</label>
+                    <input class="form-control" type="search" id="marketplaceProductSearch"
+                           name="q" value="{{ search_query }}"
+                           placeholder="Product name, category, or shop"
+                           {% if not selected_shop %}disabled{% endif %}>
+                </div>
+                <div class="col-12 col-md-2">
+                    <button class="btn btn-outline-primary" type="submit" {% if not selected_shop %}disabled{% endif %}>
+                        <i class="bi bi-search me-1"></i>Search
+                    </button>
+                    {% if search_query %}
+                        <a class="btn btn-link" href="?shop={{ selected_shop.pk|default:'' }}">Clear</a>
+                    {% endif %}
+                </div>
+            </div>
+        </form>
+
+        <form method="post" class="card border-0 shadow-sm">
+            {% csrf_token %}
+            <div class="card-body">
+                <input type="hidden" name="shop" value="{{ selected_shop.pk|default:'' }}">
+                <input type="hidden" name="q" value="{{ search_query }}">
+
+                {% if not selected_shop %}
+                    <div class="text-center text-muted py-5">
+                        <i class="bi bi-shop fs-2"></i>
+                        <p class="mb-0 mt-2">Select a shop to see products from its market.</p>
+                    </div>
+                {% elif listings.object_list %}
+                    <div class="list-group">
+                        {% for listing in listings %}
+                            <label class="list-group-item d-flex align-items-center gap-3">
+                                <input class="form-check-input flex-shrink-0" type="checkbox"
+                                       name="source_listing" value="{{ listing.pk }}">
+                                {% if listing.display_image_url %}
+                                    <img src="{{ listing.display_image_url }}" alt=""
+                                         class="rounded border flex-shrink-0"
+                                         style="width:64px;height:64px;object-fit:cover;">
+                                {% else %}
+                                    <span class="rounded border bg-light d-flex align-items-center justify-content-center flex-shrink-0"
+                                          style="width:64px;height:64px;">
+                                        <i class="bi bi-image text-muted"></i>
+                                    </span>
+                                {% endif %}
+                                <span class="flex-grow-1 min-width-0">
+                                    <span class="d-block fw-semibold">{{ listing.product.product_name }}</span>
+                                    <span class="small text-muted">{{ listing.product.product_category }} · {{ listing.shop.name }}</span>
+                                </span>
+                                <span class="text-nowrap fw-semibold">₹{{ listing.effective_price }}</span>
+                            </label>
+                        {% endfor %}
+                    </div>
+                    <div class="d-flex flex-column flex-sm-row justify-content-between align-items-sm-center gap-2 mt-3">
+                        <span class="small text-muted">
+                            {{ selected_shop.market_category }} · active listings with available stock · copied price · zero starting stock
+                        </span>
+                        <button class="btn btn-primary" type="submit">
+                            <i class="bi bi-bag-plus me-1"></i>Add selected products
+                        </button>
+                    </div>
+                {% else %}
+                    <div class="text-center text-muted py-5">
+                        <i class="bi bi-search fs-2"></i>
+                        <p class="mb-0 mt-2">No available products were found in {{ selected_shop.market_category }}.</p>
+                    </div>
+                {% endif %}
+            </div>
+        </form>
+
+        {% if listings.has_other_pages %}
+            <nav class="d-flex justify-content-center gap-2 mt-3" aria-label="Marketplace products pages">
+                {% if listings.has_previous %}
+                    <a class="btn btn-sm btn-outline-secondary"
+                       href="?q={{ search_query|urlencode }}&shop={{ selected_shop.pk }}&page={{ listings.previous_page_number }}">Previous</a>
+                {% endif %}
+                <span class="small align-self-center">Page {{ listings.number }} of {{ listings.paginator.num_pages }}</span>
+                {% if listings.has_next %}
+                    <a class="btn btn-sm btn-outline-secondary"
+                       href="?q={{ search_query|urlencode }}&shop={{ selected_shop.pk }}&page={{ listings.next_page_number }}">Next</a>
+                {% endif %}
+            </nav>
+        {% endif %}
+    {% endif %}
+</div>
+{% endblock %}

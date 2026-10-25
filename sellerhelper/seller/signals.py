@@ -1,3 +1,4 @@
+from django.contrib.auth.signals import user_logged_in
 from django.db.models.signals import post_save, pre_delete
 from django.dispatch import receiver
 
@@ -7,8 +8,17 @@ from .live_updates import (
     queue_order_update,
     queue_rider_location_update,
 )
-from .models import Notification, OrderVoiceInstruction, ShopOrder
+from .models import Notification, OrderVoiceInstruction, ShopOrder, UserActivity
 from .push_notifications import queue_expo_push_notifications
+
+
+@receiver(user_logged_in, dispatch_uid="seller.record_successful_login")
+def record_successful_login(sender, request, user, **kwargs):
+    UserActivity.objects.create(
+        user=user,
+        event_type="AUTH_LOGIN",
+        path=request.path if request else "",
+    )
 
 
 @receiver(post_save, sender=Notification)

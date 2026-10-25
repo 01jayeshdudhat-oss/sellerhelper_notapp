@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from secrets import randbelow
 
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Count, Max
 from django.urls import reverse
 from django.utils import timezone
 
@@ -19,6 +19,7 @@ PUBLIC_RIDER_OFFER_SECONDS = 60
 PUBLIC_RIDER_OFFER_BATCH_SIZE = 5
 PUBLIC_RIDER_OFFER_MIN_GAP_SECONDS = 12
 PUBLIC_RIDER_OFFER_COOLDOWN_SECONDS = PUBLIC_RIDER_OFFER_MIN_GAP_SECONDS
+RIDER_POST_DELIVERY_OFFER_DELAY_SECONDS = 10
 PUBLIC_RIDER_LOCATION_MAX_AGE_SECONDS = 600
 
 
@@ -357,10 +358,27 @@ def eligible_public_riders(shop_order):
     }
     active_orders_by_user = {}
     rider_user_ids = [rider.user_id for rider in riders]
+    recently_completed_at = {}
     if rider_user_ids:
+        recently_completed_at = dict(
+            ShopOrder.objects.filter(
+                assigned_rider__user_id__in=rider_user_ids,
+                order__is_valid_order=True,
+                delivery_completed_at__gte=(
+                    timezone.now()
+                    - timedelta(
+                        seconds=RIDER_POST_DELIVERY_OFFER_DELAY_SECONDS,
+                    )
+                ),
+            )
+            .values("assigned_rider__user_id")
+            .annotate(last_completed_at=Max("delivery_completed_at"))
+            .values_list("assigned_rider__user_id", "last_completed_at")
+        )
         for active_order in (
             ShopOrder.objects.filter(
                 assigned_rider__user_id__in=rider_user_ids,
+                order__is_valid_order=True,
                 status__in=[
                     "READY",
                     "RIDER_ASSIGNED",
@@ -387,11 +405,29 @@ def eligible_public_riders(shop_order):
     eligible_riders = []
     for rider in riders:
         application = applications_by_user.get(rider.user_id)
+        work_areas = (
+            [
+                area
+                for area in application.work_areas
+                if isinstance(area, dict)
+            ]
+            if application and isinstance(application.work_areas, list)
+            else []
+        )
+        if not work_areas and application and application.work_area:
+            work_areas = [application.work_area]
         if (
             not application
-            or not application.work_area
-            or not location_in_work_area(pickup, application.work_area)
-            or not location_in_work_area(delivery, application.work_area)
+            or rider.user_id in recently_completed_at
+            or not work_areas
+            or not any(
+                location_in_work_area(pickup, work_area)
+                for work_area in work_areas
+            )
+            or not any(
+                location_in_work_area(delivery, work_area)
+                for work_area in work_areas
+            )
             or not _homeward_offer_allowed(
                 rider,
                 application,

@@ -140,6 +140,8 @@ def unread_notifications_count(request):
             "is_public_rider_portal": False,
             "public_rider_online": None,
             "public_rider_offer_count": 0,
+            "has_rider_access": False,
+            "can_review_rider_payments": False,
             "is_customer_portal": True,
             "staff_permissions": None,
             "active_portal": active_portal,
@@ -185,10 +187,20 @@ def unread_notifications_count(request):
             )
             .count()
         )
-    staff_membership = ShopStaff.objects.filter(
+    staff_memberships = ShopStaff.objects.filter(
         user=request.user,
         is_active=True,
-    ).select_related("shop").first()
+        is_public_rider=False,
+    ).select_related("shop")
+    staff_membership = staff_memberships.first()
+    has_rider_access = bool(
+        is_public_rider_portal
+        or staff_memberships.filter(role="RIDER").exists()
+    )
+    can_review_rider_payments = staff_memberships.filter(
+        role="PAYMENT_MANAGER",
+        can_confirm_rider_payments=True,
+    ).exists()
     owns_shops = Shop.objects.filter(owner=request.user).exists()
     has_shop_staff_access = staff_membership is not None
     is_staff_portal = active_portal == "SHOP_STAFF" and staff_membership is not None
@@ -239,6 +251,8 @@ def unread_notifications_count(request):
         ),
         "is_customer_portal": is_customer_portal,
         "staff_permissions": staff_membership,
+        "has_rider_access": has_rider_access,
+        "can_review_rider_payments": can_review_rider_payments,
         "active_portal": active_portal,
         "mobile_app_customer_no_zoom": mobile_app_customer_no_zoom,
         "mobile_app_content_zoom_enabled": mobile_app_content_zoom_enabled,

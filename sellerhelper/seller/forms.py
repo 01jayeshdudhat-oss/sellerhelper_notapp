@@ -13,12 +13,15 @@ from django.db.models import Q
 from .models import (
     AdminProductCatalog,
     MarketplaceLayoutSettings,
+    ProductCloneSettings,
+    PRODUCT_CLONE_FIELD_CHOICES,
     PublicRiderApplication,
     SiteBrandingSettings,
     SiteThemeSettings,
     Order,
     Product,
     ProductCategory,
+    ProductShop,
     SharedRiderGroup,
     Shop,
     SHOP_STOREFRONT_RESERVED_SLUGS,
@@ -200,6 +203,12 @@ class ShopForm(forms.ModelForm):
         error_messages={"required": "Choose a unique shop subdomain."},
     )
 
+    shop_category = forms.ChoiceField(
+        required=False,
+        choices=(),
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+
     class Meta:
         model = Shop
 
@@ -235,6 +244,29 @@ class ShopForm(forms.ModelForm):
         if require_legal_acceptance is None:
             require_legal_acceptance = not bool(self.instance.pk)
         self.fields["accept_legal_documents"].required = require_legal_acceptance
+
+        category_rows = list(
+            ProductCategory.objects.filter(is_active=True)
+            .order_by("sort_order", "name")
+            .values_list("name", "market_category")
+        )
+        category_names = {name for name, _market in category_rows}
+        choices = [("", "Select a category")]
+        choices.extend((name, name) for name, _market in category_rows)
+        choices.extend(
+            (name, label)
+            for name, label in Shop.SHOP_CATEGORY_CHOICES
+            if name not in category_names
+        )
+        current_category = self.instance.shop_category
+        if current_category and current_category not in {
+            value for value, _label in choices
+        }:
+            choices.append((current_category, current_category))
+        self.fields["shop_category"].choices = choices
+        self.category_market_map = {
+            name: market for name, market in category_rows
+        }
 
         widgets = {
             "name": forms.TextInput(attrs={
@@ -347,6 +379,29 @@ class ShopForm(forms.ModelForm):
             if configured_input_type:
                 field_widget.input_type = configured_input_type
 
+    def _get_validation_exclusions(self):
+        exclusions = super()._get_validation_exclusions()
+        exclusions.add("shop_category")
+        return exclusions
+
+    def clean_shop_category(self):
+        category_name = self.cleaned_data["shop_category"]
+        if not category_name:
+            return category_name
+
+        category = ProductCategory.objects.filter(name=category_name).first()
+        if category is None:
+            return category_name
+        if not category.is_active and category_name != self.instance.shop_category:
+            raise ValidationError("Select an active shop category.")
+
+        market_category = self.cleaned_data.get("market_category")
+        if category.market_category and category.market_category != market_category:
+            raise ValidationError(
+                "Select a shop category assigned to the chosen market."
+            )
+        return category_name
+
     def clean_storefront_slug(self):
         slug = (self.cleaned_data.get("storefront_slug") or "").strip().lower()
         if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug):
@@ -457,12 +512,18 @@ class ShopStaffForm(forms.ModelForm):
 
     username = forms.CharField(
         max_length=150,
-        required=True,
+        required=False,
     )
 
     password = forms.CharField(
         widget=forms.PasswordInput,
         required=False,
+    )
+
+    existing_staff_user = forms.ModelChoiceField(
+        queryset=User.objects.none(),
+        required=False,
+        label="Existing staff account",
     )
 
     class Meta:
@@ -482,6 +543,7 @@ class ShopStaffForm(forms.ModelForm):
             "can_assign_staff",
             "can_cancel_orders",
             "can_view_reports",
+            "can_confirm_rider_payments",
             "is_active",
         ]
 
@@ -500,6 +562,15 @@ class ShopStaffForm(forms.ModelForm):
             "placeholder": "yourname@upi",
             "autocomplete": "off",
         })
+        self.fields["existing_staff_user"].widget.attrs.update({
+            "class": "form-select",
+        })
+        self.fields["existing_staff_user"].label_from_instance = (
+            lambda user: (
+                f"{user.get_full_name() or user.username} "
+                f"(@{user.username})"
+            )
+        )
 
         if self.instance.pk:
 
@@ -510,6 +581,39 @@ class ShopStaffForm(forms.ModelForm):
             self.fields[
                 "username"
             ].disabled = True
+
+    def clean(self):
+        cleaned_data = super().clean()
+        existing_staff_user = cleaned_data.get("existing_staff_user")
+        username = cleaned_data.get("username")
+        password = cleaned_data.get("password")
+        if existing_staff_user and username:
+            self.add_error(
+                "username",
+                "Choose an existing staff account or enter a new username, not both.",
+            )
+        elif not existing_staff_user and not username:
+            self.add_error(
+                "username",
+                "Select an existing staff account or enter a username for a new assignment.",
+            )
+        elif not self.instance.pk and username:
+            user = User.objects.filter(username=username).first()
+            if (
+                user
+                and self.shop
+                and ShopStaff.objects.filter(shop=self.shop, user=user).exists()
+            ):
+                self.add_error(
+                    "username",
+                    "This account is already assigned to this shop. Edit its existing staff membership instead.",
+                )
+            elif user is None and not password:
+                self.add_error(
+                    "password",
+                    "Enter a password for a new staff account. Existing usernames can be reused without changing their password.",
+                )
+        return cleaned_data
 
     def save(self, commit=True):
 
@@ -527,17 +631,17 @@ class ShopStaffForm(forms.ModelForm):
 
         if not staff.pk:
 
-            if User.objects.filter(username=username).exists():
-                user = User.objects.get(username=username)
+            existing_user = (
+                self.cleaned_data.get("existing_staff_user")
+                or User.objects.filter(username=username).first()
+            )
+            if existing_user:
+                user = existing_user
             else:
                 user = User.objects.create_user(
                     username=username,
-                    password=password or "shopstaff@123",
+                    password=password,
                 )
-
-            if password:
-                user.set_password(password)
-                user.save()
 
             staff.user = user
 
@@ -998,6 +1102,32 @@ class ProductShopAssignmentForm(forms.Form):
             owner=owner
         )
 
+
+class ProductShopQuickEditForm(forms.ModelForm):
+    price = forms.DecimalField(
+        required=False,
+        min_value=Decimal("0"),
+        max_digits=10,
+        decimal_places=2,
+        widget=forms.NumberInput(
+            attrs={"class": "form-control form-control-sm", "min": "0", "step": "0.01"}
+        ),
+    )
+    stock = forms.DecimalField(
+        required=True,
+        min_value=Decimal("0"),
+        max_digits=14,
+        decimal_places=4,
+        widget=forms.NumberInput(
+            attrs={"class": "form-control form-control-sm", "min": "0", "step": "0.0001"}
+        ),
+    )
+
+    class Meta:
+        model = ProductShop
+        fields = ("price", "stock")
+
+
 class StorefrontProductEditForm(forms.ModelForm):
     unit_value = forms.DecimalField(
         required=False,
@@ -1428,9 +1558,18 @@ class ClientDeliveryAddressForm(forms.ModelForm):
         }
 
 class ProductCategoryForm(forms.ModelForm):
+    market_category = forms.ChoiceField(
+        choices=(
+            ("", "Select a market"),
+            *ProductCategory.MARKET_CHOICES,
+        ),
+        label="Marketplace",
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+
     class Meta:
         model = ProductCategory
-        fields = ("name", "sort_order")
+        fields = ("name", "market_category", "sort_order")
         widgets = {
             "name": forms.TextInput(attrs={
                 "class": "form-control",
@@ -1465,6 +1604,24 @@ class MarketplaceLayoutSettingsForm(forms.ModelForm):
                 "step": 1,
             }),
         }
+
+
+class ProductCloneSettingsForm(forms.ModelForm):
+    allowed_fields = forms.MultipleChoiceField(
+        choices=PRODUCT_CLONE_FIELD_CHOICES,
+        required=False,
+        widget=forms.CheckboxSelectMultiple(attrs={
+            "class": "form-check-input",
+        }),
+        help_text=(
+            "Only selected details are copied from a marketplace product. "
+            "Name and category are always used; stock always starts at zero."
+        ),
+    )
+
+    class Meta:
+        model = ProductCloneSettings
+        fields = ("allowed_fields",)
 
 
 class SiteBrandingSettingsForm(forms.ModelForm):
@@ -1864,7 +2021,10 @@ class AdminProductCatalogForm(forms.ModelForm):
     product_category = forms.ChoiceField(
         choices=(),
         label="Product category",
-        widget=forms.Select(attrs={"class": "form-select"}),
+        widget=forms.Select(attrs={
+            "class": "form-select",
+            "data-catalog-product-category": "catalog-form",
+        }),
     )
 
     class Meta:
@@ -1878,6 +2038,7 @@ class AdminProductCatalogForm(forms.ModelForm):
             "image_url_4",
             "image_url_5",
             "hsn_code",
+            "sac_code",
             "gst_rate",
             "is_active",
         )
@@ -1886,6 +2047,7 @@ class AdminProductCatalogForm(forms.ModelForm):
                 "class": "form-control",
                 "placeholder": "Product name",
                 "maxlength": 200,
+                "data-hsn-product-name": "catalog-form",
             }),
             "image_url": forms.URLInput(attrs={
                 "class": "form-control",
@@ -1910,7 +2072,14 @@ class AdminProductCatalogForm(forms.ModelForm):
             "hsn_code": forms.TextInput(attrs={
                 "class": "form-control",
                 "maxlength": 8,
-                "placeholder": "4, 6, or 8 digits",
+                "placeholder": "2, 4, 6, or 8 digits",
+                "data-hsn-product-code": "catalog-form",
+            }),
+            "sac_code": forms.TextInput(attrs={
+                "class": "form-control",
+                "maxlength": 6,
+                "placeholder": "2, 4, or 6 digits",
+                "data-sac-product-code": "catalog-form",
             }),
             "gst_rate": forms.NumberInput(attrs={
                 "class": "form-control",
@@ -1938,9 +2107,15 @@ class AdminProductCatalogForm(forms.ModelForm):
 
     def clean_hsn_code(self):
         hsn_code = (self.cleaned_data.get("hsn_code") or "").strip()
-        if hsn_code and not re.fullmatch(r"\d{4}(?:\d{2}){0,2}", hsn_code):
-            raise ValidationError("Enter an HSN code with 4, 6, or 8 digits.")
+        if hsn_code and not re.fullmatch(r"\d{2}(?:\d{2}){0,3}", hsn_code):
+            raise ValidationError("Enter an HSN code with 2, 4, 6, or 8 digits.")
         return hsn_code
+
+    def clean_sac_code(self):
+        sac_code = (self.cleaned_data.get("sac_code") or "").strip()
+        if sac_code and not re.fullmatch(r"\d{2}(?:\d{2}){0,2}", sac_code):
+            raise ValidationError("Enter a SAC code with 2, 4, or 6 digits.")
+        return sac_code
 
     def clean_gst_rate(self):
         gst_rate = self.cleaned_data.get("gst_rate")

@@ -1,0 +1,193 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Panel · {{ site_branding.site_name|default:'Seller Helper' }}{% endblock %}
+
+{% block content %}
+<style>
+    .admin-panel-hero {
+        background:
+            radial-gradient(circle at 90% 10%, rgba(255,255,255,.18), transparent 30%),
+            linear-gradient(125deg, #102a43, #176b87);
+        border-radius: 24px;
+        color: #fff;
+        padding: clamp(24px, 5vw, 48px);
+        box-shadow: 0 18px 44px rgba(16, 42, 67, .18);
+    }
+    .admin-panel-card {
+        height: 100%;
+        border: 1px solid #e5eaf0;
+        border-radius: 18px;
+        background: #fff;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, .045);
+        transition: transform .18s ease, box-shadow .18s ease;
+    }
+    .admin-panel-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 14px 30px rgba(15, 23, 42, .09);
+    }
+    .admin-panel-icon {
+        display: inline-grid;
+        width: 46px;
+        height: 46px;
+        place-items: center;
+        border-radius: 14px;
+        background: #eef6ff;
+        color: #176b87;
+        font-size: 1.3rem;
+    }
+</style>
+
+<main class="container-fluid py-4 px-3 px-lg-4">
+    <section class="admin-panel-hero mb-4">
+        <div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-4">
+            <div>
+                <span class="badge rounded-pill text-bg-light text-primary mb-2">ADMINISTRATOR WORKSPACE</span>
+                <h1 class="display-6 fw-bold mb-2">Admin Panel</h1>
+                <p class="lead text-white-50 mb-0">
+                    Open platform operations, marketplace tools, user activity, and site settings from one place.
+                </p>
+            </div>
+            <a class="btn btn-light btn-lg fw-semibold flex-shrink-0" href="{% url 'admin_catalog_dashboard' %}">
+                <i class="bi bi-tags me-2"></i>Open product catalog
+            </a>
+        </div>
+    </section>
+
+    <section class="mb-4" aria-labelledby="admin-platform-heading">
+        <div class="mb-3">
+            <h2 id="admin-platform-heading" class="h4 fw-bold mb-1">Platform operations</h2>
+            <p class="text-muted mb-0">Review users, orders, shops, and platform-wide account activity.</p>
+        </div>
+        <div class="row g-3">
+            <div class="col-12 col-md-6 col-xl-4">
+                <article class="admin-panel-card p-4">
+                    <div class="admin-panel-icon mb-3"><i class="bi bi-people"></i></div>
+                    <h3 class="h5 fw-bold">User presence &amp; logins</h3>
+                    <p class="text-muted">See active users, role totals, online status, and today’s login activity.</p>
+                    <a class="btn btn-outline-primary" href="{% url 'admin_user_presence_dashboard' %}">
+                        View user activity <i class="bi bi-arrow-right ms-1"></i>
+                    </a>
+                </article>
+            </div>
+            <div class="col-12 col-md-6 col-xl-4">
+                <article class="admin-panel-card p-4">
+                    <div class="admin-panel-icon mb-3"><i class="bi bi-shop"></i></div>
+                    <h3 class="h5 fw-bold">Shops</h3>
+                    <p class="text-muted">Browse and manage shops registered on the platform.</p>
+                    <a class="btn btn-outline-primary" href="{% url 'shop_list' %}">
+                        Manage shops <i class="bi bi-arrow-right ms-1"></i>
+                    </a>
+                </article>
+            </div>
+            <div class="col-12 col-md-6 col-xl-4">
+                <article class="admin-panel-card p-4">
+                    <div class="admin-panel-icon mb-3"><i class="bi bi-receipt"></i></div>
+                    <h3 class="h5 fw-bold">Orders</h3>
+                    <p class="text-muted">Open the order workspace for platform order review.</p>
+                    <a class="btn btn-outline-primary" href="{% url 'shop_order_list' %}">
+                        View orders <i class="bi bi-arrow-right ms-1"></i>
+                    </a>
+                </article>
+            </div>
+            <div class="col-12 col-md-6 col-xl-4">
+                <article class="admin-panel-card p-4">
+                    <div class="admin-panel-icon mb-3"><i class="bi bi-person-vcard"></i></div>
+                    <h3 class="h5 fw-bold">Customers</h3>
+                    <p class="text-muted">Browse customer accounts and profile details.</p>
+                    <a class="btn btn-outline-primary" href="{% url 'client_list' %}">
+                        View customers <i class="bi bi-arrow-right ms-1"></i>
+                    </a>
+                </article>
+            </div>
+            <div class="col-12 col-md-6 col-xl-4">
+                <article class="admin-panel-card p-4">
+                    <div class="admin-panel-icon mb-3"><i class="bi bi-truck"></i></div>
+                    <h3 class="h5 fw-bold">Shared rider groups</h3>
+                    <p class="text-muted">Review rider-sharing groups and shop membership requests.</p>
+                    <a class="btn btn-outline-primary" href="{% url 'shared_rider_groups' %}">
+                        Open rider groups <i class="bi bi-arrow-right ms-1"></i>
+                    </a>
+                </article>
+            </div>
+            <div class="col-12 col-md-6 col-xl-4">
+                <article class="admin-panel-card p-4">
+                    <div class="admin-panel-icon mb-3"><i class="bi bi-sliders"></i></div>
+                    <h3 class="h5 fw-bold">Django administration</h3>
+                    <p class="text-muted">Open the framework administration for registered models and settings.</p>
+                    <a class="btn btn-outline-secondary" href="/admin/">
+                        Open Django admin <i class="bi bi-box-arrow-up-right ms-1"></i>
+                    </a>
+                </article>
+            </div>
+        </div>
+    </section>
+
+    <section class="mb-4" aria-labelledby="admin-market-heading">
+        <div class="mb-3">
+            <h2 id="admin-market-heading" class="h4 fw-bold mb-1">Marketplace &amp; catalog</h2>
+            <p class="text-muted mb-0">Manage shared products, catalog data, and marketplace settings.</p>
+        </div>
+        <div class="row g-3">
+            <div class="col-12 col-md-6 col-xl-4">
+                <article class="admin-panel-card p-4">
+                    <div class="admin-panel-icon mb-3"><i class="bi bi-tags"></i></div>
+                    <h3 class="h5 fw-bold">Shared product catalog</h3>
+                    <p class="text-muted">Manage products, categories, HSN/SAC references, imports, and shop catalog permissions.</p>
+                    <a class="btn btn-primary" href="{% url 'admin_catalog_dashboard' %}">
+                        Manage catalog <i class="bi bi-arrow-right ms-1"></i>
+                    </a>
+                </article>
+            </div>
+            <div class="col-12 col-md-6 col-xl-4">
+                <article class="admin-panel-card p-4">
+                    <div class="admin-panel-icon mb-3"><i class="bi bi-plus-square"></i></div>
+                    <h3 class="h5 fw-bold">Add catalog product</h3>
+                    <p class="text-muted">Create a shared marketplace product entry.</p>
+                    <a class="btn btn-outline-primary" href="{% url 'admin_catalog_product_create' %}">
+                        Add product <i class="bi bi-arrow-right ms-1"></i>
+                    </a>
+                </article>
+            </div>
+            <div class="col-12 col-md-6 col-xl-4">
+                <article class="admin-panel-card p-4">
+                    <div class="admin-panel-icon mb-3"><i class="bi bi-download"></i></div>
+                    <h3 class="h5 fw-bold">Export catalog</h3>
+                    <p class="text-muted">Download the current shared product catalog for offline editing or backup.</p>
+                    <a class="btn btn-outline-primary" href="{% url 'admin_catalog_product_export' %}">
+                        Export products <i class="bi bi-download ms-1"></i>
+                    </a>
+                </article>
+            </div>
+            <div class="col-12 col-md-6 col-xl-4">
+                <article class="admin-panel-card p-4">
+                    <div class="admin-panel-icon mb-3"><i class="bi bi-box-seam"></i></div>
+                    <h3 class="h5 fw-bold">Shop products</h3>
+                    <p class="text-muted">Browse individual shop product listings and stock.</p>
+                    <a class="btn btn-outline-primary" href="{% url 'product_list' %}">
+                        View products <i class="bi bi-arrow-right ms-1"></i>
+                    </a>
+                </article>
+            </div>
+        </div>
+    </section>
+
+    <section aria-labelledby="admin-settings-heading">
+        <div class="mb-3">
+            <h2 id="admin-settings-heading" class="h4 fw-bold mb-1">Site settings</h2>
+            <p class="text-muted mb-0">Update the appearance and experience of the storefront.</p>
+        </div>
+        <div class="row g-3">
+            <div class="col-12 col-md-6 col-xl-4">
+                <article class="admin-panel-card p-4">
+                    <div class="admin-panel-icon mb-3"><i class="bi bi-palette"></i></div>
+                    <h3 class="h5 fw-bold">Theme &amp; page builder</h3>
+                    <p class="text-muted">Customize site branding, colors, and page sections.</p>
+                    <a class="btn btn-outline-primary" href="{% url 'admin_site_theme_builder' %}">
+                        Customize site <i class="bi bi-arrow-right ms-1"></i>
+                    </a>
+                </article>
+            </div>
+        </div>
+    </section>
+</main>
+{% endblock %}

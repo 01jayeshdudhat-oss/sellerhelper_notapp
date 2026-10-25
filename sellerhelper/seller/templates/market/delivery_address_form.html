@@ -443,7 +443,11 @@
 
 <script>
 
-document.addEventListener("DOMContentLoaded", function () {
+function initializeDeliveryAddressMap() {
+    const mapElement = document.getElementById("map");
+    if (!mapElement || mapElement.dataset.mapInitialized === "true") {
+        return;
+    }
 
     /*
     |--------------------------------------------------------------------------
@@ -501,8 +505,9 @@ document.addEventListener("DOMContentLoaded", function () {
         mapAccessStatus.textContent = "The map library could not load. Check network access and reload this page.";
         return;
     }
+    mapElement.dataset.mapInitialized = "true";
 
-    const map = L.map("map").setView(
+    const map = L.map(mapElement).setView(
         [defaultLat, defaultLng],
         existingLat ? 16 : 5
     );
@@ -536,6 +541,9 @@ document.addEventListener("DOMContentLoaded", function () {
             mapAccessStatus.textContent = "";
         });
     });
+    window.setTimeout(function () {
+        map.invalidateSize({pan: false});
+    }, 0);
 
     let marker = null;
 
@@ -1090,7 +1098,15 @@ document.addEventListener("DOMContentLoaded", function () {
 
     }
 
-});
+}
+
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initializeDeliveryAddressMap, {
+        once: true,
+    });
+} else {
+    initializeDeliveryAddressMap();
+}
 
 </script>
 

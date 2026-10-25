@@ -99,6 +99,10 @@
                         </label>
 
                         {{ form.shop_category }}
+                        <div class="form-text">Categories are managed by the administrator and match the selected market.</div>
+                        {% for error in form.shop_category.errors %}
+                            <div class="text-danger small">{{ error }}</div>
+                        {% endfor %}
 
                     </div>
 
@@ -572,6 +576,7 @@
 </script>
 
 {{ pickup_locations_data|json_script:"existing-pickup-locations" }}
+{{ form.category_market_map|json_script:"shop-category-market-map" }}
 
 <script>
 
@@ -1712,6 +1717,30 @@ document.getElementById(
 {{ block.super }}
 <script>
 (() => {
+    const marketSelect = document.getElementById("id_market_category");
+    const categorySelect = document.getElementById("id_shop_category");
+    const categoryMarketsElement = document.getElementById("shop-category-market-map");
+    if (marketSelect && categorySelect && categoryMarketsElement) {
+        const categoryMarkets = JSON.parse(categoryMarketsElement.textContent);
+        const filterCategories = (clearMismatch) => {
+            const selectedMarket = marketSelect.value;
+            let selectedCategoryIsHidden = false;
+            for (const option of categorySelect.options) {
+                const categoryMarket = categoryMarkets[option.value];
+                const isHidden = Boolean(
+                    option.value &&
+                    categoryMarket &&
+                    categoryMarket !== selectedMarket
+                );
+                option.hidden = isHidden;
+                if (option.selected && isHidden) selectedCategoryIsHidden = true;
+            }
+            if (clearMismatch && selectedCategoryIsHidden) categorySelect.value = "";
+        };
+        filterCategories(false);
+        marketSelect.addEventListener("change", () => filterCategories(true));
+    }
+
     const slugInput = document.getElementById("id_storefront_slug");
     const status = document.getElementById("storefrontSlugStatus");
     if (!slugInput || !status) return;

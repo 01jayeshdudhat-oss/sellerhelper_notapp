@@ -1,38 +1,43 @@
 <div class="row g-3">
     {% for order in displayed_orders %}
         <div class="col-12">
-            <article class="card border-0 shadow-sm">
+            <article class="card customer-order-card" data-customer-order-card>
                 <div class="card-body p-4">
                     <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
-                        <div>
-                            <h2 class="h5 fw-bold mb-1">Order {{ order.tracking_code|default:order.order_id }}</h2>
-                            {% if order.tracking_code %}
-                                <div class="small text-muted">Order number: {{ order.order_id }}</div>
-                            {% endif %}
-                            <div class="small text-muted">{{ order.created_at|date:"d M Y, h:i A" }}</div>
-                            {% if order.cancellation_source == "CUSTOMER" %}
-                                <span class="badge text-bg-secondary mt-2">Cancelled by you</span>
-                            {% elif order.cancellation_source == "SHOP" %}
-                                <span class="badge text-bg-warning mt-2">Cancelled by shop</span>
-                            {% endif %}
+                        <div class="customer-order-heading">
+                            <div class="customer-order-icon" aria-hidden="true"><i class="bi bi-bag-check"></i></div>
+                            <div>
+                                <h2 class="customer-order-number mb-1">Order {{ order.tracking_code|default:order.order_id }}</h2>
+                                {% if order.tracking_code %}
+                                    <div class="customer-order-meta">Order number: {{ order.order_id }}</div>
+                                {% endif %}
+                                <div class="customer-order-meta"><i class="bi bi-calendar3 me-1" aria-hidden="true"></i>Placed {{ order.created_at|date:"d M Y, h:i A" }}</div>
+                                {% if order.cancellation_source == "CUSTOMER" %}
+                                    <span class="badge text-bg-secondary mt-2">Cancelled by you</span>
+                                {% elif order.cancellation_source == "SHOP" %}
+                                    <span class="badge text-bg-warning mt-2">Cancelled by shop</span>
+                                {% endif %}
+                            </div>
                         </div>
-                        <div class="text-end">
-                            <div class="fw-bold fs-5">₹{{ order.final_billing_amount|floatformat:2 }}</div>
-                            <small class="text-muted">{% if order.is_payment_done %}Paid{% else %}{{ order.payment_status }}{% endif %}</small>
+                        <div class="text-start text-sm-end ms-auto">
+                            <div class="customer-order-total">₹{{ order.final_billing_amount|floatformat:2 }}</div>
+                            <small class="customer-order-payment"><i class="bi bi-shield-check me-1" aria-hidden="true"></i>{% if order.is_payment_done %}Paid{% else %}{{ order.payment_status }}{% endif %}</small>
                         </div>
                     </div>
 
-                    <div class="border-top mt-3 pt-3">
-                        <div class="fw-semibold mb-2">Delivery status</div>
+                    <div class="customer-order-section">
+                        <div class="customer-order-section-label"><i class="bi bi-geo-alt me-1" aria-hidden="true"></i>Delivery address</div>
+                        <div class="customer-order-address" data-order-delivery-address>{{ order.delivery_address }}</div>
+                        <div class="customer-order-section-label mt-4"><i class="bi bi-truck me-1" aria-hidden="true"></i>Shop progress</div>
                         {% for shop_order in order.shop_orders_list %}
-                            <div class="d-flex flex-wrap justify-content-between gap-2 border-bottom py-2">
-                                <span>{{ shop_order.shop.name }} · #{{ shop_order.shop_order_number|default:shop_order.order.order_id }}</span>
-                                <span class="badge text-bg-light border text-dark">{{ shop_order.get_status_display|default:shop_order.status }}</span>
+                            <div class="customer-order-shop-row">
+                                <span class="customer-order-shop-name">{{ shop_order.shop.name }} <span class="text-muted fw-normal">· #{{ shop_order.shop_order_number|default:shop_order.order.order_id }}</span></span>
+                                <span class="customer-order-status" data-status="{{ shop_order.status }}">{{ shop_order.get_status_display|default:shop_order.status }}</span>
                             </div>
                         {% endfor %}
                     </div>
 
-                    <div class="d-flex flex-wrap gap-2 mt-3">
+                    <div class="customer-order-actions">
                         <a href="{% url 'order_tracking' order.tracking_code|default:order.order_id %}" class="btn btn-primary">
                             <i class="bi bi-geo-alt me-1"></i>Track order
                         </a>
@@ -41,29 +46,28 @@
                                 <i class="bi bi-pencil me-1"></i>Edit items
                             </a>
                         {% endif %}
-                        <form method="post" action="{% url 'customer_reorder' order.order_id %}">
+                        <form method="post" action="{% url 'customer_reorder' order.order_id %}" data-customer-order-action="reorder">
                             {% csrf_token %}
                             <button class="btn btn-outline-success" type="submit">
                                 <i class="bi bi-arrow-repeat me-1"></i>Reorder available items
                             </button>
                         </form>
                         {% if order.can_customer_cancel %}
-                            <form method="post" action="{% url 'customer_cancel_order' order.order_id %}"
-                                  onsubmit="return confirm('Cancel this order? Any wallet balance used will be restored, and an online payment refund will be requested.');">
+                            <form method="post" action="{% url 'customer_cancel_order' order.order_id %}" data-customer-order-action="cancel">
                                 {% csrf_token %}
-                                <button class="btn btn-outline-danger" type="submit">Cancel order</button>
+                                <button class="btn btn-outline-danger" type="submit"><i class="bi bi-x-circle me-1"></i>Cancel order</button>
                             </form>
                         {% endif %}
                         {% if order.can_change_address %}
                             <button class="btn btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#address-{{ forloop.counter }}">
-                                Change delivery address
+                                <i class="bi bi-pin-map me-1"></i>Change address
                             </button>
                         {% endif %}
                     </div>
 
                     {% if order.can_change_address %}
                         <div class="collapse mt-3" id="address-{{ forloop.counter }}">
-                            <form method="post" action="{% url 'customer_change_order_address' order.order_id %}" class="border rounded p-3 bg-light">
+                            <form method="post" action="{% url 'customer_change_order_address' order.order_id %}" class="border rounded p-3 bg-light" data-customer-order-action="address">
                                 {% csrf_token %}
                                 <label class="form-label" for="address-{{ order.id }}">Choose a saved address</label>
                                 <div class="d-flex flex-wrap gap-2">
@@ -87,9 +91,9 @@
                                 {% for shop_order in order.shop_orders_list %}
                                     {% if shop_order.status == "DELIVERED" %}
                                         <div class="col-lg-6">
-                                            <div class="border rounded p-3 h-100">
+                                            <div class="border rounded-4 p-3 h-100 bg-light">
                                                 <div class="fw-semibold mb-2">{{ shop_order.shop.name }}</div>
-                                                <form method="post" action="{% url 'customer_order_feedback' order.order_id %}">
+                                                <form method="post" action="{% url 'customer_order_feedback' order.order_id %}" data-customer-order-action="feedback">
                                                     {% csrf_token %}
                                                     <input type="hidden" name="shop_order_id" value="{{ shop_order.id }}">
                                                     <input type="hidden" name="feedback_type" value="COMPLAINT">
@@ -98,7 +102,7 @@
                                                     <button class="btn btn-sm btn-outline-warning" type="submit">Submit complaint</button>
                                                 </form>
                                                 {% for item in shop_order.order_items.all %}
-                                                    <form method="post" action="{% url 'customer_order_feedback' order.order_id %}" class="mt-3">
+                                                    <form method="post" action="{% url 'customer_order_feedback' order.order_id %}" class="mt-3" data-customer-order-action="feedback">
                                                         {% csrf_token %}
                                                         <input type="hidden" name="shop_order_id" value="{{ shop_order.id }}">
                                                         <input type="hidden" name="order_item_id" value="{{ item.id }}">
@@ -118,11 +122,11 @@
         </div>
     {% empty %}
         <div class="col-12">
-            <div class="card border-0 shadow-sm text-center py-5">
-                <div class="display-5 mb-2">📦</div>
+            <div class="card customer-order-empty border-0 text-center py-5 px-3">
+                <div class="customer-order-empty-icon"><i class="bi bi-bag" aria-hidden="true"></i></div>
                 <h2 class="h4">No orders in this section</h2>
-                <p class="text-muted">Your new orders and updates will appear here.</p>
-                <a href="{% url 'marketplace' %}" class="btn btn-success mx-auto">Browse marketplace</a>
+                <p class="text-muted mb-4">When you place an order, its status and delivery details will show up here.</p>
+                <a href="{% url 'marketplace' %}" class="btn btn-success mx-auto"><i class="bi bi-shop me-1" aria-hidden="true"></i>Browse marketplace</a>
             </div>
         </div>
     {% endfor %}

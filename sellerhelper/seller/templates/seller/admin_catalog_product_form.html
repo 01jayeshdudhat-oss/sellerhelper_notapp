@@ -4,7 +4,7 @@
 
 {% block content %}
 <div class="container" style="max-width: 920px;">
-    <a href="{% url 'admin_catalog_dashboard' %}" class="btn btn-link text-decoration-none px-0 mb-3">
+    <a href="{{ return_to }}" class="btn btn-link text-decoration-none px-0 mb-3">
         <i class="bi bi-arrow-left me-1"></i>Back to catalog
     </a>
     <section class="bg-white border rounded-4 shadow-sm p-3 p-md-4">
@@ -15,10 +15,11 @@
         </div>
         <form method="post" novalidate>
             {% csrf_token %}
+            {% if return_to %}<input type="hidden" name="return_to" value="{{ return_to }}">{% endif %}
             {% if form.non_field_errors %}<div class="alert alert-danger">{{ form.non_field_errors }}</div>{% endif %}
             <div class="row g-3">
                 {% for field in form %}
-                    <div class="{% if field.name == 'is_active' %}col-12{% else %}col-12 col-md-6{% endif %}">
+                    <div class="{% if field.name == 'is_active' %}col-12{% else %}col-12 col-md-6{% endif %}{% if field.name == 'hsn_code' %} catalog-code-field-hsn{% elif field.name == 'sac_code' %} catalog-code-field-sac{% endif %}">
                         {% if field.name == "is_active" %}
                             <div class="form-check form-switch mt-2">
                                 {{ field }}
@@ -27,6 +28,15 @@
                         {% else %}
                             <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
                             {{ field }}
+                            {% if field.name == "hsn_code" %}
+                                <div data-hsn-code-container="catalog-form">
+                                    <div class="small mt-1" data-hsn-suggestions="catalog-form" data-suggestions-url="{% url 'admin_catalog_hsn_suggestions' %}" role="listbox"></div>
+                                </div>
+                            {% elif field.name == "sac_code" %}
+                                <div data-sac-code-container="catalog-form">
+                                    <div class="small mt-1" data-sac-suggestions="catalog-form" data-suggestions-url="{% url 'admin_catalog_sac_suggestions' %}" role="listbox"></div>
+                                </div>
+                            {% endif %}
                         {% endif %}
                         {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
                         {% for error in field.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
@@ -40,4 +50,6 @@
         </form>
     </section>
 </div>
+{{ category_market_map|json_script:"catalog-category-market-map" }}
+{% include "seller/_admin_catalog_hsn_suggestions.html" %}
 {% endblock %}

@@ -2,18 +2,336 @@
 
 {% block title %}My Orders{% endblock %}
 
+{% block extra_css %}
+<style>
+    .customer-orders-page {
+        --orders-ink: #172b4d;
+        --orders-muted: #66758b;
+        --orders-line: #e7edf5;
+        max-width: 1040px;
+        color: var(--orders-ink);
+    }
+    .orders-hero {
+        position: relative;
+        overflow: hidden;
+        border: 1px solid #e0e9f6;
+        border-radius: 24px;
+        background:
+            radial-gradient(circle at 95% 5%, rgba(75, 137, 255, .18), transparent 30%),
+            linear-gradient(120deg, #f8fbff 0%, #edf4ff 54%, #f6f1ff 100%);
+        padding: clamp(22px, 4vw, 36px);
+    }
+    .orders-hero::after {
+        position: absolute;
+        right: -34px;
+        bottom: -98px;
+        width: 230px;
+        height: 230px;
+        border: 1px solid rgba(54, 107, 191, .12);
+        border-radius: 50%;
+        content: "";
+        pointer-events: none;
+    }
+    .orders-hero-copy,
+    .orders-summary {
+        position: relative;
+        z-index: 1;
+    }
+    .orders-eyebrow {
+        color: #526e97;
+        font-size: .75rem;
+        font-weight: 800;
+        letter-spacing: .12em;
+        text-transform: uppercase;
+    }
+    .orders-hero h1 {
+        color: #18345d;
+        letter-spacing: -.04em;
+    }
+    .orders-summary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 24px;
+    }
+    .orders-summary-item {
+        min-width: 126px;
+        padding: 11px 15px;
+        border: 1px solid rgba(208, 221, 241, .9);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, .76);
+    }
+    .orders-summary-number {
+        color: #1e477f;
+        font-size: 1.2rem;
+        font-weight: 800;
+        line-height: 1.2;
+    }
+    .orders-summary-label {
+        margin-top: 3px;
+        color: var(--orders-muted);
+        font-size: .75rem;
+    }
+    .orders-category-nav {
+        display: flex;
+        gap: 8px;
+        overflow-x: auto;
+        padding: 5px 2px 10px;
+        scrollbar-width: thin;
+    }
+    .orders-category-nav .nav-link {
+        display: inline-flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 9px;
+        min-height: 44px;
+        padding: 9px 14px;
+        border: 1px solid var(--orders-line);
+        border-radius: 14px;
+        background: #fff;
+        color: #4b5d75;
+        font-size: .88rem;
+        font-weight: 700;
+        transition: border-color .18s ease, background-color .18s ease, transform .18s ease;
+    }
+    .orders-category-nav .nav-link:hover {
+        border-color: #b8ccef;
+        transform: translateY(-1px);
+    }
+    .orders-category-nav .nav-link.active {
+        border-color: #245db5;
+        background: #245db5;
+        box-shadow: 0 5px 14px rgba(36, 93, 181, .18);
+        color: #fff;
+    }
+    .orders-category-nav .badge {
+        min-width: 24px;
+        border-radius: 999px;
+        background: #edf2f8 !important;
+        color: #465872 !important;
+        font-weight: 800;
+    }
+    .orders-category-nav .active .badge {
+        background: rgba(255, 255, 255, .2) !important;
+        color: #fff !important;
+    }
+    .customer-order-card {
+        overflow: hidden;
+        border: 1px solid var(--orders-line) !important;
+        border-radius: 20px;
+        background: #fff;
+        box-shadow: 0 8px 28px rgba(31, 57, 92, .06) !important;
+        transition: box-shadow .2s ease, transform .2s ease;
+    }
+    .customer-order-card:hover {
+        box-shadow: 0 14px 34px rgba(31, 57, 92, .1) !important;
+        transform: translateY(-2px);
+    }
+    .customer-order-card .card-body {
+        padding: clamp(18px, 3vw, 28px) !important;
+    }
+    .customer-order-heading {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+    .customer-order-icon {
+        display: grid;
+        flex: 0 0 44px;
+        width: 44px;
+        height: 44px;
+        place-items: center;
+        border-radius: 14px;
+        background: #edf4ff;
+        color: #2860aa;
+        font-size: 1.2rem;
+    }
+    .customer-order-number {
+        color: #1b3558;
+        font-size: 1.03rem;
+        font-weight: 800;
+        letter-spacing: -.015em;
+        overflow-wrap: anywhere;
+    }
+    .customer-order-meta {
+        color: var(--orders-muted);
+        font-size: .8rem;
+        line-height: 1.55;
+    }
+    .customer-order-total {
+        color: #1b3558;
+        font-size: 1.35rem;
+        font-weight: 800;
+        letter-spacing: -.03em;
+    }
+    .customer-order-payment {
+        color: var(--orders-muted);
+        font-size: .78rem;
+    }
+    .customer-order-section {
+        margin-top: 20px;
+        padding-top: 17px;
+        border-top: 1px solid #edf1f6;
+    }
+    .customer-order-section-label {
+        margin-bottom: 10px;
+        color: #738198;
+        font-size: .72rem;
+        font-weight: 800;
+        letter-spacing: .09em;
+        text-transform: uppercase;
+    }
+    .customer-order-address {
+        padding: 12px 14px;
+        border: 1px solid #e9eff7;
+        border-radius: 13px;
+        background: #f8faff;
+        color: #40536d;
+        font-size: .87rem;
+        overflow-wrap: anywhere;
+    }
+    .customer-order-shop-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 11px 0;
+        border-bottom: 1px solid #eff2f6;
+    }
+    .customer-order-shop-row:last-child {
+        border-bottom: 0;
+        padding-bottom: 0;
+    }
+    .customer-order-shop-name {
+        color: #344b68;
+        font-size: .88rem;
+        font-weight: 700;
+    }
+    .customer-order-status {
+        max-width: 100%;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: #edf3fa;
+        color: #49627f;
+        font-size: .72rem;
+        font-weight: 800;
+        white-space: nowrap;
+    }
+    .customer-order-status[data-status="DELIVERED"],
+    .customer-order-status[data-status="COMPLETED"] {
+        background: #e7f7ef;
+        color: #187548;
+    }
+    .customer-order-status[data-status="CANCELLED"] {
+        background: #f1f2f4;
+        color: #687386;
+    }
+    .customer-order-status[data-status="OUT_FOR_DELIVERY"] {
+        background: #e9f2ff;
+        color: #245db5;
+    }
+    .customer-order-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 9px;
+        margin-top: 20px;
+    }
+    .customer-order-actions > form {
+        margin: 0;
+    }
+    .customer-order-actions .btn {
+        min-height: 40px;
+        border-radius: 11px;
+        font-size: .84rem;
+        font-weight: 700;
+    }
+    .customer-order-empty {
+        border: 1px dashed #cbd8e9 !important;
+        border-radius: 20px;
+        background: linear-gradient(145deg, #fbfdff, #f3f7fc);
+    }
+    .customer-order-empty-icon {
+        display: grid;
+        width: 64px;
+        height: 64px;
+        margin: 0 auto 14px;
+        place-items: center;
+        border-radius: 20px;
+        background: #e8f1ff;
+        color: #2860aa;
+        font-size: 1.8rem;
+    }
+    #customer-order-action-status {
+        border-radius: 13px;
+    }
+    @media (max-width: 575.98px) {
+        .customer-orders-page {
+            padding-right: 12px;
+            padding-left: 12px;
+        }
+        .orders-hero {
+            border-radius: 19px;
+        }
+        .orders-summary-item {
+            flex: 1 1 28%;
+            min-width: 0;
+            padding: 10px 11px;
+        }
+        .customer-order-heading {
+            align-items: flex-start;
+            gap: 9px;
+        }
+        .customer-order-icon {
+            flex-basis: 38px;
+            width: 38px;
+            height: 38px;
+            border-radius: 12px;
+        }
+        .customer-order-total {
+            font-size: 1.16rem;
+        }
+        .customer-order-actions .btn {
+            padding-right: 11px;
+            padding-left: 11px;
+        }
+    }
+</style>
+{% endblock %}
+
 {% block content %}
-<div class="container py-4">
-    <div class="mb-4">
-        <h1 class="h2 fw-bold mb-1">My orders</h1>
-        <p class="text-muted mb-0">Track deliveries, update eligible orders, and revisit past purchases.</p>
+<div class="container customer-orders-page py-4">
+    <div id="customer-order-action-status" class="alert d-none" role="status" aria-live="polite"></div>
+    <div class="orders-hero mb-4">
+        <div class="orders-hero-copy">
+            <div class="orders-eyebrow mb-2">Your purchases, all in one place</div>
+            <h1 class="h2 fw-bold mb-2">My orders</h1>
+            <p class="text-secondary mb-0">Follow every shop, see delivery progress, and manage your orders with ease.</p>
+        </div>
+        <div class="orders-summary" aria-label="Order summary">
+            <div class="orders-summary-item">
+                <div class="orders-summary-number" data-order-count="active" data-count="{{ order_groups.active|length }}">{{ order_groups.active|length }}</div>
+                <div class="orders-summary-label">On the way / processing</div>
+            </div>
+            <div class="orders-summary-item">
+                <div class="orders-summary-number">{{ order_groups.delivered|length }}</div>
+                <div class="orders-summary-label">Delivered</div>
+            </div>
+            <div class="orders-summary-item">
+                <div class="orders-summary-number" data-order-count="cancelled_customer" data-count="{{ order_groups.cancelled_customer|length }}">{{ order_groups.cancelled_customer|length }}</div>
+                <div class="orders-summary-label">Cancelled by you</div>
+            </div>
+            <div class="orders-summary-item">
+                <div class="orders-summary-number">{{ order_groups.cancelled_shop|length }}</div>
+                <div class="orders-summary-label">Cancelled by shop</div>
+            </div>
+        </div>
     </div>
 
-    <nav class="nav nav-pills flex-nowrap overflow-auto gap-2 mb-4" aria-label="Order categories">
-        <a class="nav-link {% if active_tab == 'active' %}active{% endif %}" href="?tab=active">Undelivered <span class="badge text-bg-light">{{ order_groups.active|length }}</span></a>
-        <a class="nav-link {% if active_tab == 'delivered' %}active{% endif %}" href="?tab=delivered">Delivered <span class="badge text-bg-light">{{ order_groups.delivered|length }}</span></a>
-        <a class="nav-link {% if active_tab == 'cancelled_customer' %}active{% endif %}" href="?tab=cancelled_customer">Cancelled by me <span class="badge text-bg-light">{{ order_groups.cancelled_customer|length }}</span></a>
-        <a class="nav-link {% if active_tab == 'cancelled_shop' %}active{% endif %}" href="?tab=cancelled_shop">Cancelled by shop <span class="badge text-bg-light">{{ order_groups.cancelled_shop|length }}</span></a>
+    <nav class="orders-category-nav mb-3" aria-label="Order categories">
+        <a class="nav-link {% if active_tab == 'active' %}active{% endif %}" href="?tab=active"><i class="bi bi-box-seam" aria-hidden="true"></i>Active <span class="badge" data-order-count="active" data-count="{{ order_groups.active|length }}">{{ order_groups.active|length }}</span></a>
+        <a class="nav-link {% if active_tab == 'delivered' %}active{% endif %}" href="?tab=delivered"><i class="bi bi-check2-circle" aria-hidden="true"></i>Delivered <span class="badge">{{ order_groups.delivered|length }}</span></a>
+        <a class="nav-link {% if active_tab == 'cancelled_customer' %}active{% endif %}" href="?tab=cancelled_customer"><i class="bi bi-x-circle" aria-hidden="true"></i>Cancelled by me <span class="badge" data-order-count="cancelled_customer" data-count="{{ order_groups.cancelled_customer|length }}">{{ order_groups.cancelled_customer|length }}</span></a>
+        <a class="nav-link {% if active_tab == 'cancelled_shop' %}active{% endif %}" href="?tab=cancelled_shop"><i class="bi bi-shop" aria-hidden="true"></i>Cancelled by shop <span class="badge">{{ order_groups.cancelled_shop|length }}</span></a>
     </nav>
 
     {% if active_tab == "delivered" %}
@@ -34,4 +352,99 @@
         {% endwith %}
     {% endif %}
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(() => {
+    const status = document.getElementById("customer-order-action-status");
+    const announce = (message, kind = "success") => {
+        if (!status) return;
+        status.textContent = message;
+        status.className = `alert alert-${kind}`;
+        status.scrollIntoView({behavior: "smooth", block: "nearest"});
+    };
+    const adjustOrderCounts = (activeDelta, cancelledDelta) => {
+        [["active", activeDelta], ["cancelled_customer", cancelledDelta]].forEach(([tab, delta]) => {
+            document.querySelectorAll(`[data-order-count="${tab}"]`).forEach((counter) => {
+                const count = Math.max(0, Number(counter.dataset.count) + delta);
+                counter.dataset.count = String(count);
+                counter.textContent = String(count);
+            });
+        });
+    };
+
+    document.addEventListener("submit", async (event) => {
+        const form = event.target.closest("[data-customer-order-action]");
+        if (!form) return;
+        event.preventDefault();
+        if (form.dataset.customerOrderAction === "cancel" && !window.confirm(
+            "Cancel this order? Any wallet balance used will be restored, and an online payment refund will be requested."
+        )) return;
+
+        const action = form.dataset.customerOrderAction;
+        const orderCard = form.closest("[data-customer-order-card]");
+        const orderContainer = orderCard?.closest(".col-12") || orderCard;
+        const orderParent = orderContainer?.parentNode;
+        const submitButtons = Array.from(form.querySelectorAll('button[type="submit"], button:not([type])'));
+        const originalLabels = submitButtons.map((button) => button.textContent);
+        const originalAddress = orderCard?.querySelector("[data-order-delivery-address]")?.textContent;
+        const selectedAddress = action === "address"
+            ? form.querySelector('select[name="address_id"] option:checked')?.textContent
+            : null;
+        const nextSibling = orderContainer?.nextSibling;
+
+        submitButtons.forEach((button) => {
+            button.disabled = true;
+            button.textContent = action === "cancel" ? "Cancelling…" : "Please wait…";
+        });
+        if (action === "cancel" && orderContainer) {
+            orderContainer.remove();
+            adjustOrderCounts(-1, 1);
+            announce("Cancelling order…", "info");
+        } else if (action === "address" && selectedAddress && orderCard) {
+            const output = orderCard.querySelector("[data-order-delivery-address]");
+            if (output) output.textContent = selectedAddress;
+        }
+
+        try {
+            const response = await fetch(form.action, {
+                method: "POST",
+                body: new FormData(form),
+                headers: {"X-Requested-With": "XMLHttpRequest"},
+                credentials: "same-origin",
+            });
+            const result = await response.json();
+            if (!response.ok || !result.success) {
+                throw new Error(result.message || "The request could not be completed.");
+            }
+            announce(result.message);
+            if (action === "reorder" && result.redirect_url) {
+                window.location.assign(result.redirect_url);
+                return;
+            }
+            if (action === "feedback") {
+                submitButtons.forEach((button) => {
+                    button.textContent = "Submitted";
+                    button.classList.add("btn-success");
+                });
+            }
+        } catch (error) {
+            if (action === "cancel" && orderContainer) {
+                orderParent?.insertBefore(orderContainer, nextSibling);
+                adjustOrderCounts(1, -1);
+            }
+            if (action === "address" && orderCard && originalAddress !== undefined) {
+                const output = orderCard.querySelector("[data-order-delivery-address]");
+                if (output) output.textContent = originalAddress;
+            }
+            submitButtons.forEach((button, index) => {
+                button.disabled = false;
+                button.textContent = originalLabels[index];
+            });
+            announce(error.message || "The request failed. Please try again.", "danger");
+        }
+    });
+})();
+</script>
 {% endblock %}

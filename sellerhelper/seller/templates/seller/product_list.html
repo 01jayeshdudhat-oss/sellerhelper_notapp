@@ -268,12 +268,14 @@
 
     </div>
 
-    <a
-        href="{% url 'product_create' %}"
-        class="btn btn-primary"
-    >
-        ➕ New Product
-    </a>
+    <div class="d-flex flex-wrap gap-2">
+        <a href="{% url 'add_marketplace_products' %}" class="btn btn-outline-primary">
+            <i class="bi bi-bag-plus me-1"></i>Add from marketplace
+        </a>
+        <a href="{% url 'product_create' %}" class="btn btn-primary">
+            ➕ New Product
+        </a>
+    </div>
 
 </div>
 
@@ -292,20 +294,36 @@
                 </div>
                 <div class="small text-muted mt-1" data-voice-search-status role="status" aria-live="polite"></div>
             </div>
-            <div class="col-12 col-sm-8 col-lg-4">
+            <div class="col-12 col-sm-6 col-lg-3">
+                <label for="productShop" class="form-label">Shop</label>
+                <select id="productShop" name="shop" class="form-select">
+                    <option value="">All shops</option>
+                    {% for shop in shops %}
+                        <option value="{{ shop.pk }}" {% if selected_shop and selected_shop.pk == shop.pk %}selected{% endif %}>
+                            {{ shop.name }}
+                        </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-12 col-sm-6 col-lg-3">
                 <label for="productSort" class="form-label">Sort</label>
                 <select id="productSort" name="sort" class="form-select">
                     <option value="recent" {% if not product_stock_sort %}selected{% endif %}>Recently added</option>
-                    <option value="stock_low" {% if product_stock_sort %}selected{% endif %}>Stock: low to high</option>
+                    <option value="stock_low" {% if product_stock_sort %}selected{% endif %}>Low stock to high</option>
                 </select>
             </div>
         </div>
         {% if product_search_query %}
-            <a class="small d-inline-block mt-2" href="{% if product_stock_sort %}?sort=stock_low{% else %}{% url 'product_list' %}{% endif %}">Clear search</a>
+            <a class="small d-inline-block mt-2" href="{% url 'product_list' %}{% if selected_shop or product_stock_sort %}?{% if selected_shop %}shop={{ selected_shop.pk }}{% endif %}{% if product_stock_sort %}{% if selected_shop %}&amp;{% endif %}sort=stock_low{% endif %}{% endif %}">Clear search</a>
         {% endif %}
         <div class="form-text mt-2">
             Filters loaded products as you type; if there are no local matches, all products are searched automatically.
-            Stock totals include active shop assignments. Double-click a product row to expand its full details.
+            {% if selected_shop %}
+                Showing products assigned to {{ selected_shop.name }}; low-to-high sorting uses that shop's active stock.
+            {% else %}
+                Showing products across all shops; low-to-high sorting uses total active stock.
+            {% endif %}
+            Low stock (5 or less) is highlighted. Double-click a product row to expand its full details.
         </div>
         <div id="productSearchStatus" class="small text-muted mt-1" aria-live="polite"></div>
     </div>
@@ -339,7 +357,7 @@
 
                         <th>Unit</th>
 
-                        <th>Total Stock</th>
+                        <th>{% if selected_shop %}{{ selected_shop.name }} Stock{% else %}Total Stock{% endif %}</th>
 
                         <th>
                             Shop-wise Details
@@ -515,10 +533,16 @@
 
                         </td>
 
-                        <td data-sort-value="{{ product.total_shop_stock }}">
-                            <span class="badge {% if product.total_shop_stock <= 5 %}text-bg-warning{% else %}text-bg-success{% endif %}">
-                                {{ product.total_shop_stock|floatformat:-4 }}
-                            </span>
+                        <td data-sort-value="{% if selected_shop %}{{ product.selected_shop_stock }}{% else %}{{ product.total_shop_stock }}{% endif %}">
+                            {% if selected_shop %}
+                                <span class="badge {% if product.selected_shop_stock <= 5 %}text-bg-warning{% else %}text-bg-success{% endif %}">
+                                    {{ product.selected_shop_stock|floatformat:-4 }}
+                                </span>
+                            {% else %}
+                                <span class="badge {% if product.total_shop_stock <= 5 %}text-bg-warning{% else %}text-bg-success{% endif %}">
+                                    {{ product.total_shop_stock|floatformat:-4 }}
+                                </span>
+                            {% endif %}
                         </td>
 
 
@@ -529,90 +553,69 @@
                             <div class="shop-list">
 
                             {% for assignment in product.shop_assignments.all %}
-
+                                {% if not selected_shop or assignment.shop_id == selected_shop.pk %}
                                 <div class="shop-item" data-assignment-shop="{{ assignment.shop_id }}">
-
                                     <!-- Shop name -->
-
                                     <div class="shop-header">
-
-                                        <span class="shop-name">
-                                            🏪 {{ assignment.shop.name }}
-                                        </span>
-
-
+                                        <span class="shop-name">🏪 {{ assignment.shop.name }}</span>
                                         {% if assignment.is_active %}
-
-                                            <span class="active-badge">
-                                                ✓ Active
-                                            </span>
-
+                                            <span class="active-badge">✓ Active</span>
                                         {% else %}
-
-                                            <span class="inactive-badge">
-                                                ✕ Inactive
-                                            </span>
-
+                                            <span class="inactive-badge">✕ Inactive</span>
                                         {% endif %}
-
                                     </div>
 
-
-                                    <!-- Price / Stock -->
-
-                                    <div class="shop-details">
-
-                                        {% if assignment.price %}
-
-                                            <span class="shop-price">
-                                                ₹{{ assignment.price }}
-                                            </span>
-
-                                            <span class="price-label">
-                                                shop price
-                                            </span>
-
-                                        {% else %}
-
-                                            <span class="shop-price default-price">
-                                                ₹{{ product.price }}
-                                            </span>
-
-                                            <span class="price-label">
-                                                default price
-                                            </span>
-
+                                    <form method="post" action="{% url 'product_list' %}" class="mt-2">
+                                        {% csrf_token %}
+                                        <input type="hidden" name="assignment_id" value="{{ assignment.pk }}">
+                                        <input type="hidden" name="q" value="{{ product_search_query }}">
+                                        {% if selected_shop %}
+                                            <input type="hidden" name="shop" value="{{ selected_shop.pk }}">
                                         {% endif %}
-
-
-                                        {% if assignment.stock > 0 %}
-
-                                            <span class="stock-badge stock-good">
-                                                Stock: {{ assignment.stock|floatformat:-4 }}
-                                            </span>
-
-                                        {% else %}
-
-                                            <span class="stock-badge stock-empty">
-                                                Stock: 0
-                                            </span>
-
+                                        {% if product_stock_sort %}
+                                            <input type="hidden" name="sort" value="stock_low">
                                         {% endif %}
-
-                                    </div>
-
+                                        <div class="row g-2 align-items-end">
+                                            <div class="col-6">
+                                                <label class="form-label small mb-1" for="shop-price-{{ assignment.pk }}">
+                                                    Shop price (₹)
+                                                </label>
+                                                <input id="shop-price-{{ assignment.pk }}" name="price"
+                                                       type="number" class="form-control form-control-sm"
+                                                       min="0" step="0.01"
+                                                       value="{{ assignment.price|default_if_none:'' }}"
+                                                       placeholder="Default: ₹{{ product.price }}"
+                                                       {% if assignment.shop.owner_id != request.user.id %}readonly{% endif %}>
+                                            </div>
+                                            <div class="col-6">
+                                                <label class="form-label small mb-1" for="shop-stock-{{ assignment.pk }}">
+                                                    Stock{% if product.unit %} ({{ product.unit }}){% endif %}
+                                                </label>
+                                                <input id="shop-stock-{{ assignment.pk }}" name="stock"
+                                                       type="number" class="form-control form-control-sm"
+                                                       min="0" step="0.0001"
+                                                       value="{{ assignment.stock }}"
+                                                       {% if assignment.shop.owner_id != request.user.id %}readonly{% endif %}>
+                                            </div>
+                                            {% if assignment.shop.owner_id == request.user.id %}
+                                                <div class="col-12">
+                                                    <button class="btn btn-sm btn-outline-primary" type="submit">
+                                                        Save price &amp; stock
+                                                    </button>
+                                                </div>
+                                            {% else %}
+                                                <div class="col-12 small text-muted">
+                                                    You can edit inventory only for your own shops.
+                                                </div>
+                                            {% endif %}
+                                        </div>
+                                    </form>
                                 </div>
-
+                                {% endif %}
                             {% empty %}
-
-                                <div class="no-shop">
-                                    No shops assigned
-                                </div>
-
+                                <div class="no-shop">No shops assigned</div>
                             {% endfor %}
-
                             </div>
-
                         </td>
 
 
@@ -803,6 +806,9 @@ productSearchInput.addEventListener("input", () => {
     productSearchTimer = window.setTimeout(() => productSearchForm.requestSubmit(), 500);
 });
 document.getElementById("productSort").addEventListener("change", () => {
+    productSearchForm.requestSubmit();
+});
+document.getElementById("productShop").addEventListener("change", () => {
     productSearchForm.requestSubmit();
 });
 

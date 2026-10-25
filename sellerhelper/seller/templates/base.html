@@ -747,39 +747,34 @@
                         </button>
                     </div>
                 </li>
-                <li class="nav-item dropdown">
-                    <a
-                        class="nav-link dropdown-toggle"
-                        href="#"
-                        role="button"
-                        data-bs-toggle="dropdown"
-                        aria-expanded="false"
-                    >
-                        <i class="bi bi-bicycle"></i>
-                        Rider Panel
+                {% endif %}
+
+                {% if has_rider_access %}
+                <li class="nav-item">
+                    <a class="nav-link" href="{% url 'rider_dashboard' %}">
+                        <i class="bi bi-bicycle me-1"></i> Deliveries
                     </a>
-                    <ul class="dropdown-menu">
-                        <li>
-                            <a class="dropdown-item" href="{% url 'rider_dashboard' %}">
-                                <i class="bi bi-bicycle me-2"></i>
-                                Deliveries
-                            </a>
-                        </li>
-                        <li>
-                            <a class="dropdown-item" href="{% url 'rider_dashboard' %}?view=available#publicRiderWorkArea">
-                                <i class="bi bi-geo-alt me-2"></i>
-                                Work area &amp; home settings
-                            </a>
-                        </li>
-                        {% if user.shop_staff_memberships.all %}
-                        <li>
-                            <a class="dropdown-item" href="{% url 'staff_payment_settings' %}">
-                                <i class="bi bi-qr-code me-2"></i>
-                                UPI payment settings
-                            </a>
-                        </li>
-                        {% endif %}
-                    </ul>
+                </li>
+                {% if is_public_rider_portal %}
+                <li class="nav-item">
+                    <a class="nav-link" href="{% url 'rider_dashboard' %}?view=available#publicRiderWorkArea">
+                        <i class="bi bi-geo-alt me-1"></i> Work area &amp; home settings
+                    </a>
+                </li>
+                {% endif %}
+                {% endif %}
+                {% if is_public_rider_portal or staff_permissions and staff_permissions.role == "RIDER" %}
+                <li class="nav-item">
+                    <a class="nav-link" href="{% url 'staff_payment_settings' %}">
+                        <i class="bi bi-qr-code me-1"></i> UPI payment settings
+                    </a>
+                </li>
+                {% endif %}
+                {% if can_review_rider_payments %}
+                <li class="nav-item">
+                    <a class="nav-link" href="{% url 'staff_payment_manager_dashboard' %}">
+                        <i class="bi bi-cash-coin me-1"></i> Rider payments
+                    </a>
                 </li>
                 {% endif %}
 
@@ -1060,6 +1055,14 @@
                                 Staff Dashboard
                             </a>
                         </li>
+                        {% if can_review_rider_payments %}
+                        <li>
+                            <a class="dropdown-item" href="{% url 'staff_payment_manager_dashboard' %}">
+                                <i class="bi bi-cash-coin me-2"></i>
+                                Rider Payment Confirmations
+                            </a>
+                        </li>
+                        {% endif %}
 
 
                         {% if staff_permissions.can_confirm_orders %}
@@ -1199,6 +1202,12 @@
 
                     <ul class="dropdown-menu">
 
+                        <li>
+                            <a class="dropdown-item" href="{% url 'admin_panel_dashboard' %}">
+                                <i class="bi bi-grid-1x2 me-2"></i>
+                                Admin Panel
+                            </a>
+                        </li>
 
                         <li>
 
@@ -1213,6 +1222,13 @@
 
                             </a>
 
+                        </li>
+
+                        <li>
+                            <a class="dropdown-item" href="{% url 'admin_user_presence_dashboard' %}">
+                                <i class="bi bi-people me-2"></i>
+                                User presence & logins
+                            </a>
                         </li>
 
                         <li>
@@ -1278,8 +1294,8 @@
                 {% if user.is_superuser %}
                 <li class="nav-item">
                     <a class="nav-link btn btn-sm btn-outline-primary ms-lg-2"
-                       href="{% url 'admin_catalog_dashboard' %}">
-                        <i class="bi bi-shield-lock me-1"></i>Admin Catalog
+                       href="{% url 'admin_panel_dashboard' %}">
+                <i class="bi bi-shield-lock me-1"></i>Admin Panel
                     </a>
                 </li>
                 {% endif %}
@@ -1401,6 +1417,17 @@
                 {% endif %}
 
                 <!-- USER -->
+
+                <li class="nav-item desktop-only me-lg-2">
+                    <a class="nav-link position-relative px-2"
+                       href="{% url 'notifications' %}"
+                       aria-label="Notifications{% if unread_notifications_count %}, {{ unread_notifications_count }} unread{% endif %}"
+                       title="Notifications">
+                        <i class="bi bi-bell fs-5" aria-hidden="true"></i>
+                        <span class="cart-badge{% if not unread_notifications_count %} d-none{% endif %}"
+                              data-unread-notifications-count>{{ unread_notifications_count|default:0 }}</span>
+                    </a>
+                </li>
 
                 <li class="nav-item dropdown">
 
@@ -1543,7 +1570,7 @@
 
                             <a
                                 class="dropdown-item"
-                                href="{% url 'admin_catalog_dashboard' %}"
+                                href="{% url 'admin_panel_dashboard' %}"
                             >
 
                                 <i class="bi bi-shield-lock me-2"></i>
@@ -1879,6 +1906,16 @@
             {% endwith %}
         </a>
 
+        <a href="{% url 'notifications' %}"
+           style="position:relative;"
+           aria-label="Notifications{% if unread_notifications_count %}, {{ unread_notifications_count }} unread{% endif %}"
+           title="Notifications">
+            <i class="bi bi-bell"></i>
+            <span class="mobile-nav-label">Notifications</span>
+            <span class="cart-badge{% if not unread_notifications_count %} d-none{% endif %}"
+              data-unread-notifications-count>{{ unread_notifications_count|default:0 }}</span>
+        </a>
+
     {% elif is_staff_portal %}
 
         <button type="button"
@@ -2019,6 +2056,27 @@
         navigationBars.forEach((bar) => {
             bar.addEventListener("focusin", () => setHidden(false));
         });
+        const navbarCollapse = topBar?.querySelector(".navbar-collapse");
+        document.addEventListener("click", (event) => {
+            if (
+                !mobileViewport.matches
+                || !navbarCollapse?.classList.contains("show")
+                || !(event.target instanceof Element)
+                || navbarCollapse.contains(event.target)
+                || event.target.closest(".navbar-toggler")
+            ) {
+                return;
+            }
+            window.bootstrap?.Collapse.getOrCreateInstance(navbarCollapse).hide();
+        });
+        navbarCollapse?.querySelectorAll(".nav-link:not([data-bs-toggle='dropdown'])")
+            .forEach((link) => {
+                link.addEventListener("click", () => {
+                    if (mobileViewport.matches) {
+                        window.bootstrap?.Collapse.getOrCreateInstance(navbarCollapse).hide();
+                    }
+                });
+            });
         mobileViewport.addEventListener("change", () => {
             lastScrollY = Math.max(0, window.scrollY);
             setHidden(false);
@@ -3226,6 +3284,43 @@
     {% endblock %}
 </div>
 
+{% if user.is_authenticated %}
+<form id="sellerhelper-presence-form" class="d-none" aria-hidden="true">
+    {% csrf_token %}
+</form>
+<script>
+(() => {
+    const form = document.getElementById("sellerhelper-presence-form");
+    const csrfToken = form?.querySelector('input[name="csrfmiddlewaretoken"]')?.value;
+    if (!csrfToken) return;
+    const heartbeatUrl = "{% url 'user_presence_heartbeat' %}";
+    let heartbeatInFlight = false;
+    const sendHeartbeat = async () => {
+        if (heartbeatInFlight || document.visibilityState === "hidden") return;
+        heartbeatInFlight = true;
+        try {
+            const response = await fetch(heartbeatUrl, {
+                method: "POST",
+                credentials: "same-origin",
+                headers: {"X-CSRFToken": csrfToken},
+            });
+            if (!response.ok) {
+                console.warn("Presence heartbeat failed with status", response.status);
+            }
+        } catch (error) {
+            console.warn("Could not update online presence.", error);
+        } finally {
+            heartbeatInFlight = false;
+        }
+    };
+    sendHeartbeat();
+    window.setInterval(sendHeartbeat, 60 * 1000);
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") sendHeartbeat();
+    });
+})();
+</script>
+{% endif %}
 
 </body>
 

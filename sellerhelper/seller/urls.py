@@ -14,9 +14,59 @@ urlpatterns = [
     path("delivery-policy/", views.public_information_page, {"page_slug": "delivery"}, name="delivery_policy"),
     path("grievance/", views.public_information_page, {"page_slug": "grievance"}, name="grievance_policy"),
     path(
+        "admin-panel/",
+        views.admin_panel_dashboard,
+        name="admin_panel_dashboard",
+    ),
+    path(
         "admin-panel/catalog/",
         views.admin_catalog_dashboard,
         name="admin_catalog_dashboard",
+    ),
+    path(
+        "admin-panel/users/presence/",
+        views.admin_user_presence_dashboard,
+        name="admin_user_presence_dashboard",
+    ),
+    path(
+        "users/presence/heartbeat/",
+        views.user_presence_heartbeat,
+        name="user_presence_heartbeat",
+    ),
+    path(
+        "admin-panel/catalog/products/export/",
+        views.admin_catalog_product_export,
+        name="admin_catalog_product_export",
+    ),
+    path(
+        "admin-panel/catalog/products/import/",
+        views.admin_catalog_product_import,
+        name="admin_catalog_product_import",
+    ),
+    path(
+        "admin-panel/catalog/products/save-all/",
+        views.admin_catalog_products_save_all,
+        name="admin_catalog_products_save_all",
+    ),
+    path(
+        "admin-panel/catalog/hsn/import/",
+        views.admin_catalog_hsn_reference_import,
+        name="admin_catalog_hsn_reference_import",
+    ),
+    path(
+        "admin-panel/catalog/hsn/suggestions/",
+        views.admin_catalog_hsn_suggestions,
+        name="admin_catalog_hsn_suggestions",
+    ),
+    path(
+        "admin-panel/catalog/sac/import/",
+        views.admin_catalog_sac_reference_import,
+        name="admin_catalog_sac_reference_import",
+    ),
+    path(
+        "admin-panel/catalog/sac/suggestions/",
+        views.admin_catalog_sac_suggestions,
+        name="admin_catalog_sac_suggestions",
     ),
     path(
         "admin-panel/theme-builder/",
@@ -166,6 +216,11 @@ urlpatterns = [
         name="mobile_live_location_update",
     ),
     path("orders/<str:order_id>/cancel/", views.customer_cancel_order, name="customer_cancel_order"),
+    path(
+        "orders/<str:order_id>/shop-orders/<int:shop_order_id>/cancel/",
+        views.customer_cancel_shop_order,
+        name="customer_cancel_shop_order",
+    ),
     path("orders/<str:order_id>/reorder/", views.customer_reorder, name="customer_reorder"),
     path("placed-orders/<str:order_id>/edit/", views.customer_edit_placed_order, name="customer_edit_placed_order"),
     path("orders/<str:order_id>/delivery-address/", views.customer_change_order_address, name="customer_change_order_address"),
@@ -361,6 +416,11 @@ urlpatterns = [
         name="request_cod_payment_approval",
     ),
     path(
+        "rider/cod-upi/<int:payment_request_id>/remind-shop/",
+        views.remind_cod_payment_reviewers,
+        name="remind_cod_payment_reviewers",
+    ),
+    path(
         "rider/cod-upi/<int:payment_request_id>/cancel/",
         views.cancel_cod_payment_qr,
         name="cancel_cod_payment_qr",
@@ -425,6 +485,11 @@ urlpatterns = [
         "shop/staff/<int:shop_id>/<int:staff_id>/toggle/",
         views.shop_staff_toggle,
         name="shop_staff_toggle",
+    ),
+    path(
+        "shop/staff/<int:shop_id>/<int:staff_id>/remove/",
+        views.shop_staff_remove,
+        name="shop_staff_remove",
     ),
 
     path(
@@ -502,6 +567,11 @@ urlpatterns = [
     ),
     path('dashboard/statement/', views.owner_statement, name='owner_statement'),
     path('staff-dashboard/', views.staff_dashboard, name='staff_dashboard'),
+    path(
+        "staff/payment-manager/",
+        views.staff_payment_manager_dashboard,
+        name="staff_payment_manager_dashboard",
+    ),
     path(
         "staff/purchase-manager/<int:shop_id>/",
         views.purchase_manager_dashboard,
@@ -628,6 +698,11 @@ urlpatterns = [
 
     path('products/', views.product_list, name='product_list'),
     path('products/new/', views.product_create, name='product_create'),
+    path(
+        "products/add-from-marketplace/",
+        views.add_marketplace_products,
+        name="add_marketplace_products",
+    ),
     path('products/<int:pk>/edit/', views.product_edit, name='product_edit'),
     path('products/<int:pk>/delete/', views.product_delete, name='product_delete'),
     path('shops/<int:shop_id>/storefront/', views.shop_storefront, name='shop_storefront'),

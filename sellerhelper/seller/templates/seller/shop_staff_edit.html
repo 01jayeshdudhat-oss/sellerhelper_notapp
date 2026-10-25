@@ -110,6 +110,57 @@ Edit Staff - {{ staff.user.username }}
             </div>
         </div>
 
+        <div class="card shadow-sm mb-4">
+            <div class="card-body">
+                <h5 class="fw-bold mb-2">Shop access</h5>
+                <p class="form-text">
+                    Select every shop you own that this staff member can access. Choose a separate role for each other shop. The role below applies to {{ shop.name }}. Unselected access is revoked.
+                </p>
+                {% for option in shop_access_options %}
+                    <div class="form-check mb-2">
+                        <input
+                            class="form-check-input"
+                            type="checkbox"
+                            name="accessible_shop_ids"
+                            id="accessibleShop{{ option.shop.id }}"
+                            value="{{ option.shop.id }}"
+                            {% if option.has_access %}checked{% endif %}
+                        >
+                        <label
+                            class="form-check-label"
+                            for="accessibleShop{{ option.shop.id }}"
+                        >
+                            {{ option.shop.name }}
+                        </label>
+                    </div>
+                    {% if option.shop.id != shop.id %}
+                        <div class="ms-4 mb-3">
+                            <label
+                                class="form-label small mb-1"
+                                for="shopRole{{ option.shop.id }}"
+                            >
+                                Role in {{ option.shop.name }}
+                            </label>
+                            <select
+                                class="form-select form-select-sm"
+                                name="shop_role_{{ option.shop.id }}"
+                                id="shopRole{{ option.shop.id }}"
+                            >
+                                {% for role_value, role_label in option.role_choices %}
+                                    <option
+                                        value="{{ role_value }}"
+                                        {% if option.role == role_value %}selected{% endif %}
+                                    >
+                                        {{ role_label }}
+                                    </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    {% endif %}
+                {% endfor %}
+            </div>
+        </div>
+
         <!-- ROLE -->
 
         <div class="card shadow-sm mb-4">
@@ -150,6 +201,13 @@ Edit Staff - {{ staff.user.username }}
                         {% if staff.role == "PURCHASE_MANAGER" %}selected{% endif %}
                     >
                         Purchase Manager
+                    </option>
+
+                    <option
+                        value="PAYMENT_MANAGER"
+                        {% if staff.role == "PAYMENT_MANAGER" %}selected{% endif %}
+                    >
+                        Payment Manager
                     </option>
 
                     <option
@@ -292,6 +350,22 @@ Edit Staff - {{ staff.user.username }}
 
                 </div>
 
+                <div class="form-check form-switch mb-3">
+                    <input
+                        class="form-check-input"
+                        type="checkbox"
+                        name="can_confirm_rider_payments"
+                        id="can_confirm_rider_payments"
+                        {% if staff.can_confirm_rider_payments %}checked{% endif %}
+                    >
+                    <label class="form-check-label" for="can_confirm_rider_payments">
+                        <strong>Confirm rider payments for this shop</strong>
+                        <br>
+                        <small class="text-muted">
+                            Applies only to Payment Manager role. Each shop owner grants this permission separately.
+                        </small>
+                    </label>
+                </div>
 
                 <!-- CANCEL ORDERS -->
 

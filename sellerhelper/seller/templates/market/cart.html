@@ -84,6 +84,14 @@
 
     </div>
 
+    {% if not active_delivery_address and current_delivery_location %}
+    <div class="alert alert-info" role="status">
+        This cart is for your current delivery location
+        ({{ current_delivery_location.lat|floatformat:5 }}, {{ current_delivery_location.lng|floatformat:5 }}).
+        Select or add a saved delivery address at checkout to confirm delivery.
+    </div>
+    {% endif %}
+
     {% if delivery_addresses %}
     <div class="card border-0 shadow-sm mb-4">
         <div class="card-body">
@@ -162,6 +170,11 @@
                             {% if not item.available_for_delivery %}
                                 <div class="small fw-semibold text-danger mt-1">
                                     {{ item.availability_label }}
+                                </div>
+                            {% endif %}
+                            {% if item.is_scheduled_delivery %}
+                                <div class="small text-warning-emphasis fw-semibold mt-1">
+                                    Delivery timing will be scheduled with this shop.
                                 </div>
                             {% endif %}
                             {% if item.is_bulk_order %}
@@ -354,7 +367,12 @@
                         <div data-cart-delivery-shop-list>
                         {% for shop in cart_shop_summary %}
                         <div class="d-flex justify-content-between gap-2">
-                            <span class="text-break">{{ shop.shop_name }}</span>
+                            <span class="text-break">
+                                {{ shop.shop_name }}
+                                {% if shop.is_scheduled_delivery %}
+                                    <span class="small text-warning-emphasis fw-semibold d-block">Scheduled delivery — shop is currently closed</span>
+                                {% endif %}
+                            </span>
                             <span class="text-nowrap">
                                 {% if shop.delivery_fee %}₹{{ shop.delivery_fee|floatformat:2 }}{% else %}<span class="text-success">Free</span>{% endif %}
                             </span>

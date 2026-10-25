@@ -275,6 +275,23 @@
 
                                 </form>
 
+                                {% if is_owner and not staff.is_public_rider %}
+                                <form
+                                    method="POST"
+                                    action="{% url 'shop_staff_remove' shop.id staff.id %}"
+                                >
+                                    {% csrf_token %}
+                                    <button
+                                        type="submit"
+                                        class="btn btn-outline-danger w-100"
+                                        onclick="return confirm('Remove this staff member from {{ shop.name|escapejs }}? Their account and access to other shops will remain unchanged.');"
+                                    >
+                                        <i class="bi bi-trash3"></i>
+                                        Remove from this shop
+                                    </button>
+                                </form>
+                                {% endif %}
+
                             </div>
                             <!-- <div class="mt-4">
 

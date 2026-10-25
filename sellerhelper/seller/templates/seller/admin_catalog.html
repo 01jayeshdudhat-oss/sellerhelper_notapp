@@ -34,8 +34,8 @@
                 <h1 class="h2 fw-bold mb-2">Shared product catalog</h1>
                 <p class="mb-0 text-white-50">Manage trusted product names, images, HSN codes, GST defaults, and categories for every shop.</p>
             </div>
-            <a href="{% url 'admin_catalog_product_create' %}" class="btn btn-light btn-lg fw-semibold">
-                <i class="bi bi-plus-lg me-2"></i>Add catalog product
+            <a href="{% url 'admin_catalog_product_create' %}?return_to={{ request.get_full_path|urlencode }}" class="btn btn-light btn-lg fw-semibold" data-catalog-remember-scroll>
+                <i class="bi bi-plus-lg me-2"></i>Add single product
             </a>
         </div>
     </section>
@@ -82,6 +82,36 @@
 
     <section class="catalog-panel mb-4">
         <div class="mb-3">
+            <h2 class="h5 fw-bold mb-1">Shop product copy settings</h2>
+            <p class="text-muted small mb-0">
+                Choose which details shop owners may copy when adding an active marketplace product to their own shop.
+                Product name and category are always used; new stock starts at zero and the source listing price is copied.
+            </p>
+        </div>
+        <form method="post">
+            {% csrf_token %}
+            <div class="row g-2">
+                {% for checkbox in product_clone_settings_form.allowed_fields %}
+                    <div class="col-12 col-sm-6 col-lg-4">
+                        <label class="form-check border rounded p-2 ps-5 h-100">
+                            {{ checkbox.tag }}
+                            <span class="form-check-label">{{ checkbox.choice_label }}</span>
+                        </label>
+                    </div>
+                {% endfor %}
+            </div>
+            <div class="form-text mt-2">{{ product_clone_settings_form.allowed_fields.help_text }}</div>
+            {% for error in product_clone_settings_form.allowed_fields.errors %}
+                <div class="text-danger small mt-1">{{ error }}</div>
+            {% endfor %}
+            <button class="btn btn-primary mt-3" type="submit" name="save_product_clone_settings" value="1">
+                Save product copy settings
+            </button>
+        </form>
+    </section>
+
+    <section class="catalog-panel mb-4">
+        <div class="mb-3">
             <h2 class="h5 fw-bold mb-1">Site branding and contact details</h2>
             <p class="text-muted small mb-0">Changes apply to the site header, browser icon, installable app name/icon, and support details.</p>
         </div>
@@ -119,13 +149,13 @@
 
     <div class="row g-4">
         <div class="col-12 col-xl-8">
-            <section class="catalog-panel">
+            <section class="catalog-panel" id="catalog-products">
                 <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-3">
                     <div>
                         <h2 class="h5 fw-bold mb-1">Products</h2>
-                        <p class="text-muted small mb-0">Search or filter the shared catalog.</p>
+                        <p class="text-muted small mb-0">Search and filters apply automatically.</p>
                     </div>
-                    <form method="get" class="d-flex flex-column flex-sm-row gap-2">
+                    <form method="get" id="catalog-product-filters" class="d-flex flex-column flex-sm-row gap-2">
                         <input name="q" value="{{ search }}" class="form-control" placeholder="Name or HSN" aria-label="Search catalog">
                         <select name="category" class="form-select" aria-label="Filter by category">
                             <option value="">All categories</option>
@@ -138,27 +168,143 @@
                             <option value="active" {% if selected_status == "active" %}selected{% endif %}>Active</option>
                             <option value="inactive" {% if selected_status == "inactive" %}selected{% endif %}>Inactive</option>
                         </select>
-                        <button class="btn btn-outline-primary" type="submit">Filter</button>
                     </form>
+                </div>
+                <form id="catalog-products-form" method="post" action="{% url 'admin_catalog_products_save_all' %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="return_to" value="{{ request.get_full_path }}">
+                </form>
+                <div class="d-flex flex-wrap gap-2 mb-3">
+                    <a class="btn btn-success btn-sm" href="{% url 'admin_catalog_product_export' %}">
+                        <i class="bi bi-file-earmark-spreadsheet me-1"></i>Download all products
+                    </a>
+                    {% if selected_category %}
+                        <a class="btn btn-outline-success btn-sm" href="{% url 'admin_catalog_product_export' %}?category={{ selected_category|urlencode }}">
+                            <i class="bi bi-download me-1"></i>Download {{ selected_category }} products
+                        </a>
+                    {% endif %}
+                </div>
+                <form method="post" enctype="multipart/form-data" action="{% url 'admin_catalog_product_import' %}" class="row g-2 align-items-end border rounded p-3 mb-3 bg-light">
+                    {% csrf_token %}
+                    <div class="col-12 col-lg">
+                        <label class="form-label fw-semibold mb-1" for="catalogExcelUpload">Upload product Excel sheet</label>
+                        <input class="form-control form-control-sm" id="catalogExcelUpload" name="catalog_excel" type="file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" required>
+                        <div class="form-text">Use the downloaded .xlsx catalog or a .csv file. Catalog ID updates existing rows; rows without an ID add or match by category and product name. Maximum 5,000 rows per upload.</div>
+                    </div>
+                    <div class="col-12 col-lg-auto">
+                        <button class="btn btn-primary btn-sm" type="submit">
+                            <i class="bi bi-upload me-1"></i>Validate and import
+                        </button>
+                    </div>
+                </form>
+                <form method="post" enctype="multipart/form-data" action="{% url 'admin_catalog_hsn_reference_import' %}" class="row g-2 align-items-end border rounded p-3 mb-3 bg-light">
+                    {% csrf_token %}
+                    <div class="col-12 col-lg">
+                        <label class="form-label fw-semibold mb-1" for="hsnReferenceExcel">Upload HSN suggestion sheet</label>
+                        <input class="form-control form-control-sm" id="hsnReferenceExcel" name="hsn_reference_excel" type="file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" required>
+                        <div class="form-text">
+                            Excel or CSV columns can be <code>HSN_CD</code> and <code>HSN_Description</code>, or <code>HSN Code</code> and <code>Description</code>.
+                            Comma, semicolon, tab, and pipe-separated CSV files are supported. HSN uploads support up to 50,000 rows; invalid rows are skipped and reported.
+                            Upload replaces the current suggestion list.
+                            XLSX codes with zero-padding formats retain leading zeroes.
+                        </div>
+                    </div>
+                    <div class="col-12 col-lg-auto">
+                        <button class="btn btn-outline-primary btn-sm" type="submit">
+                            <i class="bi bi-upload me-1"></i>Upload HSN data
+                        </button>
+                    </div>
+                </form>
+                <form method="post" enctype="multipart/form-data" action="{% url 'admin_catalog_sac_reference_import' %}" class="row g-2 align-items-end border rounded p-3 mb-3 bg-light">
+                    {% csrf_token %}
+                    <div class="col-12 col-lg">
+                        <label class="form-label fw-semibold mb-1" for="sacReferenceExcel">Upload SAC suggestion sheet</label>
+                        <input class="form-control form-control-sm" id="sacReferenceExcel" name="sac_reference_excel" type="file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" required>
+                        <div class="form-text">
+                            Excel or CSV columns must be <code>SAC_CD</code> and <code>SAC_Description</code>.
+                            Import the project <code>sac_data.xlsx</code> or another matching file; up to 50,000 rows are supported.
+                        </div>
+                    </div>
+                    <div class="col-12 col-lg-auto">
+                        <button class="btn btn-outline-primary btn-sm" type="submit">
+                            <i class="bi bi-upload me-1"></i>Upload SAC data
+                        </button>
+                    </div>
+                </form>
+                <div class="alert alert-info d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-2 py-2 mb-3" role="status" aria-live="polite">
+                    <div>
+                        <strong>Loaded SAC entries</strong>
+                        <span class="badge text-bg-primary fs-6 ms-1">{{ sac_reference_count }}</span>
+                    </div>
+                    {% if sac_reference_preview %}
+                        <details class="mt-1">
+                            <summary>Preview uploaded SAC entries</summary>
+                            <ul class="mb-0 mt-1">
+                                {% for reference in sac_reference_preview %}
+                                    <li>{{ reference.sac_code }} — {{ reference.description }}</li>
+                                {% endfor %}
+                            </ul>
+                        </details>
+                    {% endif %}
+                </div>
+                <div class="alert alert-info d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-2 py-2 mb-3" role="status" aria-live="polite">
+                    <div>
+                        <strong>Loaded HSN entries</strong>
+                        <span class="badge text-bg-primary fs-6 ms-1">{{ hsn_reference_count }}</span>
+                    </div>
+                    <span class="small">Type at least two letters of a description in a product name field to see suggestions, then click a code to fill HSN.</span>
+                    {% if hsn_reference_preview %}
+                        <details class="mt-1">
+                            <summary>Preview uploaded HSN entries</summary>
+                            <ul class="mb-0 mt-1">
+                                {% for reference in hsn_reference_preview %}
+                                    <li>{{ reference.hsn_code }} — {{ reference.description }}</li>
+                                {% endfor %}
+                            </ul>
+                        </details>
+                    {% endif %}
                 </div>
                 <div class="table-responsive">
                     <table class="table align-middle catalog-table mb-0">
-                        <thead><tr><th>Product</th><th>Category</th><th>HSN / GST</th><th>Status</th><th class="text-end">Actions</th></tr></thead>
+                        <thead><tr><th>Product name</th><th>Category</th><th>Primary image URL</th><th>HSN / SAC</th><th>GST %</th><th>Active</th><th class="text-end">Actions</th></tr></thead>
                         <tbody>
                             {% for product in products %}
-                                <tr>
+                                <tr id="catalog-product-{{ product.pk }}">
                                     <td>
-                                        <div class="d-flex align-items-center gap-3">
-                                            {% if product.image_url %}<img class="catalog-product-image" src="{{ product.image_url }}" alt="" loading="lazy">{% else %}<div class="catalog-product-image d-flex align-items-center justify-content-center"><i class="bi bi-image text-muted"></i></div>{% endif %}
-                                            <div><div class="fw-semibold">{{ product.product_name }}</div><div class="text-muted small">{{ product.image_url|default:"No image URL" }}</div></div>
+                                        <input type="hidden" form="catalog-products-form" name="product-{{ product.pk }}-image_url_2" value="{{ product.image_url_2 }}">
+                                        <input type="hidden" form="catalog-products-form" name="product-{{ product.pk }}-image_url_3" value="{{ product.image_url_3 }}">
+                                        <input type="hidden" form="catalog-products-form" name="product-{{ product.pk }}-image_url_4" value="{{ product.image_url_4 }}">
+                                        <input type="hidden" form="catalog-products-form" name="product-{{ product.pk }}-image_url_5" value="{{ product.image_url_5 }}">
+                                        <input class="form-control form-control-sm" form="catalog-products-form" name="product-{{ product.pk }}-product_name" value="{{ product.product_name }}" maxlength="200" required aria-label="Product name" data-hsn-product-name="{{ product.pk }}">
+                                    </td>
+                                    <td>
+                                        <select class="form-select form-select-sm" form="catalog-products-form" name="product-{{ product.pk }}-product_category" required aria-label="Product category" data-catalog-product-category="{{ product.pk }}">
+                                            {% for value, label in category_choices %}
+                                                <option value="{{ value }}" {% if product.product_category == value %}selected{% endif %}>{{ label }}</option>
+                                            {% endfor %}
+                                        </select>
+                                    </td>
+                                    <td><input class="form-control form-control-sm" form="catalog-products-form" type="url" name="product-{{ product.pk }}-image_url" value="{{ product.image_url }}" maxlength="1000" required aria-label="Primary image URL"></td>
+                                    <td>
+                                        <div class="catalog-code-field-hsn" data-hsn-code-container="{{ product.pk }}">
+                                            <label class="form-label small mb-1" for="catalog-product-hsn-{{ product.pk }}">HSN code</label>
+                                            <input id="catalog-product-hsn-{{ product.pk }}" class="form-control form-control-sm" form="catalog-products-form" name="product-{{ product.pk }}-hsn_code" value="{{ product.hsn_code }}" maxlength="8" aria-label="HSN code" data-hsn-product-code="{{ product.pk }}">
+                                            <div class="small mt-1" data-hsn-suggestions="{{ product.pk }}" data-suggestions-url="{% url 'admin_catalog_hsn_suggestions' %}" role="listbox"></div>
+                                        </div>
+                                        <div class="catalog-code-field-sac" data-sac-code-container="{{ product.pk }}">
+                                            <label class="form-label small mb-1" for="catalog-product-sac-{{ product.pk }}">SAC code</label>
+                                            <input id="catalog-product-sac-{{ product.pk }}" class="form-control form-control-sm" form="catalog-products-form" name="product-{{ product.pk }}-sac_code" value="{{ product.sac_code }}" maxlength="6" aria-label="SAC code" data-sac-product-code="{{ product.pk }}">
+                                            <div class="small mt-1" data-sac-suggestions="{{ product.pk }}" data-suggestions-url="{% url 'admin_catalog_sac_suggestions' %}" role="listbox"></div>
                                         </div>
                                     </td>
-                                    <td>{{ product.product_category }}</td>
-                                    <td><div>{{ product.hsn_code|default:"—" }}</div><div class="text-muted small">{{ product.gst_rate }}% GST</div></td>
-                                    <td>{% if product.is_active %}<span class="badge text-bg-success">Active</span>{% else %}<span class="badge text-bg-secondary">Inactive</span>{% endif %}</td>
+                                    <td><input class="form-control form-control-sm" form="catalog-products-form" type="number" name="product-{{ product.pk }}-gst_rate" value="{{ product.gst_rate }}" min="0" max="100" step="0.01" required aria-label="GST rate"></td>
+                                    <td><input class="form-check-input" form="catalog-products-form" type="checkbox" name="product-{{ product.pk }}-is_active" {% if product.is_active %}checked{% endif %} aria-label="Active"></td>
                                     <td>
                                         <div class="d-flex justify-content-end gap-2">
-                                            <a class="btn btn-sm btn-outline-primary" href="{% url 'admin_catalog_product_edit' product.pk %}" aria-label="Edit {{ product.product_name }}"><i class="bi bi-pencil"></i></a>
+                                            <button class="btn btn-sm btn-primary" type="submit" form="catalog-products-form" name="save_product" value="{{ product.pk }}" formnovalidate>
+                                                <i class="bi bi-save me-1"></i>Save
+                                            </button>
+                                            <a class="btn btn-sm btn-outline-primary" href="{% url 'admin_catalog_product_edit' product.pk %}?return_to={{ request.get_full_path|urlencode }}" aria-label="Edit {{ product.product_name }}" data-catalog-remember-scroll><i class="bi bi-pencil"></i></a>
                                             <form method="post" action="{% url 'admin_catalog_product_toggle' product.pk %}">
                                                 {% csrf_token %}
                                                 <button class="btn btn-sm btn-outline-secondary" type="submit">{% if product.is_active %}Disable{% else %}Enable{% endif %}</button>
@@ -167,7 +313,7 @@
                                     </td>
                                 </tr>
                             {% empty %}
-                                <tr><td colspan="5" class="text-center py-5"><i class="bi bi-box-seam fs-2 text-muted"></i><p class="fw-semibold mt-2 mb-1">No catalog products found</p><p class="text-muted small mb-3">Add a product or adjust your filters.</p><a class="btn btn-primary btn-sm" href="{% url 'admin_catalog_product_create' %}">Add product</a></td></tr>
+                                <tr><td colspan="7" class="text-center py-5"><i class="bi bi-box-seam fs-2 text-muted"></i><p class="fw-semibold mt-2 mb-1">No catalog products found</p><p class="text-muted small mb-3">Add a product or adjust your filters.</p><a class="btn btn-primary btn-sm" href="{% url 'admin_catalog_product_create' %}?return_to={{ request.get_full_path|urlencode }}" data-catalog-remember-scroll>Add product</a></td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
@@ -206,7 +352,7 @@
         <div class="col-12 col-xl-4">
             <section class="catalog-panel mb-4">
                 <h2 class="h5 fw-bold mb-1">Add category</h2>
-                <p class="text-muted small mb-3">Categories become available in shop product forms.</p>
+                <p class="text-muted small mb-3">Choose which marketplace uses this category. Service Market categories use SAC code suggestions; all other markets use HSN suggestions.</p>
                 <form method="post" novalidate>
                     {% csrf_token %}
                     {% for field in category_form %}
@@ -229,7 +375,10 @@
                         <div class="catalog-category d-flex align-items-center justify-content-between gap-2">
                             <div class="min-w-0">
                                 <div class="fw-semibold text-truncate">{{ category.name }}</div>
-                                <div class="small text-muted">{{ category.product_count }} catalog product{{ category.product_count|pluralize }}</div>
+                                <div class="small text-muted">
+                                    {{ category.market_category|default:"Unassigned market" }} ·
+                                    {{ category.product_count }} catalog product{{ category.product_count|pluralize }}
+                                </div>
                             </div>
                             <div class="d-flex gap-1">
                                 <a class="btn btn-sm btn-outline-primary" href="{% url 'admin_catalog_category_edit' category.pk %}" aria-label="Edit {{ category.name }}">Edit</a>
@@ -314,6 +463,49 @@
                 </tbody>
             </table>
         </div>
+        <div class="d-flex flex-wrap justify-content-end gap-2 mt-3">
+            <a class="btn btn-outline-primary" href="{% url 'admin_catalog_product_create' %}?return_to={{ request.get_full_path|urlencode }}" data-catalog-remember-scroll>
+                <i class="bi bi-plus-lg me-1"></i>Add single product
+            </a>
+            <button class="btn btn-primary" type="submit" form="catalog-products-form">
+                <i class="bi bi-save me-1"></i>Save changes
+            </button>
+        </div>
     </section>
 </div>
+{{ category_market_map|json_script:"catalog-category-market-map" }}
+{% include "seller/_admin_catalog_hsn_suggestions.html" %}
+<script>
+(() => {
+    const scrollKey = "adminCatalogScrollY";
+    const savedScroll = sessionStorage.getItem(scrollKey);
+    if (savedScroll !== null) {
+        sessionStorage.removeItem(scrollKey);
+        window.requestAnimationFrame(() => window.scrollTo(0, Number(savedScroll)));
+    }
+
+    document.querySelectorAll("[data-catalog-remember-scroll]").forEach((link) => {
+        link.addEventListener("click", () => {
+            sessionStorage.setItem(scrollKey, String(window.scrollY));
+        });
+    });
+
+    const saveForm = document.getElementById("catalog-products-form");
+    saveForm?.addEventListener("submit", () => {
+        sessionStorage.setItem(scrollKey, String(window.scrollY));
+    });
+
+    const filterForm = document.getElementById("catalog-product-filters");
+    if (!filterForm) return;
+    let filterTimer;
+    const submitFilters = () => filterForm.requestSubmit();
+    filterForm.querySelector('input[name="q"]').addEventListener("input", () => {
+        window.clearTimeout(filterTimer);
+        filterTimer = window.setTimeout(submitFilters, 350);
+    });
+    filterForm.querySelectorAll("select").forEach((select) => {
+        select.addEventListener("change", submitFilters);
+    });
+})();
+</script>
 {% endblock %}

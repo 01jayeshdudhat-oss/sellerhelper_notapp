@@ -8,7 +8,7 @@ Rider Dashboard
 
 <div class="rider-dashboard-tabs-wrap{% if is_public_rider %} public-rider-tabs-wrap{% endif %}">
 <nav class="nav nav-pills gap-2 mb-4 rider-dashboard-tabs" aria-label="Rider dashboard tabs">
-    {% if not public_rider_collection_window_expired %}
+    {% if not hide_available_tab %}
     <a href="{% url 'rider_dashboard' %}?view=available"
        class="nav-link {% if available_view %}active{% endif %}">
         <i class="bi bi-inbox me-1"></i><span>Available</span>
@@ -20,24 +20,30 @@ Rider Dashboard
         <i class="bi bi-bicycle me-1"></i><span>Active</span>
         <span class="badge rounded-pill ms-1 {% if active_view %}text-bg-light{% else %}text-bg-secondary{% endif %}">{{ active_order_count }}</span>
     </a>
-    <a href="{% url 'rider_dashboard' %}?view=verified"
-       class="nav-link {% if verified_view %}active{% endif %}">
-        <i class="bi bi-shield-check me-1"></i><span>Recently verified</span>
-        <span class="badge rounded-pill ms-1 {% if verified_view %}text-bg-light{% else %}text-bg-secondary{% endif %}">{{ verified_order_count }}</span>
-    </a>
     <a href="{% url 'rider_dashboard' %}?view=completed"
        class="nav-link {% if completed_view %}active{% endif %}">
         <i class="bi bi-check2-circle me-1"></i><span>Done</span>
         <span class="badge rounded-pill ms-1 {% if completed_view %}text-bg-light{% else %}text-bg-secondary{% endif %}">{{ completed_order_count }}</span>
     </a>
+    <a href="{% url 'rider_dashboard' %}?view=all_completed"
+       class="nav-link {% if all_completed_view %}active{% endif %}">
+        <i class="bi bi-archive me-1"></i><span>All completed</span>
+        <span class="badge rounded-pill ms-1 {% if all_completed_view %}text-bg-light{% else %}text-bg-secondary{% endif %}">{{ all_completed_order_count }}</span>
+    </a>
 </nav>
 <details class="rider-dashboard-more-tabs">
-    <summary class="nav-link rider-dashboard-more-toggle{% if earnings_view or handover_view or performance_view %} active{% endif %}"
+    <summary class="nav-link rider-dashboard-more-toggle{% if earnings_view or handover_view or performance_view or all_completed_view or completed_view or verified_view %} active{% endif %}"
              aria-label="More rider dashboard tabs"
              title="More dashboard tabs">
+        <span>More</span>
         <i class="bi bi-chevron-down" aria-hidden="true"></i>
     </summary>
     <nav class="rider-dashboard-more-menu" aria-label="More rider dashboard tabs">
+        <a href="{% url 'rider_dashboard' %}?view=verified"
+           class="nav-link {% if verified_view %}active{% endif %}">
+            <i class="bi bi-shield-check me-1"></i><span>Recently verified</span>
+            <span class="badge rounded-pill ms-1">{{ verified_order_count }}</span>
+        </a>
         {% if is_public_rider %}
         <a href="{% url 'rider_dashboard' %}?view=earnings&period=today"
            class="nav-link {% if earnings_view %}active{% endif %}">
@@ -56,6 +62,22 @@ Rider Dashboard
     </nav>
 </details>
 </div>
+
+{% if active_delivery_in_progress %}
+<div class="alert alert-info mb-3" role="status">
+    You have an active delivery in progress. New orders are paused until it is completed.
+</div>
+{% elif rider_offer_cooldown_seconds %}
+<div class="alert alert-info mb-3" role="status">
+    Delivery completed. New orders will be available in {{ rider_offer_cooldown_seconds }} second{{ rider_offer_cooldown_seconds|pluralize }}.
+</div>
+<script>
+window.setTimeout(
+    () => window.location.reload(),
+    {{ rider_offer_cooldown_seconds }} * 1000 + 200
+);
+</script>
+{% endif %}
 
 {% if public_rider_batch_expires_at %}
 <div class="alert alert-info d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3"
@@ -584,7 +606,7 @@ Rider Dashboard
 </section>
 {% endif %}
 
-{% if orders and not completed_view and not verified_view and not performance_view %}
+{% if orders and not completed_view and not all_completed_view and not verified_view and not performance_view %}
 <section class="card border-primary shadow-sm mb-3" id="riderNearbyOrderControls">
     <div class="card-body d-flex flex-wrap align-items-center gap-2">
         <button type="button" class="btn btn-outline-primary" id="showNearbyRiderOrders">
@@ -1118,7 +1140,7 @@ Rider Dashboard
                         </div>
                     {% endif %}
 
-                    {% if completed_view %}
+                    {% if completed_view or all_completed_view %}
                         {% if order.status == "RETURNED" %}
                             <div class="alert alert-warning small">
                                 <i class="bi bi-arrow-return-left me-1"></i>
@@ -1208,7 +1230,7 @@ Rider Dashboard
                         </div>
                     {% endif %}
 
-                    {% if not completed_view and not verified_view %}
+                    {% if not completed_view and not all_completed_view and not verified_view %}
                     {% if order.delivery_coordinates and order.status == "OUT_FOR_DELIVERY" %}
                         <div class="d-grid gap-2 mb-2">
                             <a href="https://www.google.com/maps/dir/?api=1&amp;destination={{ order.delivery_coordinates.lat }},{{ order.delivery_coordinates.lng }}&amp;travelmode=driving&amp;dir_action=navigate"
@@ -1366,9 +1388,22 @@ Rider Dashboard
                                     <div class="alert alert-info small mb-2">Verify the customer's OTP first. You can record returned items after verification.</div>
                                     <form method="post" action="{% url 'verify_customer_otp' order.id %}" class="mt-2 border rounded p-3" id="rider-next-action-{{ order.id }}">
                                         {% csrf_token %}
+                                        {% if request.GET.otp_error == order.id|stringformat:"s" %}
+                                            <div class="alert alert-danger d-flex align-items-start gap-2 mb-3"
+                                                 id="customer-otp-error-{{ order.id }}"
+                                                 role="alert"
+                                                 aria-live="assertive">
+                                                <i class="bi bi-exclamation-triangle-fill mt-1" aria-hidden="true"></i>
+                                                <div>
+                                                    <strong>Incorrect OTP</strong>
+                                                    <div class="small">The 4-digit code did not match. Ask the customer to confirm their code, then try again.</div>
+                                                </div>
+                                            </div>
+                                        {% endif %}
                                         <div class="mb-2">
                                             <label class="form-label small">Customer OTP</label>
-                                            <input type="text" name="otp" class="form-control form-control-sm" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" placeholder="Enter 4-digit OTP" required />
+                                            <input type="text" name="otp" class="form-control form-control-sm{% if request.GET.otp_error == order.id|stringformat:"s" %} is-invalid{% endif %}" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" placeholder="Enter 4-digit OTP" aria-describedby="customer-otp-help-{{ order.id }}{% if request.GET.otp_error == order.id|stringformat:"s" %} customer-otp-error-{{ order.id }}{% endif %}"{% if request.GET.otp_error == order.id|stringformat:"s" %} aria-invalid="true"{% endif %} required />
+                                            <div id="customer-otp-help-{{ order.id }}" class="form-text">Enter the 4-digit code provided by the customer.</div>
                                         </div>
                                         <input type="hidden" name="latitude" id="lat-{{ order.id }}" value="" />
                                         <input type="hidden" name="longitude" id="lng-{{ order.id }}" value="" />
@@ -1426,6 +1461,20 @@ Rider Dashboard
                                 {% elif order.cod_payment_approval.status == "PENDING" %}
                                     <div class="alert alert-warning mt-2 mb-0" id="rider-next-action-{{ order.id }}">
                                         Payment of ₹{{ order.cod_payment_approval.qr_amount|floatformat:2 }} reported. Waiting for shop approval; delivery will complete after approval.
+                                       <form method="post"
+                                             action="{% url 'remind_cod_payment_reviewers' order.cod_payment_approval.id %}"
+                                             class="mt-2">
+                                           {% csrf_token %}
+                                           <button type="submit"
+                                                   class="btn btn-sm btn-outline-warning"
+                                                   {% if order.payment_reminder_wait_seconds %}disabled{% endif %}>
+                                               {% if order.payment_reminder_wait_seconds %}
+                                                   Remind shop in {{ order.payment_reminder_wait_seconds }}s
+                                               {% else %}
+                                                   <i class="bi bi-bell me-1" aria-hidden="true"></i>Remind shop
+                                               {% endif %}
+                                           </button>
+                                       </form>
                                     </div>
                                 {% else %}
                                 {% if order.cod_payment_approval.status == "REJECTED" %}
@@ -1560,7 +1609,7 @@ Rider Dashboard
         <div class="col-12">
             <div class="text-center py-5">
                 <div style="font-size:60px;">🚚</div>
-                {% if completed_view %}
+                {% if completed_view or all_completed_view %}
                     <h4>No completed deliveries yet</h4>
                     <p class="text-muted">Orders you complete will be listed here.</p>
                 {% elif verified_view %}

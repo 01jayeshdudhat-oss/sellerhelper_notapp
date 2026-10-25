@@ -111,19 +111,34 @@ Order Tracking - {{ order.tracking_code|default:order.order_id }}
 
     {% for shop_order in shop_orders %}
 
-    <div class="card shadow-sm border-0 mb-4">
+    <div class="card shadow-sm border-0 mb-4"
+         id="shop-order-card-{{ shop_order.id }}"
+         data-shop-order-card="{{ shop_order.id }}">
 
         <div class="card-header bg-white">
 
-            <div class="d-flex justify-content-between">
+            <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap">
 
                 <strong>
                     🏪 {{ shop_order.shop.name }} · #{{ shop_order.shop_order_number|default:shop_order.order.order_id }}
                 </strong>
 
-                <span class="badge bg-primary">
-                    {{ shop_order.status }}
-                </span>
+                <div class="d-flex align-items-center gap-2">
+                    <span class="badge {% if shop_order.status == 'CANCELLED' %}bg-secondary{% else %}bg-primary{% endif %}"
+                          data-shop-order-status="{{ shop_order.id }}">
+                        {{ shop_order.status }}
+                    </span>
+                    {% if shop_order.status == "PLACED" %}
+                        <button class="btn btn-sm btn-outline-danger"
+                                type="button"
+                                data-customer-shop-order-cancel
+                                data-cancel-url="{% url 'customer_cancel_shop_order' order.tracking_code|default:order.order_id shop_order.id %}"
+                                data-shop-order-id="{{ shop_order.id }}"
+                                data-shop-name="{{ shop_order.shop.name }}">
+                            Cancel this shop order
+                        </button>
+                    {% endif %}
+                </div>
 
             </div>
             {% if shop_order.pickup_location_data %}
@@ -138,6 +153,21 @@ Order Tracking - {{ order.tracking_code|default:order.order_id }}
                     The shop will confirm the delivery timing.
                 </div>
             {% endif %}
+            {% if shop_order.customer_delivery_otp %}
+                <div class="alert alert-info mt-2 mb-0" role="status">
+                    <div class="small">Delivery verification code</div>
+                    <div class="fs-4 fw-bold font-monospace">{{ shop_order.customer_delivery_otp }}</div>
+                    <div class="small">Share this code with your assigned rider only when they arrive to complete delivery.</div>
+                </div>
+            {% elif shop_order.customer_otp_verified %}
+                <div class="small text-success mt-2" role="status">
+                    Delivery verification completed.
+                </div>
+            {% endif %}
+            <div class="small mt-2"
+                 data-shop-order-cancel-feedback="{{ shop_order.id }}"
+                 role="status"
+                 aria-live="polite"></div>
 
         </div>
 
@@ -371,6 +401,64 @@ Order Tracking - {{ order.tracking_code|default:order.order_id }}
     const tracker = document.getElementById("order-tracking-live");
     if (!tracker) return;
     const csrfToken = tracker.querySelector('input[name="csrfmiddlewaretoken"]')?.value || "";
+    tracker.querySelectorAll("[data-customer-shop-order-cancel]").forEach((button) => {
+        button.addEventListener("click", async () => {
+            const shopOrderId = button.dataset.shopOrderId;
+            const feedback = tracker.querySelector(
+                `[data-shop-order-cancel-feedback="${shopOrderId}"]`,
+            );
+            if (!window.confirm(
+                `Cancel the order from ${button.dataset.shopName}? This is only allowed before the shop confirms it.`,
+            )) return;
+
+            const originalText = button.textContent;
+            button.disabled = true;
+            button.textContent = "Cancelling…";
+            if (feedback) {
+                feedback.className = "small mt-2 text-muted";
+                feedback.textContent = "Sending cancellation request…";
+            }
+            try {
+                const response = await fetch(button.dataset.cancelUrl, {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: {
+                        "X-CSRFToken": csrfToken,
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Accept": "application/json",
+                    },
+                });
+                const result = await response.json();
+                if (!response.ok || !result.success) {
+                    throw new Error(result.message || "Could not cancel this shop order.");
+                }
+                const statusBadge = tracker.querySelector(
+                    `[data-shop-order-status="${shopOrderId}"]`,
+                );
+                if (statusBadge) {
+                    statusBadge.textContent = result.status || "CANCELLED";
+                    statusBadge.classList.remove("bg-primary");
+                    statusBadge.classList.add("bg-secondary");
+                }
+                button.remove();
+                if (feedback) {
+                    feedback.className = "small mt-2 text-success";
+                    feedback.textContent = result.message;
+                }
+                refresh();
+            } catch (error) {
+                console.error("Could not cancel shop order.", error);
+                button.disabled = false;
+                button.textContent = originalText;
+                if (feedback) {
+                    feedback.className = "small mt-2 text-danger";
+                    feedback.textContent = error instanceof Error
+                        ? error.message
+                        : "Could not cancel this shop order.";
+                }
+            }
+        });
+    });
     tracker.querySelectorAll("[data-background-location-start]").forEach((button) => {
         button.addEventListener("click", async () => {
             const status = tracker.querySelector("[data-background-location-status]");

@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block title %}Payment Manager{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+        <div>
+            <h1 class="h3 mb-1">Rider payment confirmations</h1>
+            <p class="text-muted mb-0">Review customer payments reported by riders for shops that authorized you.</p>
+        </div>
+        <a href="{% url 'staff_dashboard' %}" class="btn btn-outline-secondary">Staff dashboard</a>
+    </div>
+
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body">
+            <h2 class="h6 fw-bold">Authorized shops</h2>
+            <div class="d-flex flex-wrap gap-2">
+                {% for membership in authorized_shops %}
+                    <span class="badge text-bg-light border">{{ membership.shop.name }}</span>
+                {% endfor %}
+            </div>
+            <p class="form-text mb-0 mt-2">
+                To manage another shop, its owner can add you using this same username and grant rider payment confirmation access for that shop. Each shop grants access independently.
+            </p>
+        </div>
+    </div>
+
+    <div class="card border-0 shadow-sm">
+        <div class="card-header bg-white">
+            <h2 class="h5 mb-0">Waiting for confirmation</h2>
+        </div>
+        {% if pending_payment_requests %}
+            <div class="table-responsive">
+                <table class="table align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Shop / Order</th>
+                            <th>Rider</th>
+                            <th>Reported payment</th>
+                            <th>COD balance</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for payment in pending_payment_requests %}
+                            <tr>
+                                <td>
+                                    <strong>{{ payment.shop.name }}</strong><br>
+                                    <a href="{% url 'shop_order_detail' payment.shop_order_id %}">
+                                        {{ payment.shop_order.shop_order_number|default:payment.shop_order.order.order_id }}
+                                    </a>
+                                </td>
+                                <td>{{ payment.rider.user.get_full_name|default:payment.rider.user.username }}</td>
+                                <td>₹{{ payment.qr_amount|floatformat:2 }}<br><small class="text-muted">{{ payment.upi_id }}</small></td>
+                                <td>₹{{ payment.settlement_amount|floatformat:2 }}</td>
+                                <td>
+                                    <div class="d-flex flex-wrap gap-2">
+                                        <form method="post" action="{% url 'approve_cod_payment' payment.pk %}">
+                                            {% csrf_token %}
+                                            <button type="submit" class="btn btn-sm btn-success">Confirm received</button>
+                                        </form>
+                                        <form method="post" action="{% url 'reject_cod_payment' payment.pk %}">
+                                            {% csrf_token %}
+                                            <button type="submit" class="btn btn-sm btn-outline-danger">Reject</button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <div class="card-body">
+                <p class="text-muted mb-0">There are no rider payment requests waiting for confirmation.</p>
+            </div>
+        {% endif %}
+    </div>
+
+    <div class="card border-0 shadow-sm mt-4">
+        <div class="card-header bg-white">
+            <h2 class="h5 mb-0">COD cash handovers</h2>
+        </div>
+        {% if cash_handover_requests %}
+            <div class="table-responsive">
+                <table class="table align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Shop / Order</th>
+                            <th>Rider</th>
+                            <th>Outstanding</th>
+                            <th>Confirm</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for collection in cash_handover_requests %}
+                            <tr>
+                                <td>
+                                    <strong>{{ collection.shop.name }}</strong><br>
+                                    <a href="{% url 'shop_order_detail' collection.shop_order_id %}">
+                                        {{ collection.shop_order.shop_order_number|default:collection.shop_order.order.order_id }}
+                                    </a>
+                                </td>
+                                <td>{{ collection.rider.user.get_full_name|default:collection.rider.user.username }}</td>
+                                <td>₹{{ collection.remaining_amount|floatformat:2 }}</td>
+                                <td>
+                                    <form method="post"
+                                          action="{% url 'confirm_rider_cash_handover' collection.shop_order_id %}">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-success">Confirm received</button>
+                                    </form>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <div class="card-body">
+                <p class="text-muted mb-0">There are no COD cash handovers waiting for confirmation.</p>
+            </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

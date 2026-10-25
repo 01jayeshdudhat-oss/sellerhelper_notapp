@@ -5,9 +5,12 @@ from contextlib import closing
 import json
 import hashlib
 import hmac
+import io
 from pathlib import Path
 import sqlite3
 import tempfile
+import zipfile
+import xml.etree.ElementTree as ElementTree
 from unittest.mock import Mock, patch
 
 from django.conf import settings
@@ -16,7 +19,7 @@ from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connections
 from django.db.models import Sum
-from django.test import TestCase, override_settings
+from django.test import Client, TestCase, override_settings
 from asgiref.sync import async_to_sync
 from django.urls import reverse
 from django.utils import timezone
@@ -33,6 +36,7 @@ from .models import (
     FavoriteShop,
     FavoriteProduct,
     MarketplaceLayoutSettings,
+    ProductCloneSettings,
     SiteBrandingSettings,
     SiteThemeRevision,
     SiteThemeSettings,
@@ -46,6 +50,9 @@ from .models import (
     PublicRiderApplication,
     ClientWalletTransaction,
     Product,
+    HSNCodeDescription,
+    SACCodeDescription,
+    OrderVoiceInstruction,
     ProductCategory,
     ProductShop,
     Order,
@@ -54,6 +61,7 @@ from .models import (
     ShopOrder,
     Notification,
     NotificationDeviceToken,
+    UserPresence,
     StockMovement,
     DeliverySharingSettings,
     RoadNetworkGeoJSON,
@@ -200,6 +208,79 @@ class SellerProjectConfigTests(TestCase):
             with self.subTest(field=field.name, value=invalid_value):
                 with self.assertRaises(ValidationError):
                     field.clean(invalid_value, None)
+
+    def test_public_rider_can_receive_order_inside_any_saved_work_area(self):
+        from .public_rider_dispatch import eligible_public_riders
+        from .public_riders import sync_public_rider_shop_memberships
+
+        owner = User.objects.create_user(username="multi_area_rider_shop_owner")
+        shop = Shop.objects.create(
+            name="Multi-area public rider shop",
+            owner=owner,
+            location={"lat": 21.17, "lng": 72.83},
+            public_rider_network_enabled=True,
+            rider_delivery_preference="PUBLIC",
+        )
+        rider_user = User.objects.create_user(username="multi_area_public_rider")
+        rider_application = PublicRiderApplication.objects.create(
+            user=rider_user,
+            full_name="Multi-area Rider",
+            phone="9876543201",
+            address="Rider address",
+            vehicle_type="MOTORCYCLE",
+            driving_license_number="DL-MULTI-AREA-1",
+            work_area={
+                "type": "circle",
+                "center": {"lat": 24.0, "lng": 72.0},
+                "radius_km": 2,
+            },
+            work_areas=[
+                {
+                    "type": "circle",
+                    "center": {"lat": 24.0, "lng": 72.0},
+                    "radius_km": 2,
+                },
+                {
+                    "type": "circle",
+                    "center": {"lat": 21.17, "lng": 72.83},
+                    "radius_km": 2,
+                },
+            ],
+            status=PublicRiderApplication.STATUS_APPROVED,
+        )
+        sync_public_rider_shop_memberships(rider_application)
+        order = Order.objects.create(
+            order_id="MULTI-AREA-PUBLIC-RIDER-ORDER",
+            user="multi_area_customer",
+            status="READY",
+            placed_location={"lat": 21.18, "lng": 72.84},
+            delivery_location="21.18,72.84",
+        )
+        shop_order = ShopOrder.objects.create(
+            order=order,
+            shop=shop,
+            status="READY",
+        )
+
+        eligible = eligible_public_riders(shop_order)
+
+        self.assertEqual(
+            [rider.user_id for rider in eligible],
+            [rider_user.pk],
+        )
+
+        self.client.force_login(rider_user)
+        session = self.client.session
+        session["active_portal"] = "RIDER"
+        session.save()
+        dashboard = self.client.get(reverse("rider_dashboard"))
+
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertEqual(dashboard.context["available_order_count"], 1)
+        self.assertEqual(
+            [available_order.pk for available_order in dashboard.context["orders"]],
+            [shop_order.pk],
+        )
 
     def test_abandoned_checkout_timeout_defaults_to_three_minutes_and_is_bounded(self):
         field = DeliverySharingSettings._meta.get_field(
@@ -769,6 +850,8 @@ class SellerProjectConfigTests(TestCase):
         self.assertContains(response, "Click the map where your home is")
         self.assertContains(response, 'color: "#e85d04"')
         self.assertContains(response, "Go to home")
+        self.assertContains(response, reverse("notifications"))
+        self.assertContains(response, "bi-bell")
 
     def test_public_rider_homeward_mode_only_receives_orders_toward_home(self):
         owner = User.objects.create_user(
@@ -1199,7 +1282,13 @@ class SellerProjectConfigTests(TestCase):
                 nearby_rider_user.pk,
             },
         )
-        with patch("seller.live_updates._send_user_event") as send_event:
+        with (
+            patch("seller.live_updates._send_user_event") as send_event,
+            patch(
+                "seller.live_updates.submit_background_task",
+                side_effect=lambda task, *args, **kwargs: task(*args),
+            ),
+        ):
             with self.captureOnCommitCallbacks(execute=True):
                 shop_order.status = "PACKING"
                 shop_order.save(update_fields=["status"])
@@ -1752,7 +1841,7 @@ class SellerProjectConfigTests(TestCase):
         self.assertEqual(dashboard_response.status_code, 200)
         self.assertTrue(dashboard_response.context["is_public_rider_portal"])
         self.assertFalse(dashboard_response.context["is_customer_portal"])
-        self.assertContains(dashboard_response, "Rider Panel")
+        self.assertContains(dashboard_response, "Deliveries")
         self.assertContains(dashboard_response, "Work area &amp; home settings")
         self.assertContains(dashboard_response, "UPI payment settings")
         self.assertContains(dashboard_response, "Page zoom")
@@ -3149,6 +3238,98 @@ class SellerProjectConfigTests(TestCase):
                 if query == "चुकँदर्":
                     self.assertContains(response, "normalizeSearchText")
 
+    def test_marketplace_product_search_matches_any_query_word(self):
+        user = User.objects.create_user(
+            username="partial_word_search_user",
+            password="pass12345",
+        )
+        ClientProfile.objects.create(user=user, name="Partial Word Search User")
+        owner = User.objects.create_user(
+            username="partial_word_search_owner",
+            password="pass12345",
+        )
+        shop = Shop.objects.create(name="Neighborhood Grocer", owner=owner)
+        matching_product = Product.objects.create(
+            created_by=owner,
+            product_name="Spinach",
+            product_category="SABJI",
+            price="30.00",
+            unit="bunch",
+        )
+        unrelated_product = Product.objects.create(
+            created_by=owner,
+            product_name="Cucumber",
+            product_category="SABJI",
+            price="20.00",
+            unit="kg",
+        )
+        for product in (matching_product, unrelated_product):
+            ProductShop.objects.create(
+                shop=shop,
+                product=product,
+                price=product.price,
+                stock=5,
+                is_active=True,
+            )
+
+        self.client.force_login(user)
+        response = self.client.get(
+            reverse("marketplace"),
+            {"q": "spinach unmatchedword"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [item.product_id for item in response.context["products"]],
+            [matching_product.pk],
+        )
+
+    def test_marketplace_product_search_matches_spelling_mistake(self):
+        user = User.objects.create_user(
+            username="typo_search_user",
+            password="pass12345",
+        )
+        ClientProfile.objects.create(user=user, name="Typo Search User")
+        owner = User.objects.create_user(
+            username="typo_search_owner",
+            password="pass12345",
+        )
+        shop = Shop.objects.create(name="Typo Search Shop", owner=owner)
+        matching_product = Product.objects.create(
+            created_by=owner,
+            product_name="Spinach",
+            product_category="SABJI",
+            price="30.00",
+            unit="bunch",
+        )
+        unrelated_product = Product.objects.create(
+            created_by=owner,
+            product_name="Cucumber",
+            product_category="SABJI",
+            price="20.00",
+            unit="kg",
+        )
+        for product in (matching_product, unrelated_product):
+            ProductShop.objects.create(
+                shop=shop,
+                product=product,
+                price=product.price,
+                stock=5,
+                is_active=True,
+            )
+
+        self.client.force_login(user)
+        response = self.client.get(
+            reverse("marketplace"),
+            {"q": "spinich no-match"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [item.product_id for item in response.context["products"]],
+            [matching_product.pk],
+        )
+
     def test_search_text_normalizes_devanagari_nasal_and_terminal_virama(self):
         from .offline_keyword_dictionary import normalize_search_text
 
@@ -3523,6 +3704,7 @@ class SellerProjectConfigTests(TestCase):
         self.client.force_login(owner)
         owner_response = self.client.get(reverse("shop_staff_list_shop", kwargs={"shop_id": shop.id}))
         self.assertEqual(owner_response.status_code, 200)
+        self.assertContains(owner_response, "Remove from this shop")
 
         self.client.force_login(staff_user)
         staff_response = self.client.get(reverse("shop_staff_list_shop", kwargs={"shop_id": shop.id}))
@@ -3539,12 +3721,224 @@ class SellerProjectConfigTests(TestCase):
                 "username": "new_rider",
                 "password": "pass1234",
                 "role": "RIDER",
-                "is_active": "on",
             },
         )
 
         self.assertEqual(response.status_code, 302)
-        self.assertTrue(ShopStaff.objects.filter(shop=shop, user__username="new_rider").exists())
+        new_staff = ShopStaff.objects.get(
+            shop=shop,
+            user__username="new_rider",
+        )
+        self.assertTrue(new_staff.is_active)
+
+    def test_owner_can_share_existing_staff_as_packer_with_another_shop(self):
+        owner = User.objects.create_user(username="owner_share_packer")
+        source_shop = Shop.objects.create(name="Packer Source Shop", owner=owner)
+        target_shop = Shop.objects.create(name="Packer Target Shop", owner=owner)
+        existing_staff_user = User.objects.create_user(username="shared_packer")
+        ShopStaff.objects.create(
+            shop=source_shop,
+            user=existing_staff_user,
+            role="MANAGER",
+            is_active=True,
+        )
+
+        self.client.force_login(owner)
+        response = self.client.post(
+            reverse(
+                "shop_staff_create_shop",
+                kwargs={"shop_id": target_shop.pk},
+            ),
+            {
+                "existing_staff_user": str(existing_staff_user.pk),
+                "role": "PACKER",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        shared_packer_membership = ShopStaff.objects.get(
+            shop=target_shop,
+            user=existing_staff_user,
+        )
+        self.assertEqual(shared_packer_membership.role, "PACKER")
+        self.assertTrue(shared_packer_membership.is_active)
+
+    def test_payment_manager_can_be_assigned_to_multiple_shops_as_same_staff_user(self):
+        owner = User.objects.create_user(username="multi_shop_payment_owner")
+        first_shop = Shop.objects.create(
+            name="First Payment Shop",
+            owner=owner,
+        )
+        second_shop = Shop.objects.create(
+            name="Second Payment Shop",
+            owner=owner,
+        )
+        third_shop = Shop.objects.create(
+            name="Unapproved Payment Shop",
+            owner=owner,
+        )
+        self.client.force_login(owner)
+
+        first_membership_response = self.client.post(
+            reverse(
+                "shop_staff_create_shop",
+                kwargs={"shop_id": first_shop.pk},
+            ),
+            {
+                "username": "multi_shop_payment_manager",
+                "password": "preserved-account-password",
+                "role": "PAYMENT_MANAGER",
+                "can_confirm_rider_payments": "on",
+                "is_active": "on",
+            },
+        )
+        self.assertEqual(first_membership_response.status_code, 302)
+        payment_user = User.objects.get(username="multi_shop_payment_manager")
+        inactive_user = User.objects.create_user(username="inactive_shop_employee")
+        ShopStaff.objects.create(
+            shop=first_shop,
+            user=inactive_user,
+            role="PACKER",
+            is_active=False,
+        )
+        public_rider_user = User.objects.create_user(username="public_shop_employee")
+        ShopStaff.objects.create(
+            shop=first_shop,
+            user=public_rider_user,
+            role="RIDER",
+            is_active=True,
+            is_public_rider=True,
+        )
+        existing_target_shop_user = User.objects.create_user(
+            username="already_in_target_shop",
+        )
+        ShopStaff.objects.create(
+            shop=second_shop,
+            user=existing_target_shop_user,
+            role="PACKER",
+            is_active=True,
+        )
+
+        second_shop_form = self.client.get(
+            reverse(
+                "shop_staff_create_shop",
+                kwargs={"shop_id": second_shop.pk},
+            ),
+        )
+        self.assertEqual(second_shop_form.status_code, 200)
+        self.assertIn(
+            payment_user,
+            second_shop_form.context["form"].fields[
+                "existing_staff_user"
+            ].queryset,
+        )
+        available_staff = second_shop_form.context["form"].fields[
+            "existing_staff_user"
+        ].queryset
+        self.assertNotIn(inactive_user, available_staff)
+        self.assertNotIn(public_rider_user, available_staff)
+        self.assertNotIn(existing_target_shop_user, available_staff)
+
+        second_membership_response = self.client.post(
+            reverse(
+                "shop_staff_create_shop",
+                kwargs={"shop_id": second_shop.pk},
+            ),
+            {
+                "existing_staff_user": str(payment_user.pk),
+                "role": "PAYMENT_MANAGER",
+                "can_confirm_rider_payments": "on",
+            },
+        )
+        self.assertEqual(second_membership_response.status_code, 302)
+        self.assertTrue(payment_user.check_password("preserved-account-password"))
+        second_membership = ShopStaff.objects.get(
+            user=payment_user,
+            shop=second_shop,
+        )
+        self.assertEqual(second_membership.role, "PAYMENT_MANAGER")
+        self.assertTrue(second_membership.can_confirm_rider_payments)
+        self.assertTrue(second_membership.is_active)
+
+        self.client.post(
+            reverse(
+                "shop_staff_create_shop",
+                kwargs={"shop_id": third_shop.pk},
+            ),
+            {
+                "username": "multi_shop_payment_manager",
+                "role": "PAYMENT_MANAGER",
+                "is_active": "on",
+            },
+        )
+        self.client.force_login(payment_user)
+        dashboard = self.client.get(
+            reverse("staff_payment_manager_dashboard"),
+        )
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertEqual(
+            {
+                membership.shop_id
+                for membership in dashboard.context["authorized_shops"]
+            },
+            {first_shop.pk, second_shop.pk},
+        )
+
+    def test_owner_can_remove_staff_from_one_shop_without_deleting_account_or_other_membership(self):
+        owner = User.objects.create_user(username="remove_staff_owner")
+        first_shop = Shop.objects.create(name="Remove Staff First Shop", owner=owner)
+        second_shop = Shop.objects.create(name="Remove Staff Second Shop", owner=owner)
+        employee = User.objects.create_user(username="employee_in_multiple_shops")
+        first_membership = ShopStaff.objects.create(
+            shop=first_shop,
+            user=employee,
+            role="PAYMENT_MANAGER",
+        )
+        second_membership = ShopStaff.objects.create(
+            shop=second_shop,
+            user=employee,
+            role="PAYMENT_MANAGER",
+        )
+
+        self.client.force_login(owner)
+        response = self.client.post(
+            reverse(
+                "shop_staff_remove",
+                kwargs={
+                    "shop_id": first_shop.pk,
+                    "staff_id": first_membership.pk,
+                },
+            ),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(ShopStaff.objects.filter(pk=first_membership.pk).exists())
+        self.assertTrue(
+            ShopStaff.objects.filter(pk=second_membership.pk, user=employee).exists(),
+        )
+        self.assertTrue(User.objects.filter(pk=employee.pk).exists())
+
+    def test_staff_removal_rejects_non_owner(self):
+        owner = User.objects.create_user(username="protected_staff_owner")
+        other_user = User.objects.create_user(username="protected_staff_other")
+        shop = Shop.objects.create(name="Protected Staff Shop", owner=owner)
+        employee = User.objects.create_user(username="protected_staff_employee")
+        membership = ShopStaff.objects.create(
+            shop=shop,
+            user=employee,
+            role="PACKER",
+        )
+
+        self.client.force_login(other_user)
+        response = self.client.post(
+            reverse(
+                "shop_staff_remove",
+                kwargs={"shop_id": shop.pk, "staff_id": membership.pk},
+            ),
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(ShopStaff.objects.filter(pk=membership.pk).exists())
 
     def test_shop_edit_form_applies_bootstrap_widget_styles(self):
         shop = Shop.objects.create(name="Styled Shop")
@@ -4199,7 +4593,11 @@ class SellerProjectConfigTests(TestCase):
     def test_rider_can_accept_unassigned_order_when_no_order_accepted_yet(self):
         owner = User.objects.create_user(username="owner_accept_order", password="pass1234")
         rider_user = User.objects.create_user(username="rider_acceptor", password="pass1234")
-        shop = Shop.objects.create(name="Accept Shop", owner=owner)
+        shop = Shop.objects.create(
+            name="Accept Shop",
+            owner=owner,
+            rider_delivery_preference="STAFF",
+        )
         rider_staff = ShopStaff.objects.create(shop=shop, user=rider_user, role="RIDER", is_active=True)
         order = Order.objects.create(
             order_id="ORD-2002",
@@ -5424,7 +5822,7 @@ class SellerProjectConfigTests(TestCase):
             username="public_rider_invalid_active_order",
             email="public_rider_invalid_active_order@example.com",
         )
-        PublicRiderApplication.objects.create(
+        rider_application = PublicRiderApplication.objects.create(
             user=rider_user,
             full_name="Invalid Active Order Rider",
             phone="9898989896",
@@ -5438,12 +5836,22 @@ class SellerProjectConfigTests(TestCase):
             },
             status=PublicRiderApplication.STATUS_APPROVED,
         )
+        rider_application.public_rider_batch_accepting = True
+        rider_application.public_rider_batch_started_at = (
+            timezone.now() - timedelta(minutes=6)
+        )
+        rider_application.save(update_fields=[
+            "public_rider_batch_accepting",
+            "public_rider_batch_started_at",
+            "updated_at",
+        ])
         owner = User.objects.create_user(
             username="owner_public_rider_invalid_active_order",
         )
         shop = Shop.objects.create(
             name="Invalid Active Order Shop",
             owner=owner,
+            location={"lat": 21.17, "lng": 72.83},
             public_rider_network_enabled=True,
             rider_delivery_preference="PUBLIC",
         )
@@ -5469,6 +5877,19 @@ class SellerProjectConfigTests(TestCase):
             rider_accepted_at=timezone.now(),
             status="OUT_FOR_DELIVERY",
         )
+        available_order = Order.objects.create(
+            order_id="ORD-PUBLIC-RIDER-AVAILABLE-AFTER-INVALID-ACTIVE",
+            user="public_rider_available_order_customer",
+            status="READY",
+            placed_location={"lat": 21.18, "lng": 72.84},
+            delivery_location="21.18,72.84",
+        )
+        available_shop_order = ShopOrder.objects.create(
+            order=available_order,
+            shop=shop,
+            status="READY",
+            public_rider_network_requested=True,
+        )
         self.client.force_login(rider_user)
         session = self.client.session
         session["active_portal"] = "RIDER"
@@ -5482,6 +5903,24 @@ class SellerProjectConfigTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["orders"].count(), 0)
         self.assertNotContains(response, "ORD-PUBLIC-RIDER-DELETED-ACTIVE")
+        available_response = self.client.get(
+            reverse("rider_dashboard"),
+            {"view": "available"},
+        )
+        self.assertEqual(available_response.status_code, 200)
+        self.assertEqual(available_response.context["available_order_count"], 1)
+        self.assertEqual(
+            list(
+                available_response.context["orders"].values_list(
+                    "pk",
+                    flat=True,
+                ),
+            ),
+            [available_shop_order.pk],
+        )
+        rider_application.refresh_from_db()
+        self.assertFalse(rider_application.public_rider_batch_accepting)
+        self.assertIsNone(rider_application.public_rider_batch_started_at)
 
     def test_rider_can_start_delivery_only_after_all_assigned_parcels_are_collected(self):
         owner = User.objects.create_user(
@@ -6851,6 +7290,10 @@ class SellerProjectConfigTests(TestCase):
         self.assertContains(response, "satelliteLayer.addTo(map)")
         self.assertContains(response, "Current Location")
         self.assertContains(response, "mapAccessStatus")
+        self.assertContains(response, "function initializeDeliveryAddressMap()")
+        self.assertContains(response, 'document.readyState === "loading"')
+        self.assertContains(response, "initializeDeliveryAddressMap();")
+        self.assertContains(response, "map.invalidateSize({pan: false})")
         self.assertNotContains(response, "Coordinates")
         self.assertNotContains(response, "Latitude")
         self.assertNotContains(response, "Longitude")
@@ -6882,6 +7325,12 @@ class SellerProjectConfigTests(TestCase):
         self.assertNotContains(list_response, "Earlier update")
         self.assertContains(list_response, "data-notification-toast-stack")
         self.assertContains(list_response, "data-unread-notifications-count")
+        self.assertContains(list_response, 'class="nav-item desktop-only me-lg-2"')
+        self.assertContains(
+            list_response,
+            f'href="{reverse("notifications")}"',
+        )
+        self.assertContains(list_response, 'class="bi bi-bell fs-5"')
 
         all_response = self.client.get(reverse("notifications"), {"view": "all"})
         self.assertContains(all_response, "Earlier update")
@@ -6983,10 +7432,22 @@ class SellerProjectConfigTests(TestCase):
         push_response = Mock()
         push_response.raise_for_status.return_value = None
         push_response.json.return_value = {"data": [{"status": "ok"}]}
-        with patch(
-            "seller.push_notifications.requests.post",
-            return_value=push_response,
-        ) as send_push:
+        queued_pushes = []
+
+        def capture_background_task(task, *args, **kwargs):
+            queued_pushes.append((task, args))
+
+        with (
+            patch(
+                "seller.push_notifications.requests.post",
+                return_value=push_response,
+            ) as send_push,
+            patch(
+                "seller.push_notifications.submit_background_task",
+                side_effect=capture_background_task,
+            ),
+            patch("seller.live_updates.submit_background_task"),
+        ):
             with self.captureOnCommitCallbacks(execute=True):
                 Notification.objects.create(
                     user=user,
@@ -6996,12 +7457,16 @@ class SellerProjectConfigTests(TestCase):
                     related_url="/shop/orders/42/",
                 )
 
-        send_push.assert_called_once()
-        push_payload = send_push.call_args.kwargs["json"][0]
-        self.assertEqual(push_payload["to"], token)
-        self.assertEqual(push_payload["sound"], "default")
-        self.assertEqual(push_payload["channelId"], "sellerhelper-alerts-v2")
-        self.assertEqual(push_payload["data"]["url"], "/shop/orders/42/")
+            send_push.assert_not_called()
+            self.assertEqual(len(queued_pushes), 1)
+            task, args = queued_pushes[0]
+            task(*args)
+            send_push.assert_called_once()
+            push_payload = send_push.call_args.kwargs["json"][0]
+            self.assertEqual(push_payload["to"], token)
+            self.assertEqual(push_payload["sound"], "default")
+            self.assertEqual(push_payload["channelId"], "sellerhelper-alerts-v2")
+            self.assertEqual(push_payload["data"]["url"], "/shop/orders/42/")
 
         unregistered = self.client.post(
             registration_url,
@@ -7012,6 +7477,259 @@ class SellerProjectConfigTests(TestCase):
         self.assertFalse(
             NotificationDeviceToken.objects.get(token=token).is_active
         )
+
+    def test_customer_order_cancellation_supports_immediate_ajax_response(self):
+        customer = User.objects.create_user(
+            username="fast_cancel_customer",
+            password="test-password",
+        )
+        owner = User.objects.create_user(
+            username="fast_cancel_owner",
+            password="test-password",
+        )
+        shop = Shop.objects.create(name="Fast Cancel Shop", owner=owner)
+        order = Order.objects.create(
+            order_id="ORD-FAST-CANCEL",
+            user=customer.username,
+            payment_type="COD",
+        )
+        shop_order = ShopOrder.objects.create(
+            order=order,
+            shop=shop,
+            total_amount=Decimal("20.00"),
+            taxable_amount=Decimal("20.00"),
+            status="PLACED",
+        )
+        product = Product.objects.create(
+            created_by=owner,
+            product_name="Cancel Restock Item",
+            price=Decimal("10.00"),
+            unit="piece",
+            product_category="OTHER",
+        )
+        assignment = ProductShop.objects.create(
+            shop=shop,
+            product=product,
+            price=Decimal("10.00"),
+            stock=3,
+            is_active=True,
+        )
+        OrderItem.objects.create(
+            shop_order=shop_order,
+            product=product,
+            product_shop=assignment,
+            product_name=product.product_name,
+            quantity=2,
+            price=Decimal("10.00"),
+            total=Decimal("20.00"),
+        )
+        self.client.force_login(customer)
+        order_list_response = self.client.get(reverse("order_list"))
+        self.assertContains(order_list_response, "orders-hero")
+        self.assertContains(order_list_response, "orders-summary")
+        self.assertContains(order_list_response, "customer-order-card")
+        self.assertContains(order_list_response, "customer-order-status")
+        self.assertContains(order_list_response, "Shop progress")
+        self.assertContains(order_list_response, "data-customer-order-action=\"cancel\"")
+        self.assertContains(order_list_response, "data-order-count=\"active\"")
+        self.assertContains(order_list_response, "data-customer-order-action=\"address\"")
+        self.assertContains(order_list_response, 'name="csrfmiddlewaretoken"')
+
+        response = self.client.post(
+            reverse("customer_cancel_order", kwargs={"order_id": order.order_id}),
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["success"])
+        self.assertEqual(order.__class__.objects.get(pk=order.pk).status, "CANCELLED")
+        self.assertEqual(
+            ShopOrder.objects.get(pk=shop_order.pk).status,
+            "CANCELLED",
+        )
+        assignment.refresh_from_db()
+        self.assertEqual(assignment.stock, 5)
+
+        repeated_response = self.client.post(
+            reverse("customer_cancel_order", kwargs={"order_id": order.order_id}),
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        self.assertFalse(repeated_response.json()["success"])
+        assignment.refresh_from_db()
+        self.assertEqual(assignment.stock, 5)
+
+    def test_customer_can_cancel_one_shop_order_from_tracking(self):
+        customer = User.objects.create_user(
+            username="single_shop_cancel_customer",
+        )
+        ClientProfile.objects.create(user=customer, name="Single Shop Customer")
+        first_owner = User.objects.create_user(username="single_shop_cancel_owner")
+        second_owner = User.objects.create_user(username="other_shop_cancel_owner")
+        first_shop = Shop.objects.create(name="Cancel One Shop", owner=first_owner)
+        second_shop = Shop.objects.create(name="Keep Active Shop", owner=second_owner)
+        order = Order.objects.create(
+            order_id="ORD-SINGLE-SHOP-CANCEL",
+            tracking_code="SC1234",
+            user=customer.username,
+            status="PLACED",
+            payment_type="COD",
+            payment_amount=Decimal("40.00"),
+            final_billing_amount=Decimal("40.00"),
+        )
+        cancelled_shop_order = ShopOrder.objects.create(
+            order=order,
+            shop=first_shop,
+            total_amount=Decimal("20.00"),
+            taxable_amount=Decimal("20.00"),
+            status="PLACED",
+        )
+        active_shop_order = ShopOrder.objects.create(
+            order=order,
+            shop=second_shop,
+            total_amount=Decimal("20.00"),
+            taxable_amount=Decimal("20.00"),
+            status="PLACED",
+        )
+        product = Product.objects.create(
+            created_by=first_owner,
+            product_name="Single Shop Restock Item",
+            price=Decimal("10.00"),
+            unit="piece",
+            product_category="OTHER",
+        )
+        assignment = ProductShop.objects.create(
+            shop=first_shop,
+            product=product,
+            price=Decimal("10.00"),
+            stock=3,
+            is_active=True,
+        )
+        OrderItem.objects.create(
+            shop_order=cancelled_shop_order,
+            product=product,
+            product_shop=assignment,
+            product_name=product.product_name,
+            quantity=2,
+            price=Decimal("10.00"),
+            total=Decimal("20.00"),
+        )
+
+        self.client.force_login(customer)
+        tracking_response = self.client.get(
+            reverse("order_tracking", kwargs={"order_id": order.tracking_code}),
+        )
+        self.assertEqual(tracking_response.status_code, 200)
+        self.assertContains(tracking_response, "Cancel this shop order")
+        self.assertContains(
+            tracking_response,
+            reverse(
+                "customer_cancel_shop_order",
+                kwargs={
+                    "order_id": order.tracking_code,
+                    "shop_order_id": cancelled_shop_order.pk,
+                },
+            ),
+        )
+
+        response = self.client.post(
+            reverse(
+                "customer_cancel_shop_order",
+                kwargs={
+                    "order_id": order.tracking_code,
+                    "shop_order_id": cancelled_shop_order.pk,
+                },
+            ),
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["success"])
+        self.assertEqual(response.json()["shop_order_id"], cancelled_shop_order.pk)
+        self.assertEqual(response.json()["status"], "CANCELLED")
+        cancelled_shop_order.refresh_from_db()
+        active_shop_order.refresh_from_db()
+        order.refresh_from_db()
+        assignment.refresh_from_db()
+        self.assertEqual(cancelled_shop_order.status, "CANCELLED")
+        self.assertEqual(cancelled_shop_order.cancellation_source, "CUSTOMER")
+        self.assertEqual(active_shop_order.status, "PLACED")
+        self.assertEqual(order.status, "PLACED")
+        self.assertEqual(order.final_billing_amount, Decimal("20.00"))
+        self.assertEqual(order.payment_amount, Decimal("20.00"))
+        self.assertEqual(assignment.stock, 5)
+        self.assertTrue(
+            OrderStatusHistory.objects.filter(
+                shop_order=cancelled_shop_order,
+                status="CANCELLED",
+                remark="Cancelled by customer before shop confirmation.",
+            ).exists()
+        )
+
+        repeated_response = self.client.post(
+            reverse(
+                "customer_cancel_shop_order",
+                kwargs={
+                    "order_id": order.tracking_code,
+                    "shop_order_id": cancelled_shop_order.pk,
+                },
+            ),
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        self.assertFalse(repeated_response.json()["success"])
+        assignment.refresh_from_db()
+        self.assertEqual(assignment.stock, 5)
+
+        final_shop_response = self.client.post(
+            reverse(
+                "customer_cancel_shop_order",
+                kwargs={
+                    "order_id": order.tracking_code,
+                    "shop_order_id": active_shop_order.pk,
+                },
+            ),
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        self.assertTrue(final_shop_response.json()["success"])
+        order.refresh_from_db()
+        self.assertEqual(order.status, "CANCELLED")
+        self.assertEqual(order.cancellation_source, "CUSTOMER")
+
+    def test_customer_cannot_cancel_shop_order_after_confirmation(self):
+        customer = User.objects.create_user(
+            username="confirmed_shop_cancel_customer",
+        )
+        owner = User.objects.create_user(username="confirmed_shop_cancel_owner")
+        shop = Shop.objects.create(name="Confirmed Shop Cancel", owner=owner)
+        order = Order.objects.create(
+            order_id="ORD-CONFIRMED-SHOP-CANCEL",
+            user=customer.username,
+            status="CONFIRMED",
+        )
+        shop_order = ShopOrder.objects.create(
+            order=order,
+            shop=shop,
+            status="CONFIRMED",
+            total_amount=Decimal("20.00"),
+            taxable_amount=Decimal("20.00"),
+        )
+        self.client.force_login(customer)
+
+        response = self.client.post(
+            reverse(
+                "customer_cancel_shop_order",
+                kwargs={"order_id": order.order_id, "shop_order_id": shop_order.pk},
+            ),
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["success"])
+        self.assertEqual(
+            response.json()["message"],
+            "This shop order can only be cancelled before the shop confirms it.",
+        )
+        shop_order.refresh_from_db()
+        self.assertEqual(shop_order.status, "CONFIRMED")
 
     def test_checkout_works_for_selected_delivery_address(self):
         user = User.objects.create_user(username="checkoutuser", password="pass1234")
@@ -7031,6 +7749,20 @@ class SellerProjectConfigTests(TestCase):
             product_category="SABJI",
         )
         product_shop = ProductShop.objects.create(shop=shop, product=product, price="40.00", stock=8, is_active=True)
+        zero_quantity_product = Product.objects.create(
+            created_by=user,
+            product_name="Zero Quantity Item",
+            price="15.00",
+            unit="piece",
+            product_category="OTHER",
+        )
+        zero_quantity_assignment = ProductShop.objects.create(
+            shop=shop,
+            product=zero_quantity_product,
+            price="15.00",
+            stock=5,
+            is_active=True,
+        )
         address = ClientDeliveryAddress.objects.create(
             client=client_profile,
             label="Home",
@@ -7039,16 +7771,156 @@ class SellerProjectConfigTests(TestCase):
             is_default=True,
             is_active=True,
         )
+        alternate_address = ClientDeliveryAddress.objects.create(
+            client=client_profile,
+            label="Work",
+            address="Office Road",
+            is_active=True,
+        )
 
         session = self.client.session
-        session["cart"] = {str(product_shop.id): 2}
+        session["cart_delivery_address_id"] = str(address.id)
+        session["carts_by_delivery_address"] = {
+            str(address.id): {
+                str(product_shop.id): 2,
+                str(zero_quantity_assignment.id): 0,
+            },
+            str(alternate_address.id): {
+                str(product_shop.id): 1,
+            },
+        }
+        session["cart"] = session["carts_by_delivery_address"][str(address.id)]
         session.save()
 
         self.client.force_login(user)
-        response = self.client.post(reverse("checkout"), {"address": address.id})
+        checkout_page = self.client.get(reverse("checkout"))
+        self.assertEqual(checkout_page.status_code, 200)
+        self.assertContains(checkout_page, 'name="csrfmiddlewaretoken"')
+        self.assertContains(checkout_page, 'document.querySelectorAll("[data-cart-count]")')
+        self.assertContains(checkout_page, "sellerhelper:pending-checkout:")
+        self.assertContains(checkout_page, "showCheckoutPending")
+        self.assertNotContains(checkout_page, "<iframe")
+        self.assertContains(checkout_page, "restoreTemporaryCart")
+        self.assertContains(checkout_page, "submitNativeCheckout")
+        self.assertContains(checkout_page, 'credentials: "same-origin"')
+        self.assertContains(checkout_page, "Placing your order")
+        checkout_key = self.client.session["checkout_attempt_key"]
+        self.assertContains(
+            checkout_page,
+            f'name="checkout_attempt_key" value="{checkout_key}"',
+        )
+        self.assertContains(checkout_page, "Banana")
+        self.assertNotContains(checkout_page, "Zero Quantity Item")
+        self.assertNotIn(
+            str(zero_quantity_assignment.id),
+            self.client.session["cart"],
+        )
+        response = self.client.post(
+            reverse("checkout"),
+            {
+                "address": address.id,
+                "payment_method": "COD",
+                "checkout_attempt_key": checkout_key,
+            },
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
 
-        self.assertEqual(response.status_code, 302)
-        self.assertTrue(Order.objects.filter(user=user.username).exists())
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["success"])
+        order = Order.objects.get(user=user.username)
+        self.assertEqual(response.json()["order_id"], order.order_id)
+        self.assertEqual(
+            response.json()["redirect_url"],
+            reverse("order_list"),
+        )
+        order_notification = Notification.objects.get(
+            user=user,
+            title="Order placed successfully",
+        )
+        self.assertEqual(
+            order_notification.related_url,
+            reverse("order_tracking", kwargs={"order_id": order.tracking_code}),
+        )
+        self.assertEqual(Order.objects.filter(user=user.username).count(), 1)
+        self.assertEqual(self.client.session["cart"], {})
+        self.assertEqual(
+            self.client.session["carts_by_delivery_address"],
+            {str(address.id): {}},
+        )
+        retry_response = self.client.post(
+            reverse("checkout"),
+            {
+                "address": address.id,
+                "payment_method": "COD",
+                "checkout_attempt_key": checkout_key,
+            },
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        self.assertEqual(retry_response.status_code, 200)
+        self.assertTrue(retry_response.json()["success"])
+        self.assertEqual(Order.objects.filter(user=user.username).count(), 1)
+        self.assertEqual(self.client.session["cart"], {})
+        replayed_session = self.client.session
+        replayed_session["cart"] = {str(product_shop.id): 2}
+        replayed_session["checkout_attempt_key"] = checkout_key
+        replayed_session.save()
+        replayed_ajax_response = self.client.post(
+            reverse("checkout"),
+            {
+                "address": address.id,
+                "payment_method": "COD",
+                "checkout_attempt_key": checkout_key,
+            },
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        self.assertEqual(replayed_ajax_response.status_code, 200)
+        self.assertTrue(replayed_ajax_response.json()["success"])
+        self.assertEqual(
+            replayed_ajax_response.json()["redirect_url"],
+            reverse("order_list"),
+        )
+        self.assertEqual(Order.objects.filter(user=user.username).count(), 1)
+        self.assertEqual(self.client.session["cart"], {})
+        cart_response = self.client.get(reverse("cart"))
+        self.assertEqual(cart_response.status_code, 200)
+        self.assertEqual(cart_response.context["items"], [])
+        self.assertEqual(cart_response.context["active_item_count"], 0)
+        order_list_response = self.client.get(reverse("order_list"))
+        self.assertEqual(order_list_response.status_code, 200)
+        self.assertEqual(order_list_response.context["active_tab"], "active")
+        self.assertIn(
+            order,
+            order_list_response.context["order_groups"]["active"],
+        )
+        self.assertContains(order_list_response, f"Order {order.tracking_code}")
+        self.assertNotContains(order_list_response, "Share live location")
+
+        replayed_session = self.client.session
+        replayed_session["cart"] = {str(product_shop.id): 2}
+        replayed_session["checkout_attempt_key"] = checkout_key
+        replayed_session.save()
+        replay_response = self.client.post(
+            reverse("checkout"),
+            {
+                "address": address.id,
+                "payment_method": "COD",
+                "checkout_attempt_key": checkout_key,
+            },
+            HTTP_USER_AGENT=(
+                "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 "
+                "Chrome/131.0.0.0 Mobile Safari/537.36"
+            ),
+        )
+        self.assertEqual(
+            replay_response.url,
+            reverse("order_list"),
+        )
+        self.assertEqual(Order.objects.filter(user=user.username).count(), 1)
+        self.assertEqual(self.client.session["cart"], {})
+        self.assertEqual(
+            self.client.session["carts_by_delivery_address"],
+            {str(address.id): {}},
+        )
 
     def test_checkout_cash_on_delivery_keeps_due_as_unpaid(self):
         user = User.objects.create_user(username="cod_checkout_user", password="cod-test-password")
@@ -7755,6 +8627,7 @@ class SellerProjectConfigTests(TestCase):
             owner=user,
             is_shop_open=False,
             allow_scheduled_delivery=True,
+            require_customer_otp_verification=True,
             location={"lat": 22.0, "lng": 72.0, "address": "Main shop"},
             pickup_locations=[{
                 "name": "Office Branch",
@@ -7828,6 +8701,13 @@ class SellerProjectConfigTests(TestCase):
             reverse("order_tracking", kwargs={"order_id": order.tracking_code})
         )
         self.assertEqual(tracking_response.status_code, 200)
+        client_profile.verification_otp = "2468"
+        client_profile.save(update_fields=["verification_otp"])
+        shop_order.status = "OUT_FOR_DELIVERY"
+        shop_order.save(update_fields=["status"])
+        tracking_response = self.client.get(
+            reverse("order_tracking", kwargs={"order_id": order.tracking_code})
+        )
         self.assertContains(tracking_response, f"Tracking #{order.tracking_code}")
         self.assertContains(tracking_response, "Scheduled delivery")
         self.assertContains(
@@ -7836,6 +8716,7 @@ class SellerProjectConfigTests(TestCase):
         )
         self.assertContains(tracking_response, "Pickup: Office Branch")
         self.assertContains(tracking_response, "MG Road branch")
+        self.assertContains(tracking_response, "Delivery verification code", count=1)
         self.assertContains(
             tracking_response,
             "Share your live location with the rider assigned to this active order?",
@@ -7860,6 +8741,15 @@ class SellerProjectConfigTests(TestCase):
             reverse("order_tracking", kwargs={"order_id": order.order_id})
         )
         self.assertEqual(legacy_tracking_response.status_code, 200)
+        shop_order.customer_otp_verified = True
+        shop_order.save(update_fields=["customer_otp_verified"])
+        verified_tracking_response = self.client.get(
+            reverse("order_tracking", kwargs={"order_id": order.tracking_code})
+        )
+        self.assertNotContains(
+            verified_tracking_response,
+            "Delivery verification code",
+        )
 
     def test_shop_order_numbers_count_per_shop_and_reset_daily(self):
         from .views import generate_shop_order_number
@@ -10016,6 +10906,24 @@ class OrderItemEditingTests(TestCase):
             quantity=-1,
         ).exists())
 
+    def test_customer_order_edit_returns_json_for_immediate_submission(self):
+        order, _shop_order = self.make_order()
+        self.client.force_login(self.customer)
+
+        response = self.client.post(
+            reverse("customer_edit_placed_order", kwargs={"order_id": order.order_id}),
+            {f"quantity_{self.item.id}": "3"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["success"])
+        self.assertEqual(response.json()["redirect_url"], reverse("order_list"))
+        self.assertEqual(
+            response.json()["revised_total"],
+            str(Order.objects.get(pk=order.pk).final_billing_amount),
+        )
+
     def test_shop_manager_quantity_decrease_restores_stock_and_notifies_customer(self):
         order, shop_order = self.make_order()
         manager = User.objects.create_user(
@@ -10317,6 +11225,264 @@ class RiderPartialReturnTests(TestCase):
             taxable_amount=total_items,
         )
         return order, shop_order, item
+
+    def test_payment_manager_can_review_only_owner_authorized_shop_payments(self):
+        order, shop_order, _item = self.make_delivery("COD")
+        payment_request = CODPaymentApprovalRequest.objects.create(
+            shop_order=shop_order,
+            shop=self.shop,
+            rider=self.rider,
+            qr_amount=order.payment_amount,
+            settlement_amount=order.payment_amount,
+            original_cod_amount=order.payment_amount,
+            upi_id="shop@example",
+            status="PENDING",
+        )
+        payment_manager_user = User.objects.create_user(
+            username="authorized_payment_manager",
+        )
+        payment_manager = ShopStaff.objects.create(
+            shop=self.shop,
+            user=payment_manager_user,
+            role="PAYMENT_MANAGER",
+            can_confirm_rider_payments=False,
+            is_active=True,
+        )
+        self.client.force_login(payment_manager_user)
+
+        self.assertEqual(
+            self.client.get(
+                reverse("staff_payment_manager_dashboard"),
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.post(
+                reverse(
+                    "approve_cod_payment",
+                    kwargs={"payment_request_id": payment_request.pk},
+                ),
+            ).status_code,
+            403,
+        )
+
+        payment_manager.can_confirm_rider_payments = True
+        payment_manager.save(update_fields=["can_confirm_rider_payments"])
+        dashboard = self.client.get(
+            reverse("staff_payment_manager_dashboard"),
+        )
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertContains(dashboard, "Rider payment confirmations")
+        self.assertContains(dashboard, "Confirm received")
+        self.assertEqual(
+            list(dashboard.context["pending_payment_requests"]),
+            [payment_request],
+        )
+
+        other_shop = Shop.objects.create(
+            name="Not Authorized Shop",
+            owner=self.owner,
+        )
+        other_order = Order.objects.create(
+            order_id="PAYMENT-MANAGER-OTHER-SHOP",
+            user=self.customer_user.username,
+            payment_type="COD",
+            payment_status="COD",
+            payment_amount=Decimal("30.00"),
+            final_billing_amount=Decimal("30.00"),
+            status="OUT_FOR_DELIVERY",
+        )
+        other_shop_order = ShopOrder.objects.create(
+            order=other_order,
+            shop=other_shop,
+            status="OUT_FOR_DELIVERY",
+            assigned_rider=self.rider,
+            total_amount=Decimal("30.00"),
+        )
+        unauthorized_request = CODPaymentApprovalRequest.objects.create(
+            shop_order=other_shop_order,
+            shop=other_shop,
+            rider=self.rider,
+            qr_amount=Decimal("30.00"),
+            settlement_amount=Decimal("30.00"),
+            original_cod_amount=Decimal("30.00"),
+            upi_id="shop@example",
+            status="PENDING",
+        )
+        self.assertEqual(
+            self.client.post(
+                reverse(
+                    "approve_cod_payment",
+                    kwargs={"payment_request_id": unauthorized_request.pk},
+                ),
+            ).status_code,
+            403,
+        )
+
+        approval_response = self.client.post(
+            reverse(
+                "approve_cod_payment",
+                kwargs={"payment_request_id": payment_request.pk},
+            ),
+        )
+        self.assertEqual(approval_response.status_code, 302)
+        payment_request.refresh_from_db()
+        self.assertEqual(payment_request.status, "APPROVED")
+        self.assertEqual(payment_request.reviewed_by, payment_manager_user)
+
+    def test_rider_can_remind_shop_every_thirty_seconds_about_pending_payment(self):
+        order, shop_order, _item = self.make_delivery("COD")
+        payment_request = CODPaymentApprovalRequest.objects.create(
+            shop_order=shop_order,
+            shop=self.shop,
+            rider=self.rider,
+            qr_amount=order.payment_amount,
+            settlement_amount=order.payment_amount,
+            original_cod_amount=order.payment_amount,
+            upi_id="shop@example",
+            status="PENDING",
+        )
+        self.client.force_login(self.rider_user)
+
+        dashboard = self.client.get(
+            reverse("rider_dashboard"),
+            {"view": "active"},
+        )
+        self.assertContains(dashboard, "Remind shop")
+        self.assertContains(dashboard, reverse(
+            "remind_cod_payment_reviewers",
+            kwargs={"payment_request_id": payment_request.pk},
+        ))
+
+        reminder_url = reverse(
+            "remind_cod_payment_reviewers",
+            kwargs={"payment_request_id": payment_request.pk},
+        )
+        first_reminder = self.client.post(reminder_url)
+        self.assertEqual(first_reminder.status_code, 302)
+        payment_request.refresh_from_db()
+        first_reminded_at = payment_request.last_reminded_at
+        self.assertIsNotNone(first_reminded_at)
+        self.assertEqual(
+            Notification.objects.filter(
+                user=self.owner,
+                title="Rider payment reminder",
+            ).count(),
+            1,
+        )
+
+        throttled_reminder = self.client.post(reminder_url)
+        self.assertEqual(throttled_reminder.status_code, 302)
+        payment_request.refresh_from_db()
+        self.assertEqual(payment_request.last_reminded_at, first_reminded_at)
+        self.assertEqual(
+            Notification.objects.filter(
+                user=self.owner,
+                title="Rider payment reminder",
+            ).count(),
+            1,
+        )
+
+        payment_request.last_reminded_at = timezone.now() - timedelta(seconds=31)
+        payment_request.save(update_fields=["last_reminded_at"])
+        second_reminder = self.client.post(reminder_url)
+        self.assertEqual(second_reminder.status_code, 302)
+        self.assertEqual(
+            Notification.objects.filter(
+                user=self.owner,
+                title="Rider payment reminder",
+            ).count(),
+            2,
+        )
+
+    def test_public_rider_gets_no_offer_during_or_within_ten_seconds_of_delivery(self):
+        from .public_rider_dispatch import eligible_public_riders
+        from .public_riders import sync_public_rider_shop_memberships
+
+        now = timezone.now()
+        public_shop = Shop.objects.create(
+            name="Public Rider Cooldown Shop",
+            owner=self.owner,
+            location={"lat": 21.17, "lng": 72.83},
+            public_rider_network_enabled=True,
+            rider_delivery_preference="PUBLIC",
+        )
+        rider_user = User.objects.create_user(
+            username="public_rider_offer_cooldown",
+        )
+        application = PublicRiderApplication.objects.create(
+            user=rider_user,
+            full_name="Cooldown Rider",
+            phone="9876543212",
+            address="Rider address",
+            vehicle_type="MOTORCYCLE",
+            driving_license_number="DL-COOLDOWN-1",
+            work_area={
+                "type": "circle",
+                "center": {"lat": 21.17, "lng": 72.83},
+                "radius_km": 20,
+            },
+            status=PublicRiderApplication.STATUS_APPROVED,
+        )
+        sync_public_rider_shop_memberships(application)
+        rider_membership = ShopStaff.objects.get(
+            shop=public_shop,
+            user=rider_user,
+            is_public_rider=True,
+        )
+        rider_membership.last_location = {
+            "lat": 21.17,
+            "lng": 72.83,
+            "observed_at": now.timestamp(),
+        }
+        rider_membership.save(update_fields=["last_location", "updated_at"])
+
+        def create_public_order(order_id, *, status="READY"):
+            order = Order.objects.create(
+                order_id=order_id,
+                user=self.customer_user.username,
+                status=status,
+                placed_location={"lat": 21.18, "lng": 72.84},
+                delivery_location="21.18,72.84",
+            )
+            return ShopOrder.objects.create(
+                order=order,
+                shop=public_shop,
+                status=status,
+                public_rider_network_requested=True,
+            )
+
+        active_order = create_public_order(
+            "PUBLIC-RIDER-COOLDOWN-ACTIVE",
+            status="OUT_FOR_DELIVERY",
+        )
+        active_order.assigned_rider = rider_membership
+        active_order.save(update_fields=["assigned_rider"])
+        candidate_order = create_public_order("PUBLIC-RIDER-COOLDOWN-CANDIDATE")
+
+        with (
+            patch(
+                "seller.public_rider_dispatch.public_rider_service_enabled",
+                return_value=True,
+            ),
+            patch(
+                "seller.public_rider_dispatch.timezone.now",
+                return_value=now,
+            ),
+        ):
+            self.assertEqual(eligible_public_riders(candidate_order), [])
+
+            active_order.status = "DELIVERED"
+            active_order.delivery_completed_at = now
+            active_order.save(update_fields=["status", "delivery_completed_at"])
+            self.assertEqual(eligible_public_riders(candidate_order), [])
+
+            active_order.delivery_completed_at = now - timedelta(seconds=12)
+            active_order.save(update_fields=["delivery_completed_at"])
+            self.assertEqual(
+                [rider.pk for rider in eligible_public_riders(candidate_order)],
+                [rider_membership.pk],
+            )
 
     def test_cod_partial_return_reduces_final_charge_without_restocking(self):
         order, shop_order, item = self.make_delivery("COD")
@@ -11312,7 +12478,8 @@ class RiderPartialReturnTests(TestCase):
         self.assertEqual(invalid_otp_response.status_code, 302)
         self.assertEqual(
             invalid_otp_response["Location"],
-            f"{reverse('rider_dashboard')}?view=active#order-{shop_order.pk}",
+            f"{reverse('rider_dashboard')}?view=active"
+            f"&otp_error={shop_order.pk}#order-{shop_order.pk}",
         )
         shop_order.refresh_from_db()
         self.assertFalse(shop_order.customer_otp_verified)
@@ -11321,9 +12488,18 @@ class RiderPartialReturnTests(TestCase):
         )
         unverified_dashboard = self.client.get(
             reverse("rider_dashboard"),
-            {"view": "active"},
+            {"view": "active", "otp_error": str(shop_order.pk)},
         )
-        self.assertContains(unverified_dashboard, "Customer not verified")
+        self.assertContains(unverified_dashboard, "Incorrect customer OTP")
+        self.assertContains(unverified_dashboard, "Incorrect OTP")
+        self.assertContains(
+            unverified_dashboard,
+            f'id="customer-otp-error-{shop_order.pk}"',
+        )
+        self.assertContains(
+            unverified_dashboard,
+            'aria-invalid="true"',
+        )
         self.assertNotContains(
             unverified_dashboard,
             f'name="returned_quantity_{item.pk}"',
@@ -12011,6 +13187,27 @@ class AdminCatalogWorkspaceTests(TestCase):
     def test_catalog_workspace_requires_superuser(self):
         response = self.client.get(reverse("admin_catalog_dashboard"))
         self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            self.client.get(reverse("admin_catalog_product_export")).status_code,
+            302,
+        )
+        self.assertEqual(
+            self.client.post(reverse("admin_catalog_product_import")).status_code,
+            302,
+        )
+        self.assertEqual(
+            self.client.post(
+                reverse("admin_catalog_hsn_reference_import"),
+            ).status_code,
+            302,
+        )
+        self.assertEqual(
+            self.client.get(
+                reverse("admin_catalog_hsn_suggestions"),
+                {"q": "mango"},
+            ).status_code,
+            302,
+        )
 
         regular_user = User.objects.create_user(
             username="catalog_workspace_user",
@@ -12019,6 +13216,27 @@ class AdminCatalogWorkspaceTests(TestCase):
         self.client.force_login(regular_user)
         response = self.client.get(reverse("admin_catalog_dashboard"))
         self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            self.client.get(reverse("admin_catalog_product_export")).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.post(reverse("admin_catalog_product_import")).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.post(
+                reverse("admin_catalog_hsn_reference_import"),
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.get(
+                reverse("admin_catalog_hsn_suggestions"),
+                {"q": "mango"},
+            ).status_code,
+            403,
+        )
         response = self.client.get(reverse("admin_site_theme_builder"))
         self.assertEqual(response.status_code, 403)
 
@@ -12668,6 +13886,239 @@ class AdminCatalogWorkspaceTests(TestCase):
         layout.refresh_from_db()
         self.assertEqual(layout.products_per_row, 6)
 
+    def test_admin_controls_fields_copied_from_marketplace_products(self):
+        self.client.force_login(self.admin)
+        dashboard_url = reverse("admin_catalog_dashboard")
+        dashboard = self.client.get(dashboard_url)
+        self.assertContains(dashboard, "Shop product copy settings")
+        self.assertContains(dashboard, "Description")
+
+        response = self.client.post(
+            dashboard_url,
+            {
+                "save_product_clone_settings": "1",
+                "allowed_fields": ["unit", "image_url"],
+            },
+        )
+
+        self.assertRedirects(response, dashboard_url)
+        settings_obj = ProductCloneSettings.objects.get(pk=1)
+        self.assertEqual(
+            set(settings_obj.allowed_fields),
+            {"unit", "image_url"},
+        )
+
+    def test_shop_owner_can_add_marketplace_product_with_zero_stock_and_allowed_fields(self):
+        source_owner = User.objects.create_user(
+            username="marketplace_clone_source_owner",
+            password="test-password",
+        )
+        source_shop = Shop.objects.create(
+            name="Marketplace Source Shop",
+            owner=source_owner,
+            market_category="DAILY MARKET",
+        )
+        category = ProductCategory.objects.create(
+            name="MARKETPLACE CLONE FRUITS",
+            market_category="DAILY MARKET",
+        )
+        source_product = Product.objects.create(
+            created_by=source_owner,
+            product_category=category.name,
+            product_name="Clone Test Mango",
+            product_title="Source title should not copy",
+            product_description="Source description should not copy",
+            sku="SOURCE-MANGO",
+            price="90.00",
+            unit="kg",
+            image_url="https://example.com/source-mango.jpg",
+            hsn_code="080450",
+            gst_rate="5.00",
+        )
+        source_listing = ProductShop.objects.create(
+            shop=source_shop,
+            product=source_product,
+            price="95.00",
+            stock=4,
+            is_active=True,
+        )
+        legacy_category = ProductCategory.objects.create(
+            name="MARKETPLACE CLONE LEGACY",
+            market_category="",
+        )
+        legacy_market_product = Product.objects.create(
+            created_by=source_owner,
+            product_category=legacy_category.name,
+            product_name="Legacy Market Product",
+            price="31.00",
+            unit="each",
+        )
+        legacy_market_listing = ProductShop.objects.create(
+            shop=source_shop,
+            product=legacy_market_product,
+            price="31.00",
+            stock=2,
+            is_active=True,
+        )
+        service_category = ProductCategory.objects.create(
+            name="MARKETPLACE CLONE SERVICE",
+            market_category="SERVICE MARKET",
+        )
+        service_product = Product.objects.create(
+            created_by=source_owner,
+            product_category=service_category.name,
+            product_name="Out of Market Service",
+            price="40.00",
+            unit="visit",
+        )
+        out_of_market_listing = ProductShop.objects.create(
+            shop=source_shop,
+            product=service_product,
+            price="40.00",
+            stock=2,
+            is_active=True,
+        )
+        other_market_shop = Shop.objects.create(
+            name="Service Market Shop",
+            owner=source_owner,
+            market_category="SERVICE MARKET",
+        )
+        other_market_product = Product.objects.create(
+            created_by=source_owner,
+            product_category=category.name,
+            product_name="Listing From Wrong Market",
+            price="50.00",
+            unit="kg",
+        )
+        other_market_listing = ProductShop.objects.create(
+            shop=other_market_shop,
+            product=other_market_product,
+            price="50.00",
+            stock=2,
+            is_active=True,
+        )
+        owner = User.objects.create_user(
+            username="marketplace_clone_destination_owner",
+            password="test-password",
+        )
+        destination_shop = Shop.objects.create(
+            name="Marketplace Destination Shop",
+            owner=owner,
+        )
+        ProductCloneSettings.objects.create(
+            allowed_fields=["unit", "image_url", "hsn_code", "gst_rate"],
+        )
+
+        self.client.force_login(owner)
+        browse = self.client.get(
+            reverse("add_marketplace_products"),
+            {"shop": destination_shop.pk},
+        )
+        self.assertEqual(browse.status_code, 200)
+        self.assertContains(browse, source_product.product_name)
+        self.assertContains(browse, legacy_market_product.product_name)
+        self.assertNotContains(browse, service_product.product_name)
+        self.assertNotContains(browse, other_market_product.product_name)
+        self.assertContains(browse, "DAILY MARKET · active listings with available stock")
+
+        mismatched_response = self.client.post(
+            reverse("add_marketplace_products"),
+            {
+                "shop": destination_shop.pk,
+                "source_listing": [
+                    source_listing.pk,
+                    legacy_market_listing.pk,
+                    out_of_market_listing.pk,
+                ],
+            },
+        )
+        self.assertRedirects(
+            mismatched_response,
+            f"{reverse('add_marketplace_products')}?shop={destination_shop.pk}",
+        )
+        self.assertFalse(
+            Product.objects.filter(
+                created_by=owner,
+                product_name=service_product.product_name,
+            ).exists()
+        )
+
+        response = self.client.post(
+            reverse("add_marketplace_products"),
+            {
+                "shop": destination_shop.pk,
+                "source_listing": [
+                    source_listing.pk,
+                    legacy_market_listing.pk,
+                ],
+            },
+        )
+
+        self.assertRedirects(
+            response,
+            f"{reverse('product_list')}?focus_shop={destination_shop.pk}",
+        )
+        cloned_product = Product.objects.get(
+            created_by=owner,
+            product_category=source_product.product_category,
+            product_name=source_product.product_name,
+        )
+        assignment = ProductShop.objects.get(
+            shop=destination_shop,
+            product=cloned_product,
+        )
+        self.assertEqual(assignment.stock, Decimal("0.0000"))
+        self.assertEqual(assignment.price, Decimal("95.00"))
+        self.assertEqual(cloned_product.price, Decimal("95.00"))
+        self.assertEqual(cloned_product.unit, "kg")
+        self.assertEqual(cloned_product.image_url, "https://example.com/source-mango.jpg")
+        self.assertEqual(cloned_product.hsn_code, "080450")
+        self.assertEqual(cloned_product.gst_rate, Decimal("5.00"))
+        self.assertEqual(cloned_product.product_description, "")
+        self.assertEqual(cloned_product.product_title, "")
+        self.assertEqual(cloned_product.sku, "")
+        legacy_clone = Product.objects.get(
+            created_by=owner,
+            product_category=legacy_category.name,
+            product_name=legacy_market_product.product_name,
+        )
+        self.assertTrue(
+            ProductShop.objects.filter(
+                shop=destination_shop,
+                product=legacy_clone,
+                stock=0,
+            ).exists()
+        )
+
+        repeated_response = self.client.post(
+            reverse("add_marketplace_products"),
+            {
+                "shop": destination_shop.pk,
+                "source_listing": [
+                    source_listing.pk,
+                    legacy_market_listing.pk,
+                ],
+            },
+        )
+        self.assertRedirects(
+            repeated_response,
+            f"{reverse('product_list')}?focus_shop={destination_shop.pk}",
+        )
+        self.assertEqual(
+            ProductShop.objects.filter(
+                shop=destination_shop,
+                product=cloned_product,
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            ProductShop.objects.filter(
+                shop=destination_shop,
+                product=legacy_clone,
+            ).count(),
+            1,
+        )
+
     def test_superuser_can_update_site_branding_and_upload_a_logo(self):
         self.client.force_login(self.admin)
         logo_data = (
@@ -12770,6 +14221,715 @@ class AdminCatalogWorkspaceTests(TestCase):
             "Page Product 25",
         )
 
+    def test_catalog_products_are_editable_in_table_and_export_to_excel(self):
+        fruits_product = AdminProductCatalog.objects.create(
+            product_category="FRUITS",
+            product_name="Catalog Export Mango",
+            image_url="https://example.com/mango.jpg",
+            image_url_2="https://example.com/mango-2.jpg",
+            hsn_code="080450",
+            sac_code="995411",
+            gst_rate=Decimal("5.00"),
+        )
+        AdminProductCatalog.objects.create(
+            product_category="DAIRY",
+            product_name="Catalog Export Milk",
+            image_url="https://example.com/milk.jpg",
+            hsn_code="040120",
+            gst_rate=Decimal("5.00"),
+        )
+        self.client.force_login(self.admin)
+
+        dashboard = self.client.get(
+            reverse("admin_catalog_dashboard"),
+            {"q": "Catalog Export Mango"},
+        )
+        self.assertContains(
+            dashboard,
+            f'name="product-{fruits_product.pk}-product_name"',
+        )
+        self.assertContains(
+            dashboard,
+            f'name="product-{fruits_product.pk}-product_category"',
+        )
+        self.assertContains(dashboard, "Download all products")
+        self.assertContains(
+            dashboard,
+            f'name="product-{fruits_product.pk}-image_url_2"',
+        )
+        self.assertContains(dashboard, "Save changes")
+        self.assertContains(dashboard, "Add single product")
+        self.assertContains(dashboard, 'name="save_product"', html=False)
+        self.assertEqual(
+            dashboard.content.decode().count("Save changes"),
+            1,
+        )
+        self.assertContains(dashboard, "catalog-product-filters")
+        category_dashboard = self.client.get(
+            reverse("admin_catalog_dashboard"),
+            {"category": "FRUITS"},
+        )
+        self.assertContains(category_dashboard, "Download FRUITS products")
+
+        return_to = (
+            reverse("admin_catalog_dashboard")
+            + "?q=Updated&category=FRUITS&status=active&page=2"
+        )
+        edit_response = self.client.post(
+            reverse(
+                "admin_catalog_product_edit",
+                kwargs={"pk": fruits_product.pk},
+            ),
+            {
+                "product_category": "FRUITS",
+                "product_name": "Updated Table Mango",
+                "image_url": "https://example.com/updated-mango.jpg",
+                "image_url_2": fruits_product.image_url_2,
+                "image_url_3": "",
+                "image_url_4": "",
+                "image_url_5": "",
+                "hsn_code": "080450",
+                "gst_rate": "12.00",
+                "is_active": "on",
+                "return_to": return_to,
+            },
+        )
+        self.assertRedirects(
+            edit_response,
+            return_to + "#catalog-products",
+        )
+        fruits_product.refresh_from_db()
+        self.assertEqual(fruits_product.product_name, "Updated Table Mango")
+        self.assertEqual(fruits_product.gst_rate, Decimal("12.00"))
+
+        all_export = self.client.get(
+            reverse("admin_catalog_product_export"),
+        )
+        self.assertEqual(all_export.status_code, 200)
+        self.assertEqual(
+            all_export["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        with zipfile.ZipFile(io.BytesIO(all_export.content)) as workbook:
+            sheet = ElementTree.fromstring(
+                workbook.read("xl/worksheets/sheet1.xml"),
+            )
+        exported_values = [
+            cell.findtext(
+                "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}is/"
+                "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t",
+            ) or cell.findtext(
+                "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}v",
+            )
+            for cell in sheet.findall(
+                ".//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}c",
+            )
+        ]
+        self.assertIn("Updated Table Mango", exported_values)
+        self.assertIn("Catalog Export Milk", exported_values)
+        self.assertIn("12.00", exported_values)
+        self.assertIn("995411", exported_values)
+
+        category_export = self.client.get(
+            reverse("admin_catalog_product_export"),
+            {"category": "FRUITS"},
+        )
+        with zipfile.ZipFile(io.BytesIO(category_export.content)) as workbook:
+            category_sheet = ElementTree.fromstring(
+                workbook.read("xl/worksheets/sheet1.xml"),
+            )
+        category_values = [
+            cell.findtext(
+                "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}is/"
+                "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t",
+            ) or cell.findtext(
+                "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}v",
+            )
+            for cell in category_sheet.findall(
+                ".//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}c",
+            )
+        ]
+        self.assertIn("Updated Table Mango", category_values)
+        self.assertNotIn("Catalog Export Milk", category_values)
+
+    def test_catalog_master_save_preserves_filters_and_saves_all_atomically(self):
+        first = AdminProductCatalog.objects.create(
+            product_category="FRUITS",
+            product_name="Master Save Apple",
+            image_url="https://example.com/apple.jpg",
+            hsn_code="080810",
+            gst_rate=Decimal("5.00"),
+        )
+        second = AdminProductCatalog.objects.create(
+            product_category="FRUITS",
+            product_name="Master Save Pear",
+            image_url="https://example.com/pear.jpg",
+            hsn_code="080830",
+            gst_rate=Decimal("5.00"),
+        )
+        self.client.force_login(self.admin)
+        return_to = (
+            reverse("admin_catalog_dashboard")
+            + "?q=Master&category=FRUITS&status=active&page=1"
+        )
+
+        def product_fields(product, *, name, gst_rate="12.00"):
+            prefix = f"product-{product.pk}"
+            return {
+                f"{prefix}-product_category": product.product_category,
+                f"{prefix}-product_name": name,
+                f"{prefix}-image_url": product.image_url,
+                f"{prefix}-image_url_2": "",
+                f"{prefix}-image_url_3": "",
+                f"{prefix}-image_url_4": "",
+                f"{prefix}-image_url_5": "",
+                f"{prefix}-hsn_code": product.hsn_code,
+                f"{prefix}-gst_rate": gst_rate,
+            }
+
+        invalid_data = {
+            "return_to": return_to,
+            **product_fields(first, name="Changed Apple"),
+            **product_fields(second, name="Changed Pear", gst_rate="101"),
+            f"product-{first.pk}-is_active": "on",
+            f"product-{second.pk}-is_active": "on",
+        }
+        invalid_response = self.client.post(
+            reverse("admin_catalog_products_save_all"),
+            invalid_data,
+        )
+        self.assertRedirects(
+            invalid_response,
+            return_to + "#catalog-products",
+        )
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.product_name, "Master Save Apple")
+        self.assertEqual(second.product_name, "Master Save Pear")
+
+        valid_data = {
+            "return_to": return_to,
+            **product_fields(first, name="Changed Apple"),
+            **product_fields(second, name="Changed Pear"),
+            f"product-{first.pk}-is_active": "on",
+        }
+        response = self.client.post(
+            reverse("admin_catalog_products_save_all"),
+            valid_data,
+        )
+        self.assertRedirects(response, return_to + "#catalog-products")
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.product_name, "Changed Apple")
+        self.assertEqual(first.gst_rate, Decimal("12.00"))
+        self.assertTrue(first.is_active)
+        self.assertEqual(second.product_name, "Changed Pear")
+        self.assertFalse(second.is_active)
+
+        row_save_data = {
+            "return_to": return_to,
+            "save_product": str(first.pk),
+            **product_fields(first, name="Saved Only Apple"),
+            **product_fields(second, name="Invalid Pear", gst_rate="101"),
+            f"product-{first.pk}-is_active": "on",
+        }
+        row_response = self.client.post(
+            reverse("admin_catalog_products_save_all"),
+            row_save_data,
+        )
+        self.assertRedirects(
+            row_response,
+            return_to + "#catalog-products",
+        )
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.product_name, "Saved Only Apple")
+        self.assertEqual(second.product_name, "Changed Pear")
+
+    def test_excel_import_updates_by_catalog_id_and_adds_rows_atomically(self):
+        product = AdminProductCatalog.objects.create(
+            product_category="FRUITS",
+            product_name="Import Mango",
+            image_url="https://example.com/import-mango.jpg",
+            hsn_code="080450",
+            gst_rate=Decimal("5.00"),
+        )
+        self.client.force_login(self.admin)
+        export = self.client.get(reverse("admin_catalog_product_export"))
+        with zipfile.ZipFile(io.BytesIO(export.content)) as source:
+            files = {
+                name: source.read(name)
+                for name in source.namelist()
+            }
+
+        namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+        sheet = ElementTree.fromstring(files["xl/worksheets/sheet1.xml"])
+        rows = sheet.findall(f".//{namespace}sheetData/{namespace}row")
+
+        def inline_value(row, reference):
+            return row.findtext(
+                f"{namespace}c[@r='{reference}']/{namespace}is/"
+                f"{namespace}t",
+            )
+
+        product_row = next(
+            row
+            for row in rows
+            if inline_value(row, f"A{row.get('r')}") == str(product.pk)
+        )
+        product_row_number = int(product_row.get("r"))
+        name_cell = product_row.find(
+            f"{namespace}c[@r='C{product_row_number}']",
+        )
+        name_cell.find(f"{namespace}is/{namespace}t").text = "Renamed Import Mango"
+        sheet_data = sheet.find(f"{namespace}sheetData")
+        added_row_number = max(int(row.get("r")) for row in rows) + 1
+        added_row = ElementTree.SubElement(
+            sheet_data,
+            f"{namespace}row",
+            {"r": str(added_row_number)},
+        )
+        for cell_ref, value in (
+            (f"B{added_row_number}", "FRUITS"),
+            (f"C{added_row_number}", "New Imported Pear"),
+            (f"D{added_row_number}", "https://example.com/import-pear.jpg"),
+            (f"I{added_row_number}", "080830"),
+            (f"J{added_row_number}", "5"),
+            (f"K{added_row_number}", "Yes"),
+        ):
+            cell = ElementTree.SubElement(
+                added_row,
+                f"{namespace}c",
+                {"r": cell_ref, "t": "inlineStr"},
+            )
+            inline = ElementTree.SubElement(cell, f"{namespace}is")
+            text = ElementTree.SubElement(inline, f"{namespace}t")
+            text.text = value
+        files["xl/worksheets/sheet1.xml"] = ElementTree.tostring(
+            sheet,
+            encoding="utf-8",
+            xml_declaration=True,
+        )
+        workbook_bytes = io.BytesIO()
+        with zipfile.ZipFile(workbook_bytes, "w", zipfile.ZIP_DEFLATED) as output:
+            for name, content in files.items():
+                output.writestr(name, content)
+
+        response = self.client.post(
+            reverse("admin_catalog_product_import"),
+            {
+                "catalog_excel": SimpleUploadedFile(
+                    "catalog.xlsx",
+                    workbook_bytes.getvalue(),
+                    content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ),
+            },
+            follow=True,
+        )
+        import_messages = " ".join(
+            str(message) for message in response.context["messages"]
+        )
+        self.assertIn("1 product(s) added and 1 product(s) updated;", import_messages)
+        product.refresh_from_db()
+        self.assertEqual(product.product_name, "Renamed Import Mango")
+        self.assertTrue(
+            AdminProductCatalog.objects.filter(
+                product_category="FRUITS",
+                product_name="New Imported Pear",
+                hsn_code="080830",
+            ).exists()
+        )
+
+        with zipfile.ZipFile(io.BytesIO(workbook_bytes.getvalue())) as source:
+            invalid_files = {
+                name: source.read(name)
+                for name in source.namelist()
+            }
+        invalid_sheet = ElementTree.fromstring(
+            invalid_files["xl/worksheets/sheet1.xml"],
+        )
+        invalid_hsn = invalid_sheet.find(
+            f".//{namespace}c[@r='I{product_row_number}']/"
+            f"{namespace}is/{namespace}t",
+        )
+        invalid_hsn.text = "invalid"
+        invalid_files["xl/worksheets/sheet1.xml"] = ElementTree.tostring(
+            invalid_sheet,
+            encoding="utf-8",
+            xml_declaration=True,
+        )
+        invalid_workbook_bytes = io.BytesIO()
+        with zipfile.ZipFile(
+            invalid_workbook_bytes,
+            "w",
+            zipfile.ZIP_DEFLATED,
+        ) as output:
+            for name, content in invalid_files.items():
+                output.writestr(name, content)
+        failed_import = self.client.post(
+            reverse("admin_catalog_product_import"),
+            {
+                "catalog_excel": SimpleUploadedFile(
+                    "invalid-catalog.xlsx",
+                    invalid_workbook_bytes.getvalue(),
+                    content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ),
+            },
+            follow=True,
+        )
+        self.assertContains(failed_import, "Import canceled; no products were changed.")
+        self.assertEqual(
+            AdminProductCatalog.objects.filter(
+                product_category="FRUITS",
+                product_name="New Imported Pear",
+            ).count(),
+            1,
+        )
+
+    def test_hsn_reference_upload_and_product_name_suggestions(self):
+        self.client.force_login(self.admin)
+
+        def build_reference_workbook(rows):
+            namespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+            worksheet = ElementTree.Element(f"{{{namespace}}}worksheet")
+            sheet_data = ElementTree.SubElement(
+                worksheet,
+                f"{{{namespace}}}sheetData",
+            )
+            for row_number, values in enumerate(rows, start=1):
+                row = ElementTree.SubElement(
+                    sheet_data,
+                    f"{{{namespace}}}row",
+                    {"r": str(row_number)},
+                )
+                for column_number, value in enumerate(values, start=1):
+                    column_letter = chr(ord("A") + column_number - 1)
+                    cell = ElementTree.SubElement(
+                        row,
+                        f"{{{namespace}}}c",
+                        {
+                            "r": f"{column_letter}{row_number}",
+                            "t": "inlineStr",
+                        },
+                    )
+                    inline = ElementTree.SubElement(
+                        cell,
+                        f"{{{namespace}}}is",
+                    )
+                    text = ElementTree.SubElement(
+                        inline,
+                        f"{{{namespace}}}t",
+                    )
+                    text.text = value
+
+            package_files = {
+                "[Content_Types].xml": (
+                    '<?xml version="1.0" encoding="UTF-8"?>'
+                    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                    '<Default Extension="xml" ContentType="application/xml"/>'
+                    '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+                    '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+                    "</Types>"
+                ),
+                "_rels/.rels": (
+                    '<?xml version="1.0" encoding="UTF-8"?>'
+                    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+                    "</Relationships>"
+                ),
+                "xl/workbook.xml": (
+                    '<?xml version="1.0" encoding="UTF-8"?>'
+                    '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                    '<sheets><sheet name="HSN" sheetId="1" r:id="rId1"/></sheets>'
+                    "</workbook>"
+                ),
+                "xl/_rels/workbook.xml.rels": (
+                    '<?xml version="1.0" encoding="UTF-8"?>'
+                    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+                    "</Relationships>"
+                ),
+                "xl/worksheets/sheet1.xml": ElementTree.tostring(
+                    worksheet,
+                    encoding="unicode",
+                ),
+            }
+            workbook = io.BytesIO()
+            with zipfile.ZipFile(workbook, "w", zipfile.ZIP_DEFLATED) as output:
+                for name, content in package_files.items():
+                    output.writestr(name, content)
+            return workbook.getvalue()
+
+        response = self.client.post(
+            reverse("admin_catalog_hsn_reference_import"),
+            {
+                "hsn_reference_excel": SimpleUploadedFile(
+                    "hsn-reference.xlsx",
+                    build_reference_workbook([
+                        ("HSN_CD", "HSN_Description"),
+                        ("01", "LIVE ANIMALS"),
+                        ("01011010", "LIVE HORSES, ASSES, MULES AND HINNIES"),
+                        ("010121", "PURE-BRED BREEDING ANIMALS"),
+                    ]),
+                ),
+            },
+            follow=True,
+        )
+        self.assertIn(
+            "Imported 3 HSN code description(s)",
+            " ".join(str(message) for message in response.context["messages"]),
+        )
+        self.assertTrue(
+            HSNCodeDescription.objects.filter(
+                hsn_code="01",
+                description="LIVE ANIMALS",
+            ).exists()
+        )
+        catalog_page = self.client.get(reverse("admin_catalog_dashboard"))
+        self.assertContains(catalog_page, "Loaded HSN entries")
+        self.assertContains(
+            catalog_page,
+            '<span class="badge text-bg-primary fs-6 ms-1">3</span>',
+            html=True,
+        )
+        self.assertContains(catalog_page, "Preview uploaded HSN entries")
+        self.assertContains(catalog_page, "LIVE ANIMALS")
+        suggestions = self.client.get(
+            reverse("admin_catalog_hsn_suggestions"),
+            {"q": "live animal"},
+        )
+        self.assertEqual(suggestions.status_code, 200)
+        self.assertEqual(suggestions.json()["results"][0]["code"], "01")
+        plural_suggestions = self.client.get(
+            reverse("admin_catalog_hsn_suggestions"),
+            {"q": "horse"},
+        )
+        self.assertIn(
+            "01011010",
+            {
+                item["code"]
+                for item in plural_suggestions.json()["results"]
+            },
+        )
+        self.assertEqual(
+            self.client.get(
+                reverse("admin_catalog_hsn_suggestions"),
+                {"q": "x"},
+            ).json()["results"],
+            [],
+        )
+        create_form = self.client.get(reverse("admin_catalog_product_create"))
+        self.assertContains(create_form, 'data-hsn-product-name="catalog-form"')
+        self.assertContains(create_form, 'data-hsn-product-code="catalog-form"')
+        self.assertContains(create_form, "/admin-panel/catalog/hsn/suggestions/")
+        self.assertContains(create_form, "2, 4, 6, or 8 digits")
+        selected_hsn_form = AdminProductCatalogForm(data={
+            "product_category": "FRUITS",
+            "product_name": "Live Animal",
+            "image_url": "https://example.com/live-animal.jpg",
+            "image_url_2": "",
+            "image_url_3": "",
+            "image_url_4": "",
+            "image_url_5": "",
+            "hsn_code": "01",
+            "gst_rate": "0",
+            "is_active": "on",
+        })
+        self.assertTrue(selected_hsn_form.is_valid(), selected_hsn_form.errors)
+
+        invalid_response = self.client.post(
+            reverse("admin_catalog_hsn_reference_import"),
+            {
+                "hsn_reference_excel": SimpleUploadedFile(
+                    "invalid-hsn.xlsx",
+                    build_reference_workbook([
+                        ("HSN_CD", "HSN_Description"),
+                        ("ABC", "INVALID CODE"),
+                    ]),
+                ),
+            },
+            follow=True,
+        )
+        self.assertIn(
+            "HSN upload canceled; existing suggestions were not changed.",
+            " ".join(str(message) for message in invalid_response.context["messages"]),
+        )
+        self.assertTrue(
+            HSNCodeDescription.objects.filter(
+                hsn_code="01",
+                description="LIVE ANIMALS",
+            ).exists()
+        )
+
+    def test_sac_workbook_upload_and_service_market_suggestions(self):
+        self.client.force_login(self.admin)
+        sac_workbook_path = Path(__file__).resolve().parents[1] / "sac_data.xlsx"
+        upload_response = self.client.post(
+            reverse("admin_catalog_sac_reference_import"),
+            {
+                "sac_reference_excel": SimpleUploadedFile(
+                    sac_workbook_path.name,
+                    sac_workbook_path.read_bytes(),
+                    content_type=(
+                        "application/vnd.openxmlformats-officedocument."
+                        "spreadsheetml.sheet"
+                    ),
+                ),
+            },
+            follow=True,
+        )
+        messages_text = " ".join(
+            str(message) for message in upload_response.context["messages"]
+        )
+        self.assertIn("Imported ", messages_text)
+        self.assertGreater(SACCodeDescription.objects.count(), 600)
+        self.assertTrue(
+            SACCodeDescription.objects.filter(
+                sac_code="9954",
+                description="Construction services",
+            ).exists()
+        )
+
+        service_category = ProductCategory.objects.create(
+            name="SERVICE TEST",
+            market_category="SERVICE MARKET",
+        )
+        regular_category = ProductCategory.objects.create(
+            name="REGULAR TEST",
+            market_category="DAILY MARKET",
+        )
+        suggestions = self.client.get(
+            reverse("admin_catalog_sac_suggestions"),
+            {
+                "q": "construction services",
+                "category": service_category.name,
+            },
+        )
+        self.assertEqual(suggestions.status_code, 200)
+        self.assertIn(
+            "9954",
+            {item["code"] for item in suggestions.json()["results"]},
+        )
+        regular_category_suggestions = self.client.get(
+            reverse("admin_catalog_sac_suggestions"),
+            {"q": "construction services", "category": regular_category.name},
+        )
+        self.assertEqual(regular_category_suggestions.json()["results"], [])
+
+        product_form = self.client.get(reverse("admin_catalog_product_create"))
+        self.assertContains(product_form, 'data-sac-product-code="catalog-form"')
+        self.assertContains(
+            product_form,
+            reverse("admin_catalog_sac_suggestions"),
+        )
+        sac_product_form = AdminProductCatalogForm(data={
+            "product_category": service_category.name,
+            "product_name": "Construction service",
+            "image_url": "https://example.com/construction-service.jpg",
+            "hsn_code": "",
+            "sac_code": "995411",
+            "gst_rate": "18",
+            "is_active": "on",
+        })
+        self.assertTrue(sac_product_form.is_valid(), sac_product_form.errors)
+        self.assertEqual(sac_product_form.save().sac_code, "995411")
+
+    def test_project_hsn_workbook_imports_more_than_5000_rows(self):
+        self.client.force_login(self.admin)
+        workbook_path = Path(__file__).resolve().parents[1] / "hsn_data.xlsx"
+        response = self.client.post(
+            reverse("admin_catalog_hsn_reference_import"),
+            {
+                "hsn_reference_excel": SimpleUploadedFile(
+                    workbook_path.name,
+                    workbook_path.read_bytes(),
+                    content_type=(
+                        "application/vnd.openxmlformats-officedocument."
+                        "spreadsheetml.sheet"
+                    ),
+                ),
+            },
+            follow=True,
+        )
+        messages_text = " ".join(
+            str(message) for message in response.context["messages"]
+        )
+        self.assertIn("Imported ", messages_text)
+        self.assertIn("Skipped ", messages_text)
+        self.assertGreater(HSNCodeDescription.objects.count(), 5_000)
+        self.assertTrue(
+            HSNCodeDescription.objects.filter(
+                hsn_code="01",
+                description="LIVE ANIMALS",
+            ).exists()
+        )
+
+    def test_hsn_reference_csv_upload_and_zero_padded_excel_code(self):
+        self.client.force_login(self.admin)
+        csv_response = self.client.post(
+            reverse("admin_catalog_hsn_reference_import"),
+            {
+                "hsn_reference_excel": SimpleUploadedFile(
+                    "hsn-reference.csv",
+                    (
+                        "HSN_CD,HSN_Description\r\n"
+                        "01,LIVE ANIMALS\r\n"
+                    ).encode("utf-8"),
+                    content_type="text/csv",
+                ),
+            },
+            follow=True,
+        )
+        self.assertIn(
+            "Imported 1 HSN code description(s)",
+            " ".join(str(message) for message in csv_response.context["messages"]),
+        )
+        self.assertTrue(
+            HSNCodeDescription.objects.filter(hsn_code="01").exists(),
+        )
+
+        semicolon_response = self.client.post(
+            reverse("admin_catalog_hsn_reference_import"),
+            {
+                "hsn_reference_excel": SimpleUploadedFile(
+                    "hsn-reference.csv",
+                    (
+                        "sep=;\r\n"
+                        "HSN Code;Description\r\n"
+                        '0101;LIVE ANIMALS, PURE-BRED\r\n'
+                        "0102;LIVE BOVINE ANIMALS\r\n"
+                    ).encode("utf-8"),
+                    content_type="text/csv",
+                ),
+            },
+            follow=True,
+        )
+        self.assertIn(
+            "Imported 2 HSN code description(s)",
+            " ".join(str(message) for message in semicolon_response.context["messages"]),
+        )
+        self.assertEqual(HSNCodeDescription.objects.count(), 2)
+        self.assertTrue(
+            HSNCodeDescription.objects.filter(
+                hsn_code="0101",
+                description="LIVE ANIMALS, PURE-BRED",
+            ).exists()
+        )
+
+        numeric_cell = ElementTree.fromstring(
+            '<c xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" s="1">'
+            "<v>1</v></c>",
+        )
+        self.assertEqual(
+            seller_views._catalog_excel_text(
+                numeric_cell,
+                [],
+                ["", "00"],
+            ),
+            "01",
+        )
+
     def test_common_grocery_products_are_in_shared_catalog(self):
         self.assertTrue(
             AdminProductCatalog.objects.filter(
@@ -12817,7 +14977,11 @@ class AdminCatalogWorkspaceTests(TestCase):
 
         response = self.client.post(
             reverse("admin_catalog_dashboard"),
-            {"name": "ORGANIC FOODS", "sort_order": "2"},
+            {
+                "name": "ORGANIC FOODS",
+                "market_category": "DAILY MARKET",
+                "sort_order": "2",
+            },
         )
         self.assertRedirects(response, reverse("admin_catalog_dashboard"))
         category = ProductCategory.objects.get(name="ORGANIC FOODS")
@@ -12854,6 +15018,33 @@ class AdminCatalogWorkspaceTests(TestCase):
             shop_product_form.fields["product_name"].choices,
         )
         self.assertEqual(catalog_product.product_category, category.name)
+
+        shop_form = ShopForm()
+        self.assertIn(
+            (category.name, category.name),
+            shop_form.fields["shop_category"].choices,
+        )
+        mismatched_market_form = ShopForm(
+            data={
+                "market_category": "SERVICE MARKET",
+                "shop_category": category.name,
+            },
+            instance=Shop(),
+            require_legal_acceptance=False,
+        )
+        mismatched_market_form.is_valid()
+        self.assertIn("shop_category", mismatched_market_form.errors)
+
+        matching_market_form = ShopForm(
+            data={
+                "market_category": "DAILY MARKET",
+                "shop_category": category.name,
+            },
+            instance=Shop(),
+            require_legal_acceptance=False,
+        )
+        matching_market_form.is_valid()
+        self.assertNotIn("shop_category", matching_market_form.errors)
 
     def test_disabling_category_removes_it_from_new_product_selections(self):
         category = ProductCategory.objects.create(name="SEASONAL GOODS")
@@ -12892,6 +15083,13 @@ class AdminCatalogWorkspaceTests(TestCase):
         )
         self.assertRedirects(response, reverse("admin_catalog_dashboard"))
         product = AdminProductCatalog.objects.get(product_name="Workspace Orange")
+        shop_product = Product.objects.create(
+            created_by=self.admin,
+            product_category="FRUITS",
+            product_name="Workspace Orange",
+            price="25.00",
+            unit="piece",
+        )
 
         response = self.client.post(
             reverse(
@@ -12913,7 +15111,9 @@ class AdminCatalogWorkspaceTests(TestCase):
         )
         self.assertRedirects(response, reverse("admin_catalog_dashboard"))
         product.refresh_from_db()
+        shop_product.refresh_from_db()
         self.assertEqual(product.product_name, "Edited Workspace Orange")
+        self.assertEqual(shop_product.product_name, "Edited Workspace Orange")
         self.assertEqual(product.gst_rate, Decimal("12.00"))
         self.assertEqual(
             product.image_url,
@@ -13010,13 +15210,18 @@ class AdminCatalogWorkspaceTests(TestCase):
         self.assertContains(edit_response, "updates this category")
         response = self.client.post(
             reverse("admin_catalog_category_edit", kwargs={"pk": category.pk}),
-            {"name": "LOCAL FRUIT", "sort_order": "3"},
+            {
+                "name": "LOCAL FRUIT",
+                "market_category": "SERVICE MARKET",
+                "sort_order": "3",
+            },
         )
 
         self.assertRedirects(response, reverse("admin_catalog_dashboard"))
         category.refresh_from_db()
         product.refresh_from_db()
         self.assertEqual(category.name, "LOCAL FRUIT")
+        self.assertEqual(category.market_category, "SERVICE MARKET")
         self.assertEqual(product.product_category, "LOCAL FRUIT")
         self.assertTrue(
             AdminProductCatalog.objects.filter(
@@ -13193,6 +15398,96 @@ class CartBasketTests(TestCase):
         self.assertEqual(checkout_response.context["items"][0]["quantity_unit"], "1000gm")
         self.assertEqual(checkout_response.context["items"][0]["unit_calculation"], "2 × 500gm = 1000gm")
         self.assertContains(checkout_response, "2 × 500gm = 1000gm")
+
+    def test_cart_displays_scheduled_delivery_for_closed_shop(self):
+        self.shop.is_shop_open = False
+        self.shop.allow_scheduled_delivery = True
+        self.shop.save(update_fields=[
+            "is_shop_open",
+            "allow_scheduled_delivery",
+        ])
+        self.set_cart(1)
+
+        response = self.client.get(reverse("cart"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            "Delivery timing will be scheduled with this shop.",
+        )
+        self.assertContains(
+            response,
+            "Scheduled delivery — shop is currently closed",
+        )
+        self.assertTrue(response.context["items"][0]["is_scheduled_delivery"])
+        self.assertTrue(
+            response.context["cart_shop_summary"][0]["is_scheduled_delivery"],
+        )
+
+    def test_cart_sorts_unavailable_then_scheduled_then_available_products(self):
+        profile = ClientProfile.objects.create(
+            user=self.user,
+            name="Saved Basket Customer",
+        )
+        ClientDeliveryAddress.objects.create(
+            client=profile,
+            label="Home",
+            address="Basket Road",
+            pincode="100001",
+            is_active=True,
+            is_default=True,
+        )
+        self.shop.delivery_pincode = ["999999"]
+        self.shop.save(update_fields=["delivery_pincode"])
+
+        scheduled_shop = Shop.objects.create(
+            name="Scheduled Basket Shop",
+            owner=self.owner,
+            is_shop_open=False,
+            allow_scheduled_delivery=True,
+            delivery_pincode=["100001"],
+        )
+        scheduled_assignment = ProductShop.objects.create(
+            shop=scheduled_shop,
+            product=self.product,
+            price=Decimal("10.00"),
+            stock=4,
+            is_active=True,
+        )
+        available_shop = Shop.objects.create(
+            name="Available Basket Shop",
+            owner=self.owner,
+            delivery_pincode=["100001"],
+        )
+        available_assignment = ProductShop.objects.create(
+            shop=available_shop,
+            product=self.product,
+            price=Decimal("10.00"),
+            stock=4,
+            is_active=True,
+        )
+        session = self.client.session
+        session["cart"] = {
+            str(available_assignment.pk): 1,
+            str(scheduled_assignment.pk): 1,
+            str(self.assignment.pk): 1,
+        }
+        session.save()
+
+        response = self.client.get(reverse("cart"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [item["assignment"].pk for item in response.context["items"]],
+            [
+                self.assignment.pk,
+                scheduled_assignment.pk,
+                available_assignment.pk,
+            ],
+        )
+        self.assertFalse(response.context["items"][0]["available_for_delivery"])
+        self.assertTrue(response.context["items"][1]["is_scheduled_delivery"])
+        self.assertTrue(response.context["items"][2]["available_for_delivery"])
 
     def test_cart_and_checkout_calculate_total_piece_measure(self):
         self.product.unit = "2pcs"
@@ -13515,7 +15810,7 @@ class B2BCustomerPricingTests(TestCase):
             b2b_bulk_unit="carton",
             bulk_min_quantity=2,
             stock=5,
-            b2b_stock=2,
+            b2b_stock=4,
         )
         self.client.force_login(customer)
         profile_page = self.client.get(reverse("client_profile"))
@@ -13550,6 +15845,10 @@ class B2BCustomerPricingTests(TestCase):
 
         session = self.client.session
         session["active_portal"] = "B2B_CUSTOMER"
+        session["cart"] = {
+            str(assignment.pk): 1,
+            f"bulk:{assignment.pk}": 2,
+        }
         session.save()
         b2b_marketplace_response = self.client.get(reverse("marketplace"))
         self.assertTrue(b2b_marketplace_response.context["is_b2b_customer"])
@@ -13558,9 +15857,11 @@ class B2BCustomerPricingTests(TestCase):
             if item.pk == assignment.pk
         )
         self.assertEqual(b2b_assignment.marketplace_price, Decimal("12.50"))
-        self.assertEqual(b2b_assignment.marketplace_stock, 2)
+        self.assertEqual(b2b_assignment.marketplace_stock, 4)
         self.assertEqual(b2b_assignment.marketplace_unit, "bag")
         self.assertTrue(b2b_assignment.has_b2b_price)
+        self.assertEqual(b2b_assignment.cart_quantity, 1)
+        self.assertEqual(b2b_assignment.bulk_cart_quantity, 2)
         self.assertEqual(b2b_assignment.bulk_marketplace_price, Decimal("70.00"))
         self.assertEqual(b2b_assignment.bulk_marketplace_unit, "carton")
         self.assertTrue(b2b_assignment.has_bulk_offer)
@@ -13568,6 +15869,15 @@ class B2BCustomerPricingTests(TestCase):
         self.assertContains(b2b_marketplace_response, "B2B bulk offer")
         self.assertContains(b2b_marketplace_response, "₹70.00 / carton")
         self.assertContains(b2b_marketplace_response, "Min 2 units")
+        self.assertContains(
+            b2b_marketplace_response,
+            f'id="qty-{assignment.pk}"',
+        )
+        self.assertContains(
+            b2b_marketplace_response,
+            f'id="bulk-qty-{assignment.pk}"',
+        )
+        self.assertContains(b2b_marketplace_response, "Update bulk")
         detail_response = self.client.get(
             reverse("market_product_detail", kwargs={"product_shop_id": assignment.pk})
         )
@@ -14863,6 +17173,8 @@ class ShopOwnerOperationsTests(TestCase):
         )
 
     def test_rider_delivery_shortcut_counts_available_and_active_separately(self):
+        self.shop.rider_delivery_preference = "STAFF"
+        self.shop.save(update_fields=["rider_delivery_preference"])
         rider_user = User.objects.create_user(
             username="operations_delivery_count_rider",
             password="test-password",
@@ -14908,6 +17220,256 @@ class ShopOwnerOperationsTests(TestCase):
             {available_order.pk},
         )
         self.assertEqual(dashboard.context["active_order_count"], 1)
+
+    def test_staff_rider_sees_available_orders_from_all_assigned_shops(self):
+        self.shop.rider_delivery_preference = "STAFF"
+        self.shop.save(update_fields=["rider_delivery_preference"])
+        second_shop = Shop.objects.create(
+            name="Second Assigned Rider Shop",
+            owner=self.owner,
+            rider_delivery_preference="STAFF",
+        )
+        rider_user = User.objects.create_user(
+            username="multi_shop_staff_rider",
+            password="test-password",
+        )
+        ShopStaff.objects.create(
+            shop=self.shop,
+            user=rider_user,
+            role="RIDER",
+            is_active=True,
+        )
+        ShopStaff.objects.create(
+            shop=second_shop,
+            user=rider_user,
+            role="RIDER",
+            is_active=True,
+        )
+        second_shop_order = self.create_shop_order(
+            "ORD-SECOND-ASSIGNED-RIDER-SHOP",
+            status="READY",
+        )
+        second_shop_order.shop = second_shop
+        second_shop_order.save(update_fields=["shop"])
+
+        self.client.force_login(rider_user)
+        session = self.client.session
+        session["active_portal"] = "SHOP_STAFF"
+        session.save()
+        dashboard = self.client.get(reverse("rider_dashboard"))
+
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertEqual(dashboard.context["available_order_count"], 1)
+        self.assertEqual(
+            list(dashboard.context["orders"].values_list("pk", flat=True)),
+            [second_shop_order.pk],
+        )
+        self.assertContains(dashboard, "Accept this delivery")
+        notification_counts = self.client.get(
+            reverse("notifications_api"),
+        ).json()
+        self.assertEqual(
+            notification_counts["available_delivery_count"],
+            1,
+        )
+        accept_response = self.client.post(
+            reverse(
+                "accept_rider_order",
+                kwargs={"shop_order_id": second_shop_order.pk},
+            ),
+        )
+        self.assertEqual(accept_response.status_code, 302)
+        second_shop_order.refresh_from_db()
+        second_shop_rider = ShopStaff.objects.get(
+            shop=second_shop,
+            user=rider_user,
+        )
+        self.assertEqual(
+            second_shop_order.assigned_rider_id,
+            second_shop_rider.pk,
+        )
+
+    def test_started_delivery_hides_offers_until_ten_seconds_after_completion(self):
+        self.shop.rider_delivery_preference = "STAFF"
+        self.shop.save(update_fields=["rider_delivery_preference"])
+        rider_user = User.objects.create_user(
+            username="offer_cooldown_rider",
+            password="testpass123",
+        )
+        rider_staff = ShopStaff.objects.create(
+            shop=self.shop,
+            user=rider_user,
+            role="RIDER",
+            is_active=True,
+        )
+        active_order = self.create_shop_order(
+            "ORD-OFFER-COOLDOWN-ACTIVE",
+            status="OUT_FOR_DELIVERY",
+        )
+        active_order.assigned_rider = rider_staff
+        active_order.save(update_fields=["assigned_rider"])
+        available_order = self.create_shop_order(
+            "ORD-OFFER-COOLDOWN-AVAILABLE",
+            status="READY",
+        )
+        self.client.force_login(rider_user)
+        session = self.client.session
+        session["active_portal"] = "SHOP_STAFF"
+        session.save()
+
+        active_dashboard = self.client.get(
+            reverse("rider_dashboard"),
+            {"view": "available"},
+        )
+        self.assertEqual(active_dashboard.status_code, 200)
+        self.assertTrue(active_dashboard.context["active_delivery_in_progress"])
+        self.assertTrue(active_dashboard.context["hide_available_tab"])
+        self.assertEqual(active_dashboard.context["available_order_count"], 0)
+        self.assertEqual(active_dashboard.context["selected_view"], "active")
+        self.assertContains(active_dashboard, "New orders are paused")
+
+        active_order.status = "DELIVERED"
+        active_order.delivery_completed_at = timezone.now()
+        active_order.save(update_fields=["status", "delivery_completed_at"])
+        cooldown_dashboard = self.client.get(
+            reverse("rider_dashboard"),
+            {"view": "available"},
+        )
+        self.assertGreater(
+            cooldown_dashboard.context["rider_offer_cooldown_seconds"],
+            0,
+        )
+        self.assertEqual(cooldown_dashboard.context["available_order_count"], 0)
+        self.assertEqual(cooldown_dashboard.context["selected_view"], "completed")
+
+        active_order.delivery_completed_at = timezone.now() - timedelta(seconds=12)
+        active_order.save(update_fields=["delivery_completed_at"])
+        resumed_dashboard = self.client.get(
+            reverse("rider_dashboard"),
+            {"view": "available"},
+        )
+        self.assertFalse(resumed_dashboard.context["hide_available_tab"])
+        self.assertEqual(
+            list(resumed_dashboard.context["orders"].values_list("pk", flat=True)),
+            [available_order.pk],
+        )
+
+    def test_staff_rider_sees_available_order_when_hidden_invalid_order_is_assigned(self):
+        self.shop.rider_delivery_preference = "STAFF"
+        self.shop.save(update_fields=["rider_delivery_preference"])
+        rider_user = User.objects.create_user(
+            username="invalid_active_order_staff_rider",
+            password="test-password",
+        )
+        rider_staff = ShopStaff.objects.create(
+            shop=self.shop,
+            user=rider_user,
+            role="RIDER",
+            is_active=True,
+        )
+        invalid_active_order = self.create_shop_order(
+            "ORD-INVALID-ACTIVE-STAFF-RIDER",
+            status="OUT_FOR_DELIVERY",
+        )
+        invalid_active_order.order.is_valid_order = False
+        invalid_active_order.order.save(update_fields=["is_valid_order"])
+        invalid_active_order.assigned_rider = rider_staff
+        invalid_active_order.save(update_fields=["assigned_rider"])
+        available_order = self.create_shop_order(
+            "ORD-AVAILABLE-AFTER-INVALID-ACTIVE-STAFF-RIDER",
+            status="READY",
+        )
+
+        self.client.force_login(rider_user)
+        session = self.client.session
+        session["active_portal"] = "SHOP_STAFF"
+        session.save()
+        response = self.client.get(
+            reverse("rider_dashboard"),
+            {"view": "available"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context["active_delivery_in_progress"])
+        self.assertEqual(response.context["available_order_count"], 1)
+        self.assertEqual(
+            list(response.context["orders"].values_list("pk", flat=True)),
+            [available_order.pk],
+        )
+
+    def test_done_and_all_completed_tabs_show_their_expected_orders(self):
+        self.shop.rider_delivery_preference = "STAFF"
+        self.shop.save(update_fields=["rider_delivery_preference"])
+        rider_user = User.objects.create_user(
+            username="today_completed_rider",
+            password="testpass123",
+        )
+        rider_staff = ShopStaff.objects.create(
+            shop=self.shop,
+            user=rider_user,
+            role="RIDER",
+            is_active=True,
+        )
+        today_order = self.create_shop_order(
+            "ORD-RIDER-DONE-TODAY",
+            status="DELIVERED",
+        )
+        today_order.assigned_rider = rider_staff
+        today_order.delivery_completed_at = timezone.now()
+        today_order.save(
+            update_fields=["assigned_rider", "delivery_completed_at"],
+        )
+        yesterday_order = self.create_shop_order(
+            "ORD-RIDER-DONE-YESTERDAY",
+            status="DELIVERED",
+        )
+        yesterday_order.assigned_rider = rider_staff
+        yesterday_order.delivery_completed_at = timezone.now() - timedelta(days=2)
+        yesterday_order.save(
+            update_fields=["assigned_rider", "delivery_completed_at"],
+        )
+
+        self.client.force_login(rider_user)
+        session = self.client.session
+        session["active_portal"] = "SHOP_STAFF"
+        session.save()
+        done_response = self.client.get(
+            reverse("rider_dashboard"),
+            {"view": "completed"},
+        )
+        self.assertEqual(done_response.status_code, 200)
+        self.assertEqual(
+            list(done_response.context["orders"].values_list("pk", flat=True)),
+            [today_order.pk],
+        )
+        self.assertEqual(done_response.context["completed_order_count"], 1)
+        self.assertContains(
+            done_response,
+            f'href="{reverse("rider_dashboard")}?view=completed"',
+        )
+        self.assertContains(
+            done_response,
+            f'href="{reverse("rider_dashboard")}?view=all_completed"',
+        )
+        self.assertContains(
+            done_response,
+            f'href="{reverse("rider_dashboard")}?view=verified"',
+        )
+        self.assertContains(done_response, "All completed")
+
+        all_completed_response = self.client.get(
+            reverse("rider_dashboard"),
+            {"view": "all_completed"},
+        )
+        self.assertEqual(all_completed_response.status_code, 200)
+        self.assertEqual(
+            set(all_completed_response.context["orders"].values_list("pk", flat=True)),
+            {today_order.pk, yesterday_order.pk},
+        )
+        self.assertEqual(
+            all_completed_response.context["all_completed_order_count"],
+            2,
+        )
 
     def test_ready_order_without_shop_rider_is_offered_to_public_rider(self):
         self.shop.public_rider_network_enabled = True
@@ -15164,7 +17726,13 @@ class ShopOwnerOperationsTests(TestCase):
             "ORD-OPERATIONS-LIVE-LOCATION",
             status="OUT_FOR_DELIVERY",
         )
-        with patch("seller.live_updates._send_user_event") as send_event:
+        with (
+            patch("seller.live_updates._send_user_event") as send_event,
+            patch(
+                "seller.live_updates.submit_background_task",
+                side_effect=lambda task, *args, **kwargs: task(*args),
+            ),
+        ):
             with self.captureOnCommitCallbacks(execute=True):
                 shop_order.rider_last_location = {"lat": 21.25, "lng": 72.91}
                 shop_order.save(update_fields=["rider_last_location"])
@@ -15648,6 +18216,199 @@ class ShopOwnerOperationsTests(TestCase):
             Decimal("0.0000"),
         )
 
+    def test_product_list_allows_owner_to_edit_shop_price_and_stock(self):
+        product = Product.objects.create(
+            created_by=self.owner,
+            product_name="Editable Shop Listing",
+            price=Decimal("15.00"),
+            unit="piece",
+        )
+        assignment = ProductShop.objects.create(
+            shop=self.shop,
+            product=product,
+            price=Decimal("14.00"),
+            stock=Decimal("2.0000"),
+            is_active=True,
+        )
+
+        response = self.client.get(reverse("product_list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, f'id="shop-price-{assignment.pk}"')
+        self.assertContains(response, f'id="shop-stock-{assignment.pk}"')
+        self.assertContains(response, 'name="price"')
+        self.assertContains(response, 'name="stock"')
+
+        invalid_response = self.client.post(
+            reverse("product_list"),
+            {
+                "assignment_id": assignment.pk,
+                "price": "-1.00",
+                "stock": "-2",
+                "q": "Editable",
+                "shop": self.shop.pk,
+                "sort": "stock_low",
+            },
+        )
+
+        self.assertRedirects(
+            invalid_response,
+            f"{reverse('product_list')}?focus_product={product.pk}"
+            f"&focus_shop={self.shop.pk}&q=Editable&shop={self.shop.pk}"
+            "&sort=stock_low",
+        )
+        assignment.refresh_from_db()
+        self.assertEqual(assignment.price, Decimal("14.00"))
+        self.assertEqual(assignment.stock, Decimal("2.0000"))
+        self.assertTrue(
+            any(
+                "Could not save price and stock" in str(message)
+                for message in invalid_response.wsgi_request._messages
+            )
+        )
+
+        saved_response = self.client.post(
+            reverse("product_list"),
+            {
+                "assignment_id": assignment.pk,
+                "price": "18.50",
+                "stock": "7.2500",
+                "q": "Editable",
+                "shop": self.shop.pk,
+            },
+        )
+
+        self.assertRedirects(
+            saved_response,
+            f"{reverse('product_list')}?focus_product={product.pk}"
+            f"&focus_shop={self.shop.pk}&q=Editable&shop={self.shop.pk}",
+        )
+        assignment.refresh_from_db()
+        self.assertEqual(assignment.price, Decimal("18.50"))
+        self.assertEqual(assignment.stock, Decimal("7.2500"))
+
+    def test_product_list_quick_edit_rejects_another_owners_assignment(self):
+        product = Product.objects.create(
+            created_by=self.owner,
+            product_name="Foreign Shop Assignment",
+            price=Decimal("15.00"),
+        )
+        other_owner = User.objects.create_user(
+            username="another_quick_edit_owner",
+            password="test-password",
+        )
+        other_shop = Shop.objects.create(
+            name="Another Owner Shop",
+            owner=other_owner,
+        )
+        assignment = ProductShop.objects.create(
+            shop=other_shop,
+            product=product,
+            price=Decimal("14.00"),
+            stock=2,
+        )
+
+        response = self.client.post(
+            reverse("product_list"),
+            {
+                "assignment_id": assignment.pk,
+                "price": "18.50",
+                "stock": "7.2500",
+            },
+        )
+
+        self.assertEqual(response.status_code, 404)
+        assignment.refresh_from_db()
+        self.assertEqual(assignment.price, Decimal("14.00"))
+        self.assertEqual(assignment.stock, Decimal("2.0000"))
+
+    def test_product_list_filters_and_sorts_stock_by_selected_shop(self):
+        second_shop = Shop.objects.create(
+            name="Second Operations Shop",
+            owner=self.owner,
+        )
+        low_in_first_shop = Product.objects.create(
+            created_by=self.owner,
+            product_name="Low in first shop",
+            price=Decimal("10.00"),
+        )
+        high_in_first_shop = Product.objects.create(
+            created_by=self.owner,
+            product_name="High in first shop",
+            price=Decimal("20.00"),
+        )
+        other_shop_product = Product.objects.create(
+            created_by=self.owner,
+            product_name="Only in second shop",
+            price=Decimal("30.00"),
+        )
+        ProductShop.objects.create(
+            shop=self.shop,
+            product=low_in_first_shop,
+            stock=Decimal("2.0000"),
+            is_active=True,
+        )
+        ProductShop.objects.create(
+            shop=self.shop,
+            product=high_in_first_shop,
+            stock=Decimal("12.0000"),
+            is_active=True,
+        )
+        ProductShop.objects.create(
+            shop=second_shop,
+            product=low_in_first_shop,
+            stock=Decimal("50.0000"),
+            is_active=True,
+        )
+        ProductShop.objects.create(
+            shop=second_shop,
+            product=other_shop_product,
+            stock=Decimal("1.0000"),
+            is_active=True,
+        )
+
+        all_shops_response = self.client.get(reverse("product_list"))
+        self.assertEqual(
+            set(all_shops_response.context["products"].values_list("pk", flat=True)),
+            {
+                low_in_first_shop.pk,
+                high_in_first_shop.pk,
+                other_shop_product.pk,
+            },
+        )
+        self.assertContains(all_shops_response, "Low stock (5 or less) is highlighted.")
+
+        shop_response = self.client.get(
+            reverse("product_list"),
+            {"shop": self.shop.pk},
+        )
+        self.assertEqual(
+            set(shop_response.context["products"].values_list("pk", flat=True)),
+            {low_in_first_shop.pk, high_in_first_shop.pk},
+        )
+        self.assertContains(shop_response, f"{self.shop.name} Stock")
+        self.assertNotContains(shop_response, other_shop_product.product_name)
+        self.assertEqual(
+            shop_response.context["products"].get(pk=low_in_first_shop.pk).selected_shop_stock,
+            Decimal("2.0000"),
+        )
+        self.assertContains(shop_response, "data-assignment-shop")
+
+        sorted_shop_response = self.client.get(
+            reverse("product_list"),
+            {"shop": self.shop.pk, "sort": "stock_low"},
+        )
+        self.assertEqual(
+            list(
+                sorted_shop_response.context["products"].values_list(
+                    "pk",
+                    flat=True,
+                )
+            ),
+            [low_in_first_shop.pk, high_in_first_shop.pk],
+        )
+        self.assertContains(sorted_shop_response, "Low stock to high")
+
     def test_product_list_searches_sorts_stock_and_expands_product_details(self):
         low_stock_product = Product.objects.create(
             created_by=self.owner,
@@ -15694,13 +18455,13 @@ class ShopOwnerOperationsTests(TestCase):
         )
         self.assertContains(search_response, "Double-click to show product details")
         self.assertContains(search_response, "Description searchable here")
-        self.assertContains(search_response, "Stock: low to high")
+        self.assertContains(search_response, "Low stock to high")
         self.assertContains(search_response, "row.addEventListener(\"dblclick\"")
         self.assertContains(search_response, "Needle alias")
         self.assertContains(search_response, 'id="productSearch"')
         self.assertContains(search_response, 'class="product-search-field"')
         self.assertContains(search_response, 'class="product-search-voice"')
-        self.assertContains(search_response, "right: 2rem")
+        self.assertContains(search_response, "right: .5rem")
         self.assertContains(search_response, 'aria-label="Search products by voice"')
         self.assertContains(search_response, 'data-voice-search-status role="status"')
         self.assertContains(search_response, 'html[data-sellerhelper-native-app="true"] .owner-all-shops')
@@ -15913,6 +18674,11 @@ class ShopOwnerOperationsTests(TestCase):
         self.assertContains(response, "Asha Customer")
         self.assertContains(response, "Copy coordinates")
         self.assertContains(response, 'id="orderLocationMap"')
+        self.assertContains(response, 'id="shop-location-data"')
+        self.assertContains(response, 'locationPin("#198754")')
+        self.assertContains(response, 'locationPin("#dc3545")')
+        self.assertContains(response, "Shop location")
+        self.assertContains(response, "Customer delivery location")
         self.assertContains(response, '"Satellite": satelliteLayer')
         self.assertContains(response, "satelliteLayer.addTo(map)")
         self.assertContains(response, "Center map on my current location")
@@ -17911,6 +20677,125 @@ class MarketplacePurchaseWorkflowTests(TestCase):
         )
         self.client.force_login(self.customer)
 
+    def test_marketplace_can_hide_products_requiring_scheduled_delivery(self):
+        scheduled_shop = Shop.objects.create(
+            name="Scheduled Delivery Shop",
+            owner=self.owner,
+            is_shop_open=False,
+            allow_scheduled_delivery=True,
+        )
+        scheduled_product = Product.objects.create(
+            created_by=self.owner,
+            product_name="Scheduled Delivery Product",
+            price=Decimal("25.00"),
+            unit="piece",
+            product_category="OTHER",
+        )
+        ProductShop.objects.create(
+            shop=scheduled_shop,
+            product=scheduled_product,
+            price=Decimal("25.00"),
+            stock=4,
+            is_active=True,
+        )
+
+        default_response = self.client.get(reverse("marketplace"))
+        self.assertEqual(default_response.status_code, 200)
+        self.assertContains(default_response, "Scheduled Delivery Product")
+        self.assertFalse(default_response.context["hide_scheduled_delivery"])
+        self.assertContains(
+            default_response,
+            'id="hideScheduledDelivery"',
+        )
+
+        filtered_response = self.client.get(
+            reverse("marketplace"),
+            {"hide_scheduled": "1"},
+        )
+        self.assertEqual(filtered_response.status_code, 200)
+        self.assertNotContains(filtered_response, "Scheduled Delivery Product")
+        self.assertTrue(filtered_response.context["hide_scheduled_delivery"])
+        self.assertContains(
+            filtered_response,
+            'name="hide_scheduled"\n            value="1"\n            checked',
+        )
+
+    def test_checkout_saves_separate_shop_and_rider_instructions(self):
+        session = self.client.session
+        session["cart"] = {str(self.assignment.pk): 1}
+        session.save()
+
+        checkout_page = self.client.get(reverse("checkout"))
+        self.assertEqual(checkout_page.status_code, 200)
+        self.assertContains(checkout_page, 'name="order_instruction_text_shop"')
+        self.assertContains(checkout_page, 'name="order_instruction_audio_shop"')
+        self.assertContains(checkout_page, 'name="order_instruction_text_rider"')
+        self.assertContains(checkout_page, 'name="order_instruction_audio_rider"')
+        self.assertContains(checkout_page, "Shop team instruction")
+        self.assertContains(checkout_page, "Assigned rider instruction")
+
+        response = self.client.post(
+            reverse("checkout"),
+            {
+                "address": self.home.pk,
+                "payment_method": "COD",
+                "order_instruction_shop": self.shop.pk,
+                "order_instruction_text_shop": "Pack the vegetables separately.",
+                "order_instruction_text_rider": "Call me at the gate.",
+                "order_instruction_audio_shop": SimpleUploadedFile(
+                    "shop-instruction.webm",
+                    b"shop audio data",
+                    content_type="audio/webm",
+                ),
+                "order_instruction_audio_rider": SimpleUploadedFile(
+                    "rider-instruction.webm",
+                    b"rider audio data",
+                    content_type="audio/webm",
+                ),
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        shop_order = ShopOrder.objects.get(order__user=self.customer.username)
+        instructions = {
+            instruction.recipient: instruction
+            for instruction in OrderVoiceInstruction.objects.filter(
+                shop_order=shop_order,
+            )
+        }
+        self.assertEqual(
+            instructions[OrderVoiceInstruction.RECIPIENT_SHOP].instruction_text,
+            "Pack the vegetables separately.",
+        )
+        self.assertEqual(
+            instructions[OrderVoiceInstruction.RECIPIENT_RIDER].instruction_text,
+            "Call me at the gate.",
+        )
+        self.assertEqual(
+            instructions[OrderVoiceInstruction.RECIPIENT_SHOP].audio_content_type,
+            "audio/webm",
+        )
+        self.assertEqual(
+            instructions[OrderVoiceInstruction.RECIPIENT_RIDER].audio_content_type,
+            "audio/webm",
+        )
+        for instruction in instructions.values():
+            self.addCleanup(
+                instruction.audio_file.storage.delete,
+                instruction.audio_file.name,
+            )
+
+        self.client.force_login(self.owner)
+        shop_detail = self.client.get(
+            reverse(
+                "shop_order_detail",
+                kwargs={"shop_order_id": shop_order.pk},
+            )
+        )
+        self.assertEqual(shop_detail.status_code, 200)
+        self.assertContains(shop_detail, "Pack the vegetables separately.")
+        self.assertNotContains(shop_detail, "Call me at the gate.")
+
     def test_shop_orders_lists_checkout_attempts_after_configured_inactivity(self):
         self.shop.allow_product_image_overrides = True
         self.shop.save(update_fields=["allow_product_image_overrides"])
@@ -18029,6 +20914,48 @@ class MarketplacePurchaseWorkflowTests(TestCase):
         self.assertEqual(response.json()["quantity"], 2)
         self.assertEqual(response.json()["stock"], 8)
 
+    def test_marketplace_guest_can_browse_but_add_action_requires_login(self):
+        self.client.logout()
+
+        response = self.client.get(reverse("marketplace"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, self.product.product_name)
+        self.assertContains(response, "marketplaceLoginUrl")
+        self.assertContains(response, "window.location.assign(marketplaceLoginUrl)")
+
+    def test_customer_without_saved_address_can_add_to_current_location_cart(self):
+        ClientDeliveryAddress.objects.filter(client=self.profile).update(
+            is_active=False,
+        )
+        response = self.client.get(
+            reverse("marketplace"),
+            {"current_lat": "1.25", "current_lng": "2.5"},
+        )
+        self.assertEqual(response.status_code, 200)
+
+        added = self.client.post(
+            reverse("cart_add", kwargs={"product_shop_id": self.assignment.pk}),
+            {
+                "offer": "retail",
+                "current_lat": "1.25",
+                "current_lng": "2.5",
+            },
+        )
+
+        self.assertEqual(added.status_code, 200)
+        self.assertTrue(added.json()["success"])
+        self.assertEqual(added.json()["quantity"], 1)
+        self.assertEqual(
+            self.client.session["cart"]["%s" % self.assignment.pk],
+            1,
+        )
+        cart_response = self.client.get(reverse("cart"))
+        self.assertEqual(cart_response.status_code, 200)
+        self.assertEqual(len(cart_response.context["items"]), 1)
+        self.assertTrue(cart_response.context["items"][0]["available_for_delivery"])
+        self.assertIsNone(cart_response.context["active_delivery_address"])
+
     def test_shop_can_save_remark_without_removing_abandoned_checkout(self):
         session = self.client.session
         session["cart"] = {str(self.assignment.pk): 2}
@@ -18105,6 +21032,16 @@ class MarketplacePurchaseWorkflowTests(TestCase):
             response.context["products"][0].marketplace_detail,
         )
 
+    def test_marketplace_product_search_has_voice_search_control(self):
+        response = self.client.get(reverse("marketplace"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'placeholder="Search products or shop names..."')
+        self.assertContains(response, 'aria-label="Search by voice"')
+        self.assertContains(response, "data-voice-search-status")
+        self.assertContains(response, 'type: "voice.start"')
+        self.assertContains(response, "sellerhelper:native-voice-result")
+
     def test_cart_buckets_are_restored_per_delivery_address(self):
         session = self.client.session
         session["cart"] = {str(self.assignment.pk): 2}
@@ -18179,15 +21116,15 @@ class MarketplacePurchaseWorkflowTests(TestCase):
         session = self.client.session
         session["carts_by_delivery_address"] = {
             str(self.home.pk): {
-                str(self.assignment.pk): 2,
                 str(available_assignment.pk): 1,
+                str(self.assignment.pk): 2,
             },
             str(self.office.pk): {str(self.assignment.pk): 3},
         }
         session["cart_delivery_address_id"] = str(self.home.pk)
         session["cart"] = {
-            str(self.assignment.pk): 2,
             str(available_assignment.pk): 1,
+            str(self.assignment.pk): 2,
         }
         session.save()
 
@@ -18237,10 +21174,18 @@ class MarketplacePurchaseWorkflowTests(TestCase):
             cart_response,
             "Not available in this delivery location",
         )
+        self.assertEqual(cart_response.context["subtotal"], Decimal("80.00"))
         cart_items = {
             item["assignment"].pk: item
             for item in cart_response.context["items"]
         }
+        self.assertEqual(
+            [
+                item["assignment"].pk
+                for item in cart_response.context["items"]
+            ],
+            [self.assignment.pk, available_assignment.pk],
+        )
         self.assertEqual(cart_items[self.assignment.pk]["quantity"], 0)
         self.assertFalse(
             cart_items[self.assignment.pk]["available_for_delivery"],
@@ -18249,8 +21194,24 @@ class MarketplacePurchaseWorkflowTests(TestCase):
             cart_items[self.assignment.pk]["availability_label"],
             "Not available in this delivery location",
         )
+        self.assertEqual(cart_items[self.assignment.pk]["total"], Decimal("0.00"))
+        self.assertEqual(cart_items[available_assignment.pk]["quantity"], 1)
+        self.assertEqual(
+            self.client.session["cart"][str(self.assignment.pk)],
+            0,
+        )
         self.assertTrue(
             cart_items[available_assignment.pk]["available_for_delivery"],
+        )
+        checkout_response = self.client.get(reverse("checkout"))
+        self.assertEqual(checkout_response.status_code, 200)
+        self.assertEqual(checkout_response.context["subtotal"], Decimal("80.00"))
+        self.assertEqual(
+            [
+                item["assignment"].pk
+                for item in checkout_response.context["items"]
+            ],
+            [available_assignment.pk],
         )
 
     def test_rider_scanning_packing_slip_qr_gets_assigned_order_page_url(self):
@@ -18599,6 +21560,81 @@ class MarketplacePurchaseWorkflowTests(TestCase):
         )
         self.assertRedirects(response, reverse("checkout"))
         self.assertFalse(Order.objects.filter(user=self.customer.username).exists())
+        self.assertEqual(
+            self.client.session["cart"],
+            {str(self.assignment.pk): 1},
+        )
+        ajax_response = self.client.post(
+            reverse("checkout"),
+            {"address": self.home.pk, "payment_method": "COD"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        self.assertEqual(ajax_response.status_code, 409)
+        self.assertFalse(ajax_response.json()["success"])
+        self.assertIn("Delivery is unavailable", ajax_response.json()["message"])
+        self.assertFalse(Order.objects.filter(user=self.customer.username).exists())
+        self.assertEqual(
+            self.client.session["cart"],
+            {str(self.assignment.pk): 1},
+        )
+
+    def test_marketplace_cards_show_saved_retail_and_b2b_bulk_quantities(self):
+        self.shop.gstin = "24ABCDE1234F1Z5"
+        self.shop.gst_state_code = "24"
+        self.shop.save(update_fields=["gstin", "gst_state_code"])
+        self.assignment.b2b_price = Decimal("60.00")
+        self.assignment.b2b_bulk_price = Decimal("100.00")
+        self.assignment.b2b_bulk_unit = "case"
+        self.assignment.bulk_min_quantity = 2
+        self.assignment.b2b_stock = 5
+        self.assignment.save(
+            update_fields=[
+                "b2b_price",
+                "b2b_bulk_price",
+                "b2b_bulk_unit",
+                "bulk_min_quantity",
+                "b2b_stock",
+            ]
+        )
+        self.profile.gstin = "24ABCDE1234F1Z5"
+        self.profile.save(update_fields=["gstin"])
+        session = self.client.session
+        session["active_portal"] = "B2B_CUSTOMER"
+        session["cart"] = {
+            str(self.assignment.pk): 1,
+            f"bulk:{self.assignment.pk}": 2,
+        }
+        session.save()
+
+        response = self.client.get(reverse("marketplace"))
+
+        self.assertEqual(response.status_code, 200)
+        listed_assignment = next(
+            item for item in response.context["products"]
+            if item.pk == self.assignment.pk
+        )
+        self.assertEqual(listed_assignment.cart_quantity, 1)
+        self.assertEqual(listed_assignment.bulk_cart_quantity, 2)
+        self.assertTrue(listed_assignment.has_b2b_bulk_offer)
+        self.assertContains(response, "B2B bulk offer")
+        self.assertContains(response, f'id="qty-{self.assignment.pk}"')
+        self.assertContains(response, f'id="bulk-qty-{self.assignment.pk}"')
+        self.assertContains(response, 'value="1"')
+        self.assertContains(response, 'value="2"')
+        self.assertContains(response, "Update bulk")
+
+        update_response = self.client.post(
+            reverse("cart_update", kwargs={"product_shop_id": self.assignment.pk}),
+            {"quantity": 3, "offer": "bulk"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        self.assertEqual(update_response.status_code, 200)
+        self.assertTrue(update_response.json()["success"])
+        self.assertEqual(update_response.json()["quantity"], 3)
+        self.assertEqual(
+            self.client.session["cart"][f"bulk:{self.assignment.pk}"],
+            3,
+        )
 
     def test_purchase_manager_updates_shop_prices_and_separate_stock(self):
         manager = User.objects.create_user(
@@ -19628,6 +22664,77 @@ class MarketplacePurchaseWorkflowTests(TestCase):
         self.assertEqual(edit_response.status_code, 200)
         self.assertContains(edit_response, 'value="PURCHASE_MANAGER"')
 
+    def test_shop_staff_edit_syncs_access_across_owned_shops(self):
+        second_shop = Shop.objects.create(name="Second Staff Access Shop", owner=self.owner)
+        third_shop = Shop.objects.create(name="Third Staff Access Shop", owner=self.owner)
+        history_shop = Shop.objects.create(name="Historical Staff Access Shop", owner=self.owner)
+        employee = User.objects.create_user(username="shop_access_employee")
+        current_membership = ShopStaff.objects.create(
+            shop=self.shop,
+            user=employee,
+            role="PACKER",
+            can_pack_orders=True,
+        )
+        removed_membership = ShopStaff.objects.create(
+            shop=second_shop,
+            user=employee,
+            role="ORDER",
+        )
+        historical_membership = ShopStaff.objects.create(
+            shop=history_shop,
+            user=employee,
+            role="DELIVERY",
+        )
+        ShopStaffWallet.objects.create(
+            staff=historical_membership,
+            balance=Decimal("12.00"),
+        )
+
+        self.client.force_login(self.owner)
+        edit_url = reverse(
+            "shop_staff_edit",
+            kwargs={
+                "shop_id": self.shop.pk,
+                "staff_id": current_membership.pk,
+            },
+        )
+        form_response = self.client.get(edit_url)
+
+        self.assertEqual(form_response.status_code, 200)
+        self.assertContains(form_response, "Shop access")
+        self.assertContains(form_response, "Second Staff Access Shop")
+        self.assertContains(form_response, "Role in Third Staff Access Shop")
+
+        response = self.client.post(
+            edit_url,
+            {
+                "accessible_shop_ids": [
+                    str(self.shop.pk),
+                    str(third_shop.pk),
+                ],
+                f"shop_role_{third_shop.pk}": "PACKER",
+                "role": "MANAGER",
+                "can_pack_orders": "on",
+                "is_active": "on",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        current_membership.refresh_from_db()
+        self.assertEqual(current_membership.role, "MANAGER")
+        self.assertFalse(
+            ShopStaff.objects.filter(pk=removed_membership.pk).exists(),
+        )
+        historical_membership.refresh_from_db()
+        self.assertFalse(historical_membership.is_active)
+        new_membership = ShopStaff.objects.get(
+            shop=third_shop,
+            user=employee,
+        )
+        self.assertEqual(new_membership.role, "PACKER")
+        self.assertTrue(new_membership.can_pack_orders)
+        self.assertTrue(new_membership.is_active)
+
     def test_shop_settings_enable_public_riders_without_a_shop_rider(self):
         self.shop.public_rider_network_enabled = False
         self.shop.rider_delivery_preference = "STAFF"
@@ -19679,3 +22786,120 @@ class MarketplacePurchaseWorkflowTests(TestCase):
         shop_order.refresh_from_db()
         self.assertTrue(shop_order.public_rider_network_requested)
         advance_offer.assert_called_once_with(shop_order.pk)
+
+
+class AdminUserPresenceTests(TestCase):
+    def setUp(self):
+        self.customer = User.objects.create_user(
+            username="presence_customer",
+            password="test-password",
+        )
+        ClientProfile.objects.create(
+            user=self.customer,
+            name="Presence Customer",
+        )
+        self.admin = User.objects.create_superuser(
+            username="presence_admin",
+            email="presence-admin@example.com",
+            password="test-password",
+        )
+
+    def test_authenticated_heartbeat_saves_user_presence_and_portal(self):
+        self.client = Client(enforce_csrf_checks=True)
+        self.client.force_login(self.customer)
+        session = self.client.session
+        session["active_portal"] = "B2B_CUSTOMER"
+        session.save()
+        page = self.client.get(reverse("client_profile"))
+        self.assertContains(page, reverse("user_presence_heartbeat"))
+
+        response = self.client.post(
+            reverse("user_presence_heartbeat"),
+            HTTP_X_CSRFTOKEN=self.client.cookies["csrftoken"].value,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["success"])
+        presence = UserPresence.objects.get(user=self.customer)
+        self.assertEqual(presence.active_portal, "B2B_CUSTOMER")
+        self.assertLess((timezone.now() - presence.last_seen).total_seconds(), 5)
+
+    def test_heartbeat_rejects_non_post_requests(self):
+        self.client.force_login(self.customer)
+
+        self.assertEqual(
+            self.client.get(reverse("user_presence_heartbeat")).status_code,
+            405,
+        )
+
+    def test_admin_dashboard_shows_presence_role_and_login_metrics(self):
+        self.client.force_login(self.customer)
+        UserPresence.objects.create(
+            user=self.customer,
+            last_seen=timezone.now(),
+            active_portal="CUSTOMER",
+        )
+        stale_user = User.objects.create_user(
+            username="stale_presence_user",
+            password="test-password",
+        )
+        UserPresence.objects.create(
+            user=stale_user,
+            last_seen=timezone.now() - timedelta(minutes=6),
+        )
+        self.client.force_login(self.admin)
+
+        response = self.client.get(reverse("admin_user_presence_dashboard"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["online_count"], 1)
+        self.assertEqual(response.context["logged_in_today_count"], 2)
+        self.assertEqual(response.context["last_login_today_count"], 2)
+        customer_role = next(
+            row for row in response.context["role_rows"]
+            if row["role"] == "Customer"
+        )
+        self.assertEqual(customer_role["total"], 1)
+        self.assertEqual(customer_role["online"], 1)
+        stale_row = next(
+            row for row in response.context["presence_rows"]
+            if row["user"] == stale_user
+        )
+        self.assertFalse(stale_row["is_online"])
+        self.assertContains(response, "User presence &amp; logins")
+        self.assertContains(response, "presence_customer")
+
+    def test_non_admin_cannot_open_admin_presence_dashboard(self):
+        self.client.force_login(self.customer)
+
+        response = self.client.get(reverse("admin_user_presence_dashboard"))
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_admin_panel_provides_buttons_to_admin_destinations(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.get(reverse("admin_panel_dashboard"))
+
+        self.assertEqual(response.status_code, 200)
+        for destination in (
+            "admin_catalog_dashboard",
+            "admin_user_presence_dashboard",
+            "admin_catalog_product_create",
+            "admin_catalog_product_export",
+            "admin_site_theme_builder",
+            "shop_list",
+            "product_list",
+            "shop_order_list",
+            "client_list",
+            "shared_rider_groups",
+        ):
+            self.assertContains(response, reverse(destination))
+        self.assertContains(response, 'href="/admin/"')
+
+    def test_non_admin_cannot_open_admin_panel(self):
+        self.client.force_login(self.customer)
+
+        response = self.client.get(reverse("admin_panel_dashboard"))
+
+        self.assertEqual(response.status_code, 403)
