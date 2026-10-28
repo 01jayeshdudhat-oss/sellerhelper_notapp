@@ -2264,6 +2264,9 @@
         const purpose = event.detail && typeof event.detail.purpose === "string"
             ? event.detail.purpose
             : "general";
+        const statusMessage = event.detail && typeof event.detail.statusMessage === "string"
+            ? event.detail.statusMessage
+            : "";
         const overlay = document.createElement("div");
         overlay.className = "position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center p-3";
         overlay.style.cssText = "z-index:20000;background:rgba(0,0,0,.82)";
@@ -2309,6 +2312,10 @@
             status: status
         };
         desktopQrScanner = scanner;
+        if (statusMessage) {
+            status.textContent = statusMessage;
+            status.hidden = false;
+        }
         if (
             !navigator.mediaDevices
             || typeof navigator.mediaDevices.getUserMedia !== "function"
@@ -2336,7 +2343,7 @@
             }
             video.srcObject = scanner.stream;
             await video.play();
-            status.hidden = true;
+            status.hidden = !statusMessage;
             resumeDesktopQrScanning();
         } catch (error) {
             console.error("SellerHelper could not start the QR camera.", error);

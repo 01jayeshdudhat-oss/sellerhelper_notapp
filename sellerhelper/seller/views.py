@@ -6901,14 +6901,184 @@ def shop_point_of_sale(request, shop_id):
     _require_shop_pos_access(request, shop)
 
     cart_session_key = f"shop_pos_cart_{shop.pk}"
+    cart_weights_session_key = f"shop_pos_cart_weights_{shop.pk}"
+    sale_session_key = f"shop_pos_sale_id_{shop.pk}"
+    scan_feedback_session_key = f"shop_pos_scan_feedback_{shop.pk}"
     cart = request.session.get(cart_session_key, {})
     if not isinstance(cart, dict):
         cart = {}
+    cart_weights = request.session.get(cart_weights_session_key, {})
+    if not isinstance(cart_weights, dict):
+        cart_weights = {}
+    draft_cart = {}
+    draft_cart_weights = {}
+    draft_sale_id = ""
+    if request.method == "GET":
+        requested_sale_id = request.GET.get("sale_id", "")
+        active_sale_id = request.session.get(sale_session_key, "")
+        if not requested_sale_id or requested_sale_id != active_sale_id:
+            draft_cart = cart
+            draft_cart_weights = cart_weights
+            draft_sale_id = active_sale_id
+            cart = {}
+            cart_weights = {}
+            request.session[cart_session_key] = cart
+            request.session[cart_weights_session_key] = cart_weights
+            active_sale_id = uuid.uuid4().hex
+            request.session[sale_session_key] = active_sale_id
+        sale_id = active_sale_id
+        resumed_draft_id = request.GET.get("resumed_draft", "")
+    else:
+        sale_id = request.session.get(sale_session_key, "")
+        if not sale_id:
+            sale_id = uuid.uuid4().hex
+            request.session[sale_session_key] = sale_id
+        resumed_draft_id = ""
+    scan_feedback = request.session.pop(scan_feedback_session_key, {})
+    if not isinstance(scan_feedback, dict):
+        scan_feedback = {}
 
     if request.method == "POST":
+        posted_sale_id = request.POST.get("sale_id", "")
+        if posted_sale_id and posted_sale_id != sale_id:
+            messages.error(request, "This sale is no longer active. Review the current sale before continuing.")
+            return redirect("shop_point_of_sale", shop_id=shop.pk)
+
         action = request.POST.get("action", "")
-        scanned_assignment_id = None
+        continuous_scan = request.POST.get("continuous_scan") == "1"
+        scan_mode = request.POST.get("scan_mode", "add")
+        if scan_mode not in {"add", "remove"}:
+            scan_mode = "add"
+        if action == "restore_draft":
+            try:
+                draft_items = json.loads(request.POST.get("draft_items", ""))
+            except (TypeError, ValueError):
+                draft_items = None
+            restored_quantities = {}
+            restored_weights = {}
+            if isinstance(draft_items, list):
+                try:
+                    for item in draft_items:
+                        assignment_id = int(item["product_shop_id"])
+                        quantity = int(item["quantity"])
+                        if assignment_id <= 0 or quantity <= 0:
+                            raise ValueError
+                        restored_quantities[assignment_id] = quantity
+                        if item.get("is_approximate_weight") and item.get("weight") is not None:
+                            weight = Decimal(str(item["weight"]))
+                            if (
+                                not weight.is_finite()
+                                or weight <= 0
+                                or weight > Decimal("9999999.999")
+                                or weight.quantize(Decimal("0.001")) != weight
+                            ):
+                                raise ValueError
+                            restored_weights[assignment_id] = str(weight)
+                except (KeyError, TypeError, ValueError):
+                    restored_quantities = {}
+                    restored_weights = {}
+                except InvalidOperation:
+                    restored_quantities = {}
+                    restored_weights = {}
+            if (
+                not restored_quantities
+                or not isinstance(draft_items, list)
+                or len(restored_quantities) != len(draft_items)
+            ):
+                messages.error(request, "That saved counter sale is invalid.")
+            else:
+                assignments = {
+                    assignment.pk: assignment
+                    for assignment in ProductShop.objects.select_related("product").filter(
+                        pk__in=restored_quantities,
+                        shop=shop,
+                        is_active=True,
+                        product__is_active=True,
+                    )
+                }
+                invalid_quantities = [
+                    assignment_id
+                    for assignment_id, quantity in restored_quantities.items()
+                    if assignment_id not in assignments
+                    or quantity > assignments[assignment_id].stock_for_customer(is_b2b=False)
+                ]
+                if invalid_quantities or len(assignments) != len(restored_quantities):
+                    messages.error(
+                        request,
+                        "Some saved products are no longer available or have insufficient stock.",
+                    )
+                else:
+                    if any(
+                        not assignments[assignment_id].product.is_approximate_weight
+                        for assignment_id in restored_weights
+                    ):
+                        messages.error(request, "That saved counter sale has an invalid product weight.")
+                        redirect_url = reverse(
+                            "shop_point_of_sale",
+                            kwargs={"shop_id": shop.pk},
+                        )
+                        return redirect(f"{redirect_url}?{urlencode({'sale_id': sale_id})}")
+                    for assignment_id, quantity in restored_quantities.items():
+                        assignment = assignments[assignment_id]
+                        if assignment.product.is_approximate_weight and assignment_id not in restored_weights:
+                            restored_weights[assignment_id] = str(
+                                _estimated_weight_for_quantity(
+                                    quantity,
+                                    assignment.unit_for_customer(is_b2b=False),
+                                ),
+                            )
+                    cart = {
+                        str(assignment_id): quantity
+                        for assignment_id, quantity in restored_quantities.items()
+                    }
+                    cart_weights = {
+                        str(assignment_id): weight
+                        for assignment_id, weight in restored_weights.items()
+                    }
+                    request.session[cart_session_key] = cart
+                    request.session[cart_weights_session_key] = cart_weights
+                    redirect_url = reverse(
+                        "shop_point_of_sale",
+                        kwargs={"shop_id": shop.pk},
+                    )
+                    query = {"sale_id": sale_id}
+                    draft_id = request.POST.get("draft_id", "").strip()
+                    if draft_id:
+                        query["resumed_draft"] = draft_id[:80]
+                    return redirect(f"{redirect_url}?{urlencode(query)}")
+
+            redirect_url = reverse(
+                "shop_point_of_sale",
+                kwargs={"shop_id": shop.pk},
+            )
+            if sale_id:
+                redirect_url = f"{redirect_url}?{urlencode({'sale_id': sale_id})}"
+            return redirect(redirect_url)
+
         if action == "scan_item":
+            def redirect_after_scan(message, *, is_error):
+                request.session[scan_feedback_session_key] = {
+                    "message": message,
+                    "is_error": is_error,
+                }
+                redirect_url = reverse(
+                    "shop_point_of_sale",
+                    kwargs={"shop_id": shop.pk},
+                )
+                query = {}
+                search = request.POST.get("q", "").strip()
+                if search:
+                    query["q"] = search
+                if continuous_scan:
+                    query["continuous_scan"] = "1"
+                if scan_mode == "remove":
+                    query["scan_mode"] = "remove"
+                if sale_id:
+                    query["sale_id"] = sale_id
+                if query:
+                    redirect_url = f"{redirect_url}?{urlencode(query)}"
+                return redirect(redirect_url)
+
             scanned_code = request.POST.get("scan_code", "").strip()
             scanned_product = re.fullmatch(
                 r"sellerhelper-pos:(\d+):(\d+)",
@@ -6916,7 +7086,7 @@ def shop_point_of_sale(request, shop_id):
             )
             scanned_product_url = urlsplit(scanned_code)
             scanned_product_path = re.fullmatch(
-                r"/shop/(\d+)/products/(\d+)/qr/",
+                r"/shop/(\d+)/products/(\d+)/qr/?",
                 scanned_product_url.path,
             )
             if scanned_product:
@@ -6927,8 +7097,7 @@ def shop_point_of_sale(request, shop_id):
                     (not scanned_product_url.scheme and not scanned_product_url.netloc)
                     or (
                         scanned_product_url.scheme in {"http", "https"}
-                        and scanned_product_url.netloc.lower()
-                        == request.get_host().lower()
+                        and bool(scanned_product_url.netloc)
                     )
                 )
             ):
@@ -6936,35 +7105,120 @@ def shop_point_of_sale(request, shop_id):
             else:
                 scanned_shop_id, assignment_id_from_scan = None, None
             if not assignment_id_from_scan or int(scanned_shop_id) != shop.pk:
-                messages.error(request, "That QR code does not belong to this shop.")
-                return redirect("shop_point_of_sale", shop_id=shop.pk)
-            action = "add_item"
-            scanned_assignment_id = assignment_id_from_scan
-
-        if action in {"add_item", "set_quantity", "remove_item"}:
-            assignment_id = (
-                scanned_assignment_id
-                if scanned_assignment_id is not None
-                else request.POST.get("product_shop_id", "")
+                return redirect_after_scan(
+                    "That QR code does not belong to this shop.",
+                    is_error=True,
+                )
+            assignment = (
+                ProductShop.objects.select_related("product")
+                .filter(
+                    pk=assignment_id_from_scan,
+                    shop=shop,
+                    is_active=True,
+                    product__is_active=True,
+                )
+                .first()
             )
+            if assignment is None:
+                return redirect_after_scan(
+                    "This product is no longer active in this shop.",
+                    is_error=True,
+                )
+
+            key = str(assignment.pk)
+            try:
+                current_quantity = max(0, int(cart.get(key, 0)))
+            except (TypeError, ValueError):
+                current_quantity = 0
+            if scan_mode == "remove":
+                if not current_quantity:
+                    return redirect_after_scan(
+                        f"{assignment.product.product_name} is not in the current sale.",
+                        is_error=True,
+                    )
+                if current_quantity == 1:
+                    cart.pop(key, None)
+                else:
+                    cart[key] = current_quantity - 1
+                cart_weights.pop(key, None)
+                request.session[cart_session_key] = cart
+                request.session[cart_weights_session_key] = cart_weights
+                return redirect_after_scan(
+                    f"Removed one {assignment.product.product_name} from the sale.",
+                    is_error=False,
+                )
+
+            current_stock = assignment.stock_for_customer(is_b2b=False)
+            if current_quantity + 1 > current_stock:
+                return redirect_after_scan(
+                    f"Only {current_stock} unit(s) of {assignment.product.product_name} are in stock.",
+                    is_error=True,
+                )
+            cart[key] = current_quantity + 1
+            cart_weights.pop(key, None)
+            request.session[cart_session_key] = cart
+            request.session[cart_weights_session_key] = cart_weights
+            return redirect_after_scan(
+                f"Added one {assignment.product.product_name} to the sale.",
+                is_error=False,
+            )
+
+        if action == "set_approximate_weight":
             assignment = get_object_or_404(
                 ProductShop.objects.select_related("product"),
-                pk=assignment_id,
+                pk=request.POST.get("product_shop_id", ""),
                 shop=shop,
                 is_active=True,
                 product__is_active=True,
             )
             key = str(assignment.pk)
             try:
-                quantity = (
-                    1
-                    if scanned_assignment_id is not None
-                    else int(request.POST.get("quantity", "1"))
-                )
+                weight = Decimal(request.POST.get("weight", "").strip())
+            except (InvalidOperation, TypeError, ValueError):
+                weight = Decimal("0")
+            try:
+                current_quantity = int(cart.get(key, 0))
+            except (TypeError, ValueError):
+                current_quantity = 0
+            if not assignment.product.is_approximate_weight:
+                messages.error(request, "Only approximate-weight products can have their weight edited.")
+            elif current_quantity <= 0:
+                messages.error(request, "Add this product to the sale before editing its weight.")
+            elif (
+                not weight.is_finite()
+                or weight <= 0
+                or weight > Decimal("9999999.999")
+                or weight.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP) != weight
+            ):
+                messages.error(request, "Enter a weight greater than zero with at most 3 decimal places.")
+            else:
+                cart_weights[key] = str(weight)
+                messages.success(request, f"{assignment.product.product_name} weight updated.")
+            request.session[cart_weights_session_key] = cart_weights
+            redirect_url = reverse(
+                "shop_point_of_sale",
+                kwargs={"shop_id": shop.pk},
+            )
+            if sale_id:
+                redirect_url = f"{redirect_url}?{urlencode({'sale_id': sale_id})}"
+            return redirect(redirect_url)
+
+        if action in {"add_item", "set_quantity", "remove_item"}:
+            assignment = get_object_or_404(
+                ProductShop.objects.select_related("product"),
+                pk=request.POST.get("product_shop_id", ""),
+                shop=shop,
+                is_active=True,
+                product__is_active=True,
+            )
+            key = str(assignment.pk)
+            try:
+                quantity = int(request.POST.get("quantity", "1"))
             except (TypeError, ValueError):
                 quantity = 0
             if action == "remove_item" or quantity == 0:
                 cart.pop(key, None)
+                cart_weights.pop(key, None)
                 messages.success(request, f"{assignment.product.product_name} removed from the sale.")
             elif quantity < 0:
                 messages.error(request, "Quantity must be zero or greater.")
@@ -6986,15 +7240,26 @@ def shop_point_of_sale(request, shop_id):
                     )
                 else:
                     cart[key] = new_quantity
+                    if assignment.product.is_approximate_weight:
+                        cart_weights.pop(key, None)
                     messages.success(
                         request,
                         f"{assignment.product.product_name} quantity updated.",
                     )
             request.session[cart_session_key] = cart
-            return redirect(
-                f"{reverse('shop_point_of_sale', kwargs={'shop_id': shop.pk})}"
-                + (f"?q={quote(request.GET.get('q', ''))}" if request.GET.get("q") else "")
+            request.session[cart_weights_session_key] = cart_weights
+            redirect_url = reverse(
+                "shop_point_of_sale",
+                kwargs={"shop_id": shop.pk},
             )
+            redirect_query = {}
+            if request.GET.get("q"):
+                redirect_query["q"] = request.GET["q"]
+            if sale_id:
+                redirect_query["sale_id"] = sale_id
+            if redirect_query:
+                redirect_url = f"{redirect_url}?{urlencode(redirect_query)}"
+            return redirect(redirect_url)
 
         if action == "place_sale":
             fulfillment_type = request.POST.get("fulfillment_type", "")
@@ -7120,7 +7385,42 @@ def shop_point_of_sale(request, shop_id):
                                                 f"{assignment.product.product_name} (only {stock} available)"
                                             )
                                             continue
-                                        total = (price * quantity).quantize(
+                                        unit = assignment.unit_for_customer(is_b2b=False)
+                                        estimated_weight = (
+                                            _estimated_weight_for_quantity(quantity, unit)
+                                            if assignment.product.is_approximate_weight
+                                            else None
+                                        )
+                                        final_weight = None
+                                        if estimated_weight is not None:
+                                            raw_weight = cart_weights.get(str(assignment.pk))
+                                            if raw_weight is not None:
+                                                try:
+                                                    final_weight = Decimal(str(raw_weight))
+                                                except (InvalidOperation, TypeError, ValueError):
+                                                    final_weight = Decimal("0")
+                                                if (
+                                                    not final_weight.is_finite()
+                                                    or final_weight <= 0
+                                                    or final_weight > Decimal("9999999.999")
+                                                    or final_weight.quantize(
+                                                        Decimal("0.001"),
+                                                        rounding=ROUND_HALF_UP,
+                                                    ) != final_weight
+                                                ):
+                                                    unavailable.append(
+                                                        f"{assignment.product.product_name} (invalid weight)"
+                                                    )
+                                                    continue
+                                        total = (
+                                            _approximate_weight_total(
+                                                price,
+                                                final_weight or estimated_weight,
+                                                unit,
+                                            )
+                                            if estimated_weight is not None
+                                            else price * quantity
+                                        ).quantize(
                                             Decimal("0.01"),
                                             rounding=ROUND_HALF_UP,
                                         )
@@ -7128,7 +7428,9 @@ def shop_point_of_sale(request, shop_id):
                                             "assignment": assignment,
                                             "quantity": quantity,
                                             "price": price,
-                                            "unit": assignment.unit_for_customer(is_b2b=False),
+                                            "unit": unit,
+                                            "estimated_weight": estimated_weight,
+                                            "final_weight": final_weight,
                                             "total": total,
                                             "is_bulk_order": False,
                                         })
@@ -7243,14 +7545,6 @@ def shop_point_of_sale(request, shop_id):
                                             assignment = item["assignment"]
                                             product = assignment.product
                                             item_tax = item
-                                            estimated_weight = (
-                                                _estimated_weight_for_quantity(
-                                                    item["quantity"],
-                                                    item["unit"],
-                                                )
-                                                if product.is_approximate_weight
-                                                else None
-                                            )
                                             OrderItem.objects.create(
                                                 shop_order=shop_order,
                                                 product=product,
@@ -7259,7 +7553,8 @@ def shop_point_of_sale(request, shop_id):
                                                 sku=product.sku or "",
                                                 quantity=item["quantity"],
                                                 is_approximate_weight=product.is_approximate_weight,
-                                                estimated_weight=estimated_weight,
+                                                estimated_weight=item["estimated_weight"],
+                                                final_weight=item["final_weight"],
                                                 unit=item["unit"] or "",
                                                 price=item["price"],
                                                 total=item["total"],
@@ -7270,9 +7565,9 @@ def shop_point_of_sale(request, shop_id):
                                                 sgst_amount=item_tax.get("sgst_amount", Decimal("0.00")),
                                                 igst_amount=item_tax.get("igst_amount", Decimal("0.00")),
                                             )
-                                            if estimated_weight is not None:
+                                            if item["estimated_weight"] is not None:
                                                 estimated_weight_kg += _weight_in_kilograms(
-                                                    estimated_weight,
+                                                    item["final_weight"] or item["estimated_weight"],
                                                     item["unit"],
                                                 )
                                             item_snapshots.append({
@@ -7284,6 +7579,16 @@ def shop_point_of_sale(request, shop_id):
                                                 "unit": item["unit"],
                                                 "price": str(item["price"]),
                                                 "total": str(item["total"]),
+                                                "estimated_weight": (
+                                                    str(item["estimated_weight"])
+                                                    if item["estimated_weight"] is not None
+                                                    else None
+                                                ),
+                                                "final_weight": (
+                                                    str(item["final_weight"])
+                                                    if item["final_weight"] is not None
+                                                    else None
+                                                ),
                                                 "is_bulk_order": False,
                                             })
                                             assignment.stock -= item["quantity"]
@@ -7336,6 +7641,8 @@ def shop_point_of_sale(request, shop_id):
                                                 for user_id in reviewer_ids
                                             ])
                                         request.session.pop(cart_session_key, None)
+                                        request.session.pop(cart_weights_session_key, None)
+                                        request.session.pop(sale_session_key, None)
                                         messages.success(
                                             request,
                                             f"{'Counter sale' if counter_sale else 'Home delivery order'} "
@@ -7347,7 +7654,13 @@ def shop_point_of_sale(request, shop_id):
                                         )
 
         request.session[cart_session_key] = cart
-        return redirect("shop_point_of_sale", shop_id=shop.pk)
+        redirect_url = reverse(
+            "shop_point_of_sale",
+            kwargs={"shop_id": shop.pk},
+        )
+        if sale_id:
+            redirect_url = f"{redirect_url}?{urlencode({'sale_id': sale_id})}"
+        return redirect(redirect_url)
 
     search = request.GET.get("q", "").strip()
     assignments = (
@@ -7386,6 +7699,7 @@ def shop_point_of_sale(request, shop_id):
         )
     }
     cart_subtotal = Decimal("0.00")
+    cleaned_cart_weights = {}
     for assignment_id, raw_quantity in cart.items():
         try:
             quantity = int(raw_quantity)
@@ -7396,16 +7710,124 @@ def shop_point_of_sale(request, shop_id):
             continue
         cleaned_cart[str(assignment.pk)] = quantity
         price = assignment.effective_price_for_customer(is_b2b=False)
-        total = price * quantity
+        is_approximate_weight = assignment.product.is_approximate_weight
+        unit = assignment.unit_for_customer(is_b2b=False)
+        estimated_weight = (
+            _estimated_weight_for_quantity(quantity, unit)
+            if is_approximate_weight
+            else None
+        )
+        weight = None
+        has_custom_weight = False
+        if is_approximate_weight:
+            raw_weight = cart_weights.get(str(assignment.pk))
+            try:
+                weight = Decimal(str(raw_weight)) if raw_weight is not None else None
+            except (InvalidOperation, TypeError, ValueError):
+                weight = None
+            if (
+                weight is None
+                or not weight.is_finite()
+                or weight <= 0
+                or weight > Decimal("9999999.999")
+                or weight.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP) != weight
+            ):
+                weight = estimated_weight
+            else:
+                has_custom_weight = True
+                cleaned_cart_weights[str(assignment.pk)] = str(weight)
+        total = (
+            _approximate_weight_total(price, weight, unit)
+            if is_approximate_weight
+            else price * quantity
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         cart_subtotal += total
         cart_lines.append({
             "assignment": assignment,
             "quantity": quantity,
             "price": price,
             "total": total,
+            "is_approximate_weight": is_approximate_weight,
+            "unit": unit,
+            "estimated_weight": estimated_weight,
+            "weight": weight,
+            "has_custom_weight": has_custom_weight,
+            "weight_unit": _weight_display_unit(unit) if is_approximate_weight else "",
         })
     if cleaned_cart != cart:
         request.session[cart_session_key] = cleaned_cart
+    if cleaned_cart_weights != cart_weights:
+        request.session[cart_weights_session_key] = cleaned_cart_weights
+        cart_weights = cleaned_cart_weights
+
+    draft_snapshot = None
+    if draft_cart:
+        draft_lines = []
+        draft_assignments = {
+            assignment.pk: assignment
+            for assignment in ProductShop.objects.select_related("product").filter(
+                pk__in=[int(key) for key in draft_cart if str(key).isdigit()],
+                shop=shop,
+                is_active=True,
+                product__is_active=True,
+            )
+        }
+        for assignment_id, raw_quantity in draft_cart.items():
+            try:
+                quantity = int(raw_quantity)
+                assignment = draft_assignments.get(int(assignment_id))
+            except (TypeError, ValueError):
+                continue
+            if quantity <= 0 or assignment is None:
+                continue
+            price = assignment.effective_price_for_customer(is_b2b=False)
+            is_approximate_weight = assignment.product.is_approximate_weight
+            unit = assignment.unit_for_customer(is_b2b=False)
+            estimated_weight = (
+                _estimated_weight_for_quantity(quantity, unit)
+                if is_approximate_weight
+                else None
+            )
+            weight = None
+            has_custom_weight = False
+            if is_approximate_weight:
+                raw_weight = draft_cart_weights.get(str(assignment.pk))
+                try:
+                    weight = Decimal(str(raw_weight)) if raw_weight is not None else None
+                except (InvalidOperation, TypeError, ValueError):
+                    weight = None
+                if (
+                    weight is None
+                    or not weight.is_finite()
+                    or weight <= 0
+                    or weight > Decimal("9999999.999")
+                    or weight.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP) != weight
+                ):
+                    weight = estimated_weight
+                else:
+                    has_custom_weight = True
+            total = (
+                _approximate_weight_total(price, weight, unit)
+                if is_approximate_weight
+                else price * quantity
+            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            draft_lines.append({
+                "product_shop_id": assignment.pk,
+                "product_name": assignment.product.product_name,
+                "quantity": quantity,
+                "price": str(price),
+                "total": str(total),
+                "is_approximate_weight": is_approximate_weight,
+                "weight": str(weight) if has_custom_weight else None,
+                "display_weight": str(weight) if weight is not None else None,
+                "weight_unit": _weight_display_unit(unit) if is_approximate_weight else "",
+            })
+        if draft_lines:
+            draft_snapshot = {
+                "id": draft_sale_id or uuid.uuid4().hex,
+                "created_at": timezone.now().isoformat(),
+                "items": draft_lines,
+            }
 
     pos_tax_items = [
         {
@@ -7446,6 +7868,31 @@ def shop_point_of_sale(request, shop_id):
         "shop/point_of_sale.html",
         {
             "shop": shop,
+            "sale_id": sale_id,
+            "draft_snapshot": draft_snapshot,
+            "resumed_draft_id": resumed_draft_id,
+            "current_sale_snapshot": {
+                "id": sale_id,
+                "created_at": timezone.now().isoformat(),
+                "items": [
+                    {
+                        "product_shop_id": line["assignment"].pk,
+                        "product_name": line["assignment"].product.product_name,
+                        "quantity": line["quantity"],
+                        "price": str(line["price"]),
+                        "total": str(line["total"]),
+                        "is_approximate_weight": line["is_approximate_weight"],
+                        "weight": (
+                            str(line["weight"])
+                            if line["has_custom_weight"]
+                            else None
+                        ),
+                        "display_weight": str(line["weight"]) if line["weight"] is not None else None,
+                        "weight_unit": line["weight_unit"],
+                    }
+                    for line in cart_lines
+                ],
+            },
             "product_page": product_page,
             "search": search,
             "cart_lines": cart_lines,
@@ -7453,6 +7900,14 @@ def shop_point_of_sale(request, shop_id):
             "counter_total": counter_total,
             "delivery_total": delivery_total,
             "fulfillment_choices": ShopOrder.FULFILLMENT_CHOICES,
+            "continuous_scan": request.GET.get("continuous_scan") == "1",
+            "scan_mode": (
+                "remove"
+                if request.GET.get("scan_mode") == "remove"
+                else "add"
+            ),
+            "scan_feedback": scan_feedback.get("message", ""),
+            "scan_feedback_is_error": scan_feedback.get("is_error", False),
         },
     )
 

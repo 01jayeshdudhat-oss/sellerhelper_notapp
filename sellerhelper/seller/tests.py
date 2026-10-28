@@ -23888,17 +23888,28 @@ class ShopPointOfSaleTests(TestCase):
         self.assertContains(page, "Use camera")
         self.assertContains(page, 'purpose: "counter-sale-product"')
         self.assertContains(page, 'scanForm.requestSubmit()')
+        self.assertContains(page, "playScanSound")
+        self.assertContains(page, "frequency.setValueAtTime(880")
+        self.assertContains(page, "Continuous scanning")
+        self.assertContains(page, "sellerhelper-pos-continuous-scan-")
+        self.assertContains(page, "window.localStorage.getItem(scanStorageKey)")
+        self.assertContains(page, "window.localStorage.setItem(scanStorageKey")
+        self.assertContains(page, 'savedContinuousScan === "true"')
+        self.assertContains(page, "Opening camera…")
+        self.assertContains(page, "Remove one per scan")
         self.assertContains(page, "Print QR")
+        sale_id = page.context["sale_id"]
 
         added = self.client.post(
             self.pos_url,
             {
+                "sale_id": sale_id,
                 "action": "add_item",
                 "product_shop_id": str(self.assignment.pk),
                 "quantity": "2",
             },
         )
-        self.assertRedirects(added, self.pos_url)
+        self.assertRedirects(added, f"{self.pos_url}?sale_id={sale_id}")
         self.assertEqual(
             self.client.session[f"shop_pos_cart_{self.shop.pk}"],
             {str(self.assignment.pk): 2},
@@ -23907,26 +23918,163 @@ class ShopPointOfSaleTests(TestCase):
         changed = self.client.post(
             self.pos_url,
             {
+                "sale_id": sale_id,
                 "action": "set_quantity",
                 "product_shop_id": str(self.assignment.pk),
                 "quantity": "1",
             },
         )
-        self.assertRedirects(changed, self.pos_url)
+        self.assertRedirects(changed, f"{self.pos_url}?sale_id={sale_id}")
         self.assertEqual(
             self.client.session[f"shop_pos_cart_{self.shop.pk}"],
             {str(self.assignment.pk): 1},
         )
 
+    def test_pos_can_edit_approximate_weight_and_bill_by_actual_weight(self):
+        self.product.unit = "500gm"
+        self.product.is_approximate_weight = True
+        self.product.save(update_fields=["unit", "is_approximate_weight"])
+        self.assignment.price = Decimal("50.00")
+        self.assignment.save(update_fields=["price"])
+        self.client.force_login(self.staff_user)
+        page = self.client.get(self.pos_url)
+        sale_id = page.context["sale_id"]
+
+        added = self.client.post(
+            self.pos_url,
+            {
+                "sale_id": sale_id,
+                "action": "add_item",
+                "product_shop_id": self.assignment.pk,
+                "quantity": "2",
+            },
+        )
+        self.assertRedirects(added, f"{self.pos_url}?sale_id={sale_id}")
+        page = self.client.get(added.url)
+        self.assertContains(page, "Approximate weight: 1000.000 gm")
+        self.assertContains(page, 'name="action" value="set_approximate_weight"')
+        self.assertContains(page, "₹100.00")
+
+        invalid_weight = self.client.post(
+            self.pos_url,
+            {
+                "sale_id": sale_id,
+                "action": "set_approximate_weight",
+                "product_shop_id": self.assignment.pk,
+                "weight": "0",
+            },
+        )
+        self.assertRedirects(invalid_weight, f"{self.pos_url}?sale_id={sale_id}")
+        self.assertEqual(
+            self.client.session[f"shop_pos_cart_weights_{self.shop.pk}"],
+            {},
+        )
+
+        updated = self.client.post(
+            self.pos_url,
+            {
+                "sale_id": sale_id,
+                "action": "set_approximate_weight",
+                "product_shop_id": self.assignment.pk,
+                "weight": "950",
+            },
+        )
+        self.assertRedirects(updated, f"{self.pos_url}?sale_id={sale_id}")
+        page = self.client.get(updated.url)
+        self.assertContains(page, "Approximate weight: 950.000 gm")
+        self.assertContains(page, "₹95.00")
+        self.assertEqual(
+            self.client.session[f"shop_pos_cart_weights_{self.shop.pk}"],
+            {str(self.assignment.pk): "950"},
+        )
+
+        placed = self.client.post(
+            self.pos_url,
+            {
+                "sale_id": sale_id,
+                "action": "place_sale",
+                "fulfillment_type": ShopOrder.FULFILLMENT_COUNTER,
+                "payment_type": "CASH",
+            },
+        )
+        shop_order = ShopOrder.objects.get(shop=self.shop)
+        self.assertRedirects(
+            placed,
+            reverse("shop_order_detail", kwargs={"shop_order_id": shop_order.pk}),
+        )
+        order_item = shop_order.order_items.get()
+        self.assertEqual(order_item.quantity, 2)
+        self.assertEqual(order_item.estimated_weight, Decimal("1000.000"))
+        self.assertEqual(order_item.final_weight, Decimal("950.000"))
+        self.assertEqual(order_item.total, Decimal("95.00"))
+        self.assertEqual(shop_order.total_amount, Decimal("95.00"))
+        self.assertEqual(shop_order.total_weight_kg, Decimal("0.95"))
+
+    def test_incomplete_counter_sale_preserves_edited_approximate_weight(self):
+        self.product.unit = "500gm"
+        self.product.is_approximate_weight = True
+        self.product.save(update_fields=["unit", "is_approximate_weight"])
+        self.assignment.price = Decimal("50.00")
+        self.assignment.save(update_fields=["price"])
+        self.client.force_login(self.staff_user)
+        first_page = self.client.get(self.pos_url)
+        first_sale_id = first_page.context["sale_id"]
+        self.client.post(
+            self.pos_url,
+            {
+                "sale_id": first_sale_id,
+                "action": "add_item",
+                "product_shop_id": self.assignment.pk,
+                "quantity": "2",
+            },
+        )
+        self.client.post(
+            self.pos_url,
+            {
+                "sale_id": first_sale_id,
+                "action": "set_approximate_weight",
+                "product_shop_id": self.assignment.pk,
+                "weight": "950",
+            },
+        )
+
+        new_sale_page = self.client.get(self.pos_url)
+        snapshot = new_sale_page.context["draft_snapshot"]
+        self.assertEqual(snapshot["items"][0]["weight"], "950")
+        self.assertEqual(snapshot["items"][0]["total"], "95.00")
+
+        new_sale_id = new_sale_page.context["sale_id"]
+        resumed = self.client.post(
+            self.pos_url,
+            {
+                "sale_id": new_sale_id,
+                "action": "restore_draft",
+                "draft_id": snapshot["id"],
+                "draft_items": json.dumps(snapshot["items"]),
+            },
+        )
+        self.assertRedirects(
+            resumed,
+            f"{self.pos_url}?sale_id={new_sale_id}&resumed_draft={snapshot['id']}",
+        )
+        resumed_page = self.client.get(resumed.url)
+        self.assertContains(resumed_page, "Approximate weight: 950.000 gm")
+        self.assertContains(resumed_page, "₹95.00")
+        self.assertEqual(
+            self.client.session[f"shop_pos_cart_weights_{self.shop.pk}"],
+            {str(self.assignment.pk): "950"},
+        )
+
     def test_scanning_shop_product_qr_adds_one_unit_and_rejects_other_shop_codes(self):
         self.client.force_login(self.staff_user)
+        sale_id = self.client.get(self.pos_url).context["sale_id"]
         scan_payload = f"sellerhelper-pos:{self.shop.pk}:{self.assignment.pk}"
 
         first_scan = self.client.post(
             self.pos_url,
-            {"action": "scan_item", "scan_code": scan_payload},
+            {"sale_id": sale_id, "action": "scan_item", "scan_code": scan_payload},
         )
-        self.assertRedirects(first_scan, self.pos_url)
+        self.assertRedirects(first_scan, f"{self.pos_url}?sale_id={sale_id}")
         self.assertEqual(
             self.client.session[f"shop_pos_cart_{self.shop.pk}"],
             {str(self.assignment.pk): 1},
@@ -23934,7 +24082,7 @@ class ShopPointOfSaleTests(TestCase):
 
         self.client.post(
             self.pos_url,
-            {"action": "scan_item", "scan_code": scan_payload},
+            {"sale_id": sale_id, "action": "scan_item", "scan_code": scan_payload},
         )
         self.assertEqual(
             self.client.session[f"shop_pos_cart_{self.shop.pk}"],
@@ -23944,14 +24092,223 @@ class ShopPointOfSaleTests(TestCase):
         rejected_scan = self.client.post(
             self.pos_url,
             {
+                "sale_id": sale_id,
                 "action": "scan_item",
                 "scan_code": f"sellerhelper-pos:{self.shop.pk + 1}:{self.assignment.pk}",
             },
         )
-        self.assertRedirects(rejected_scan, self.pos_url)
+        self.assertRedirects(rejected_scan, f"{self.pos_url}?sale_id={sale_id}")
         self.assertEqual(
             self.client.session[f"shop_pos_cart_{self.shop.pk}"],
             {str(self.assignment.pk): 2},
+        )
+
+    def test_continuous_product_scanning_reopens_scanner_and_keeps_adding_to_sale(self):
+        self.client.force_login(self.staff_user)
+        sale_id = self.client.get(self.pos_url).context["sale_id"]
+        scan_payload = f"sellerhelper-pos:{self.shop.pk}:{self.assignment.pk}"
+
+        first_scan = self.client.post(
+            self.pos_url,
+            {
+                "sale_id": sale_id,
+                "action": "scan_item",
+                "scan_code": scan_payload,
+                "continuous_scan": "1",
+            },
+        )
+        self.assertRedirects(
+            first_scan,
+            f"{self.pos_url}?continuous_scan=1&sale_id={sale_id}",
+        )
+        self.assertEqual(
+            self.client.session[f"shop_pos_cart_{self.shop.pk}"],
+            {str(self.assignment.pk): 1},
+        )
+
+        continue_page = self.client.get(first_scan.url)
+        self.assertEqual(continue_page.status_code, 200)
+        self.assertTrue(continue_page.context["continuous_scan"])
+        self.assertContains(
+            continue_page,
+            'detail: { purpose: "counter-sale-product" }',
+        )
+
+        second_scan = self.client.post(
+            self.pos_url,
+            {
+                "action": "scan_item",
+                "scan_code": scan_payload,
+                "continuous_scan": "1",
+                "sale_id": sale_id,
+            },
+        )
+        self.assertRedirects(
+            second_scan,
+            f"{self.pos_url}?continuous_scan=1&sale_id={sale_id}",
+        )
+        self.assertEqual(
+            self.client.session[f"shop_pos_cart_{self.shop.pk}"],
+            {str(self.assignment.pk): 2},
+        )
+
+    def test_scanning_to_remove_decrements_one_unit_and_removes_line_at_zero(self):
+        self.client.force_login(self.staff_user)
+        sale_id = self.client.get(self.pos_url).context["sale_id"]
+        self._save_cart(2)
+        scan_payload = f"sellerhelper-pos:{self.shop.pk}:{self.assignment.pk}"
+
+        first_removal = self.client.post(
+            self.pos_url,
+            {
+                "sale_id": sale_id,
+                "action": "scan_item",
+                "scan_code": scan_payload,
+                "scan_mode": "remove",
+            },
+        )
+        self.assertRedirects(
+            first_removal,
+            f"{self.pos_url}?scan_mode=remove&sale_id={sale_id}",
+        )
+        self.assertEqual(
+            self.client.session[f"shop_pos_cart_{self.shop.pk}"],
+            {str(self.assignment.pk): 1},
+        )
+
+        second_removal = self.client.post(
+            self.pos_url,
+            {
+                "sale_id": sale_id,
+                "action": "scan_item",
+                "scan_code": scan_payload,
+                "scan_mode": "remove",
+            },
+        )
+        self.assertRedirects(
+            second_removal,
+            f"{self.pos_url}?scan_mode=remove&sale_id={sale_id}",
+        )
+        self.assertEqual(self.client.session[f"shop_pos_cart_{self.shop.pk}"], {})
+
+    def test_continuous_scan_error_is_displayed_and_scanning_continues(self):
+        self.client.force_login(self.staff_user)
+        sale_id = self.client.get(self.pos_url).context["sale_id"]
+        self._save_cart(1)
+
+        response = self.client.post(
+            self.pos_url,
+            {
+                "sale_id": sale_id,
+                "action": "scan_item",
+                "scan_code": "not-a-product-qr",
+                "continuous_scan": "1",
+                "scan_mode": "remove",
+            },
+        )
+        self.assertRedirects(
+            response,
+            f"{self.pos_url}?continuous_scan=1&scan_mode=remove&sale_id={sale_id}",
+            fetch_redirect_response=False,
+        )
+
+        page = self.client.get(response.url)
+        self.assertContains(page, "That QR code does not belong to this shop.")
+        self.assertContains(
+            page,
+            'data-scan-feedback-error="true"',
+        )
+        self.assertContains(
+            page,
+            'data-storage-key="sellerhelper-pos-continuous-scan-',
+        )
+        self.assertTrue(page.context["continuous_scan"])
+        self.assertContains(page, "statusMessage")
+        self.assertEqual(
+            self.client.session[f"shop_pos_cart_{self.shop.pk}"],
+            {str(self.assignment.pk): 1},
+        )
+
+    def test_opening_a_new_counter_sale_saves_previous_cart_as_device_draft(self):
+        self.client.force_login(self.staff_user)
+        first_page = self.client.get(self.pos_url)
+        first_sale_id = first_page.context["sale_id"]
+
+        add_response = self.client.post(
+            self.pos_url,
+            {
+                "sale_id": first_sale_id,
+                "action": "add_item",
+                "product_shop_id": self.assignment.pk,
+                "quantity": "2",
+            },
+        )
+        self.assertRedirects(
+            add_response,
+            f"{self.pos_url}?sale_id={first_sale_id}",
+        )
+        self.assertEqual(
+            self.client.session[f"shop_pos_cart_{self.shop.pk}"],
+            {str(self.assignment.pk): 2},
+        )
+
+        next_sale_page = self.client.get(self.pos_url)
+        self.assertEqual(next_sale_page.status_code, 200)
+        self.assertNotEqual(next_sale_page.context["sale_id"], first_sale_id)
+        self.assertEqual(next_sale_page.context["cart_lines"], [])
+        self.assertEqual(
+            next_sale_page.context["draft_snapshot"]["items"],
+            [{
+                "is_approximate_weight": False,
+                "product_shop_id": self.assignment.pk,
+                "product_name": "POS Apples",
+                "quantity": 2,
+                "price": "12.00",
+                "total": "24.00",
+                "weight": None,
+                "display_weight": None,
+                "weight_unit": "",
+            }],
+        )
+        self.assertEqual(
+            self.client.session[f"shop_pos_cart_{self.shop.pk}"],
+            {},
+        )
+        self.assertContains(next_sale_page, "Recent incomplete counter sales")
+        self.assertContains(
+            next_sale_page,
+            "sellerhelper-pos-incomplete-sales-${shopId}",
+        )
+        self.assertContains(next_sale_page, "slice(0, 2)")
+        self.assertContains(next_sale_page, 'action", "restore_draft"')
+
+    def test_counter_sale_can_resume_valid_saved_draft(self):
+        self.client.force_login(self.staff_user)
+        page = self.client.get(self.pos_url)
+        sale_id = page.context["sale_id"]
+
+        response = self.client.post(
+            self.pos_url,
+            {
+                "action": "restore_draft",
+                "sale_id": sale_id,
+                "draft_id": "draft-one",
+                "draft_items": json.dumps([
+                    {
+                        "product_shop_id": self.assignment.pk,
+                        "quantity": 3,
+                    },
+                ]),
+            },
+        )
+
+        self.assertRedirects(
+            response,
+            f"{self.pos_url}?sale_id={sale_id}&resumed_draft=draft-one",
+        )
+        self.assertEqual(
+            self.client.session[f"shop_pos_cart_{self.shop.pk}"],
+            {str(self.assignment.pk): 3},
         )
 
     def test_staff_can_print_only_product_qr_labels_from_their_shop(self):
@@ -24262,6 +24619,7 @@ class ShopPointOfSaleTests(TestCase):
 
     def test_pos_camera_scan_accepts_the_public_product_qr_url(self):
         self.client.force_login(self.staff_user)
+        sale_id = self.client.get(self.pos_url).context["sale_id"]
         product_qr_url = self.client.get(
             reverse(
                 "shop_product_qr_label",
@@ -24274,13 +24632,30 @@ class ShopPointOfSaleTests(TestCase):
 
         response = self.client.post(
             self.pos_url,
-            {"action": "scan_item", "scan_code": product_qr_url},
+            {"sale_id": sale_id, "action": "scan_item", "scan_code": product_qr_url},
         )
 
-        self.assertRedirects(response, self.pos_url)
+        self.assertRedirects(response, f"{self.pos_url}?sale_id={sale_id}")
         self.assertEqual(
             self.client.session[f"shop_pos_cart_{self.shop.pk}"],
             {str(self.assignment.pk): 1},
+        )
+
+        alias_host_qr = (
+            f"https://qr-host-alias.example/shop/{self.shop.pk}"
+            f"/products/{self.assignment.pk}/qr"
+        )
+        alias_host_response = self.client.post(
+            self.pos_url,
+            {"action": "scan_item", "scan_code": alias_host_qr},
+        )
+        self.assertRedirects(
+            alias_host_response,
+            f"{self.pos_url}?sale_id={sale_id}",
+        )
+        self.assertEqual(
+            self.client.session[f"shop_pos_cart_{self.shop.pk}"],
+            {str(self.assignment.pk): 2},
         )
 
     def test_authorized_staff_can_record_paid_counter_sale_and_reduce_stock(self):
@@ -24343,13 +24718,15 @@ class ShopPointOfSaleTests(TestCase):
         self.shop.delivery_fee = Decimal("20.00")
         self.shop.save(update_fields=["delivery_fee"])
         self.client.force_login(self.staff_user)
+        sale_id = self.client.get(self.pos_url).context["sale_id"]
         self._save_cart(1)
-        cart_page = self.client.get(self.pos_url)
+        cart_page = self.client.get(self.pos_url, {"sale_id": sale_id})
         self.assertContains(cart_page, "₹32.00")
 
         response = self.client.post(
             self.pos_url,
             {
+                "sale_id": sale_id,
                 "action": "place_sale",
                 "fulfillment_type": ShopOrder.FULFILLMENT_DELIVERY,
                 "payment_type": "UPI",
@@ -24416,7 +24793,10 @@ class ShopPointOfSaleTests(TestCase):
                 "payment_type": "CARD",
             },
         )
-        self.assertRedirects(response, self.pos_url)
+        self.assertRedirects(
+            response,
+            f"{self.pos_url}?sale_id={self.client.session[f'shop_pos_sale_id_{self.shop.pk}']}",
+        )
         self.assertFalse(ShopOrder.objects.filter(shop=self.shop).exists())
         self.assignment.refresh_from_db()
         self.assertEqual(self.assignment.stock, Decimal("5.0000"))
@@ -24440,7 +24820,8 @@ class ShopPointOfSaleTests(TestCase):
 
         response = self.client.post(self.pos_url, payload)
 
-        self.assertRedirects(response, self.pos_url)
+        sale_id = self.client.session[f"shop_pos_sale_id_{self.shop.pk}"]
+        self.assertRedirects(response, f"{self.pos_url}?sale_id={sale_id}")
         self.assertFalse(ShopOrder.objects.filter(shop=self.shop).exists())
         payload["delivery_pincode"] = "123456"
         accepted = self.client.post(self.pos_url, payload)
