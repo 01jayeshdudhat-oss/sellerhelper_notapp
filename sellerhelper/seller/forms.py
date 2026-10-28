@@ -1,5 +1,6 @@
 
 import re
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Dict, List
 
@@ -9,9 +10,11 @@ from django.core.exceptions import ValidationError
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.db.models import Q
+from django.utils import timezone
 
 from .models import (
     AdminProductCatalog,
+    DeliverySharingSettings,
     MarketplaceLayoutSettings,
     ProductCloneSettings,
     PRODUCT_CLONE_FIELD_CHOICES,
@@ -24,6 +27,9 @@ from .models import (
     ProductShop,
     SharedRiderGroup,
     Shop,
+    ShopStaff,
+    StaffLeaveApplication,
+    StaffResignationRequest,
     SHOP_STOREFRONT_RESERVED_SLUGS,
     get_product_category_choices,
 )
@@ -1128,6 +1134,86 @@ class ProductShopQuickEditForm(forms.ModelForm):
         fields = ("price", "stock")
 
 
+class ShopStaffPayrollSettingsForm(forms.ModelForm):
+    class Meta:
+        model = ShopStaff
+        fields = (
+            "salary_method",
+            "monthly_base_salary",
+            "hourly_rate",
+            "completed_order_bonus",
+        )
+        widgets = {
+            "salary_method": forms.Select(attrs={"class": "form-select"}),
+            "monthly_base_salary": forms.NumberInput(
+                attrs={"class": "form-control", "min": 0, "step": "0.01"},
+            ),
+            "hourly_rate": forms.NumberInput(
+                attrs={"class": "form-control", "min": 0, "step": "0.01"},
+            ),
+            "completed_order_bonus": forms.NumberInput(
+                attrs={"class": "form-control", "min": 0, "step": "0.01"},
+            ),
+        }
+
+
+class StaffLeaveApplicationForm(forms.ModelForm):
+    class Meta:
+        model = StaffLeaveApplication
+        fields = ("start_date", "end_date", "reason")
+        widgets = {
+            "start_date": forms.DateInput(
+                attrs={"class": "form-control", "type": "date"},
+            ),
+            "end_date": forms.DateInput(
+                attrs={"class": "form-control", "type": "date"},
+            ),
+            "reason": forms.Textarea(
+                attrs={"class": "form-control", "rows": 3, "maxlength": 2000},
+            ),
+        }
+
+    def clean(self):
+        cleaned_data = super().clean()
+        start_date = cleaned_data.get("start_date")
+        end_date = cleaned_data.get("end_date")
+        if start_date and start_date < timezone.localdate():
+            self.add_error("start_date", "Leave cannot start in the past.")
+        if start_date and end_date and end_date < start_date:
+            self.add_error("end_date", "End date must be on or after the start date.")
+        return cleaned_data
+
+
+class StaffResignationForm(forms.ModelForm):
+    class Meta:
+        model = StaffResignationRequest
+        fields = ("requested_last_working_date", "reason")
+        widgets = {
+            "requested_last_working_date": forms.DateInput(
+                attrs={"class": "form-control", "type": "date"},
+            ),
+            "reason": forms.Textarea(
+                attrs={"class": "form-control", "rows": 3, "maxlength": 2000},
+            ),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        earliest_date = timezone.localdate() + timedelta(days=15)
+        self.fields["requested_last_working_date"].widget.attrs["min"] = (
+            earliest_date.isoformat()
+        )
+
+    def clean_requested_last_working_date(self):
+        requested_date = self.cleaned_data["requested_last_working_date"]
+        earliest_date = timezone.localdate() + timedelta(days=15)
+        if requested_date < earliest_date:
+            raise ValidationError(
+                "Resignation requires at least 15 calendar days’ notice.",
+            )
+        return requested_date
+
+
 class StorefrontProductEditForm(forms.ModelForm):
     unit_value = forms.DecimalField(
         required=False,
@@ -1624,6 +1710,114 @@ class ProductCloneSettingsForm(forms.ModelForm):
         fields = ("allowed_fields",)
 
 
+class PublicRiderSettingsForm(forms.ModelForm):
+    class Meta:
+        model = DeliverySharingSettings
+        labels = {
+            "public_rider_service_enabled": "Enable public rider network",
+            "max_additional_pickup_locations": "Additional pickup locations per shop",
+            "shared_rider_radius_km": "Shared rider coverage radius (km)",
+            "customer_direction_radius_km": "Customer-direction grouping radius (km)",
+            "public_rider_batch_radius_km": "Public rider order-batching radius (km)",
+            "public_rider_decline_cooldown_minutes": "Decline cooldown (minutes)",
+            "public_rider_offer_timeout_seconds": "Maximum offer response time (seconds)",
+            "public_rider_offer_riders_per_round": "Riders notified per offer round",
+            "public_rider_max_active_offers": "Active offers per rider",
+            "shared_rider_base_pay": "Public rider base fare (₹)",
+            "shared_rider_rate_per_km": "Standard delivery rate (₹/km)",
+            "public_rider_pay_include_pickup_distance": (
+                "Include rider-to-pickup distance in standard fare"
+            ),
+            "public_rider_pickup_distance_pay_percentage": (
+                "Pickup distance included in standard fare (%)"
+            ),
+            "public_rider_pickup_threshold_bonus_enabled": (
+                "Enable additional pickup-distance threshold bonus"
+            ),
+            "public_rider_pickup_threshold_km": (
+                "Pickup distance covered before extra pay (km)"
+            ),
+            "public_rider_pickup_threshold_rate_per_km": (
+                "Extra pay beyond threshold (₹/km)"
+            ),
+            "public_rider_pickup_threshold_distance_method": (
+                "Distance method for extra threshold bonus"
+            ),
+        }
+        fields = (
+            "public_rider_service_enabled",
+            "max_additional_pickup_locations",
+            "shared_rider_radius_km",
+            "customer_direction_radius_km",
+            "public_rider_batch_radius_km",
+            "public_rider_decline_cooldown_minutes",
+            "public_rider_offer_timeout_seconds",
+            "public_rider_offer_riders_per_round",
+            "public_rider_max_active_offers",
+            "shared_rider_base_pay",
+            "shared_rider_rate_per_km",
+            "public_rider_pay_include_pickup_distance",
+            "public_rider_pickup_distance_pay_percentage",
+            "public_rider_pickup_threshold_bonus_enabled",
+            "public_rider_pickup_threshold_km",
+            "public_rider_pickup_threshold_rate_per_km",
+            "public_rider_pickup_threshold_distance_method",
+        )
+        widgets = {
+            "public_rider_service_enabled": forms.CheckboxInput(
+                attrs={"class": "form-check-input"},
+            ),
+            "max_additional_pickup_locations": forms.NumberInput(
+                attrs={"class": "form-control", "min": 0, "max": 20},
+            ),
+            "shared_rider_radius_km": forms.NumberInput(
+                attrs={"class": "form-control", "min": 0.05, "max": 10, "step": 0.01},
+            ),
+            "customer_direction_radius_km": forms.NumberInput(
+                attrs={"class": "form-control", "min": 0.05, "max": 10, "step": 0.01},
+            ),
+            "public_rider_batch_radius_km": forms.NumberInput(
+                attrs={"class": "form-control", "min": 0.5, "max": 4.2, "step": 0.1},
+            ),
+            "public_rider_decline_cooldown_minutes": forms.NumberInput(
+                attrs={"class": "form-control", "min": 0.5, "max": 60, "step": 0.1},
+            ),
+            "public_rider_offer_timeout_seconds": forms.NumberInput(
+                attrs={"class": "form-control", "min": 15, "max": 600, "step": 1},
+            ),
+            "public_rider_offer_riders_per_round": forms.NumberInput(
+                attrs={"class": "form-control", "min": 1, "max": 100, "step": 1},
+            ),
+            "public_rider_max_active_offers": forms.NumberInput(
+                attrs={"class": "form-control", "min": 1, "max": 20, "step": 1},
+            ),
+            "shared_rider_base_pay": forms.NumberInput(
+                attrs={"class": "form-control", "min": 0, "step": 0.01},
+            ),
+            "shared_rider_rate_per_km": forms.NumberInput(
+                attrs={"class": "form-control", "min": 0, "step": 0.01},
+            ),
+            "public_rider_pay_include_pickup_distance": forms.CheckboxInput(
+                attrs={"class": "form-check-input"},
+            ),
+            "public_rider_pickup_distance_pay_percentage": forms.NumberInput(
+                attrs={"class": "form-control", "min": 0, "max": 100, "step": 0.01},
+            ),
+            "public_rider_pickup_threshold_bonus_enabled": forms.CheckboxInput(
+                attrs={"class": "form-check-input"},
+            ),
+            "public_rider_pickup_threshold_km": forms.NumberInput(
+                attrs={"class": "form-control", "min": 0, "step": 0.001},
+            ),
+            "public_rider_pickup_threshold_rate_per_km": forms.NumberInput(
+                attrs={"class": "form-control", "min": 0, "step": 0.01},
+            ),
+            "public_rider_pickup_threshold_distance_method": forms.Select(
+                attrs={"class": "form-select"},
+            ),
+        }
+
+
 class SiteBrandingSettingsForm(forms.ModelForm):
     class Meta:
         model = SiteBrandingSettings
@@ -1633,6 +1827,8 @@ class SiteBrandingSettingsForm(forms.ModelForm):
             "support_email",
             "support_phone",
             "support_address",
+            "android_app_url",
+            "ios_app_url",
             "logo",
             "app_icon",
             "favicon",
@@ -1646,6 +1842,8 @@ class SiteBrandingSettingsForm(forms.ModelForm):
                 "class": "form-control",
                 "rows": 2,
             }),
+            "android_app_url": forms.URLInput(attrs={"class": "form-control"}),
+            "ios_app_url": forms.URLInput(attrs={"class": "form-control"}),
             "logo": forms.FileInput(attrs={"class": "form-control"}),
             "app_icon": forms.FileInput(attrs={"class": "form-control"}),
             "favicon": forms.FileInput(attrs={"class": "form-control"}),

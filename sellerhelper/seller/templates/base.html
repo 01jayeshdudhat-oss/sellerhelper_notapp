@@ -1793,6 +1793,33 @@
         <small class="d-block mb-2">
             © {% now "Y" %} {{ site_branding.site_name|default:'Seller Helper' }} — {{ site_branding.tagline|default:"Marketplace and shop management" }}
         </small>
+        {% if app_downloads %}
+            <section class="mb-3" aria-labelledby="footerAppDownloadsHeading">
+                <h2 id="footerAppDownloadsHeading" class="h6 fw-bold mb-2">Download app</h2>
+                <div class="d-flex flex-wrap justify-content-center gap-3">
+                    {% for app in app_downloads %}
+                        <div class="d-flex align-items-center gap-2 border rounded p-2">
+                            <a href="{{ app.url }}" target="_blank" rel="noopener noreferrer"
+                               aria-label="Scan or open {{ app.label }}">
+                                <img src="{{ app.qr_code_data_uri }}"
+                                     alt="QR code for {{ app.platform }} app download"
+                                     width="88" height="88" loading="lazy">
+                            </a>
+                            <div class="text-start">
+                                <div class="small fw-semibold">
+                                    {% if app.platform == "android" %}Android{% else %}iOS{% endif %}
+                                </div>
+                                <a class="btn btn-success btn-sm mt-1" href="{{ app.url }}"
+                                   target="_blank" rel="noopener noreferrer">
+                                    <i class="bi bi-download me-1" aria-hidden="true"></i>
+                                    Download app
+                                </a>
+                            </div>
+                        </div>
+                    {% endfor %}
+                </div>
+            </section>
+        {% endif %}
         {% if site_branding.support_email or site_branding.support_phone or site_branding.support_address %}
             <small class="d-block mb-2">
                 {{ site_branding.support_email }}{% if site_branding.support_email and site_branding.support_phone %} · {% endif %}{{ site_branding.support_phone }}{% if site_branding.support_address %} · {{ site_branding.support_address }}{% endif %}
@@ -1836,7 +1863,7 @@
     </a>
 
 
-    {% if is_customer_portal %}
+    {% if is_customer_portal or active_portal == "CUSTOMER" or active_portal == "B2B_CUSTOMER" %}
 
     <!-- SHOP -->
 
@@ -1862,6 +1889,16 @@
         <span class="cart-badge cart-count{% if not cart_count %} d-none{% endif %}" data-cart-count>{{ cart_count|default:0 }}</span>
 
     </a>
+
+    {% if active_portal == "CUSTOMER" or active_portal == "B2B_CUSTOMER" %}
+        <button type="button"
+                data-sellerhelper-scan-order="customer-product"
+                aria-label="Scan a product QR code to view product details"
+                title="Scan product QR">
+            <i class="bi bi-qr-code-scan"></i>
+            <span class="mobile-nav-label">Scan</span>
+        </button>
+    {% endif %}
 
     <a href="{% url 'notifications' %}" style="position:relative;" aria-label="Alerts" title="Alerts">
         <i class="bi bi-bell"></i>
@@ -2165,6 +2202,8 @@
                 ? "pickup-otp"
                 : button.dataset.sellerhelperScanOrder === "rider-pickup-order"
                     ? "rider-pickup-order"
+                    : button.dataset.sellerhelperScanOrder === "customer-product"
+                        ? "customer-product"
                     : "general";
             window.__sellerHelperQrScanPurpose = purpose;
             document.dispatchEvent(new CustomEvent("sellerhelper:open-qr-scanner", {
@@ -2400,6 +2439,38 @@
             ? event.detail.purpose
             : window.__sellerHelperQrScanPurpose || "";
         window.__sellerHelperQrScanPurpose = "";
+        if (scanPurpose === "counter-sale-product") return;
+        if (scanPurpose === "customer-product") {
+            let productPath = "";
+            const legacyProductCode = /^sellerhelper-pos:([0-9]+):([0-9]+)$/.exec(value);
+            if (legacyProductCode) {
+                productPath = `/shop/${legacyProductCode[1]}/products/${legacyProductCode[2]}/qr/`;
+            } else {
+                let scannedProductUrl;
+                try {
+                    scannedProductUrl = new URL(value, window.location.origin);
+                } catch (error) {
+                    showRiderQrScanError("That QR code is not a valid product link.");
+                    return;
+                }
+                if (
+                    !["http:", "https:"].includes(scannedProductUrl.protocol)
+                    || !/^\/shop\/[0-9]+\/products\/[0-9]+\/qr\/?$/.test(scannedProductUrl.pathname)
+                ) {
+                    showRiderQrScanError("Scan a SellerHelper product QR label to view product details.");
+                    return;
+                }
+                productPath = scannedProductUrl.pathname;
+            }
+            if (!productPath) {
+                showRiderQrScanError("Scan a SellerHelper product QR label to view product details.");
+                return;
+            }
+            const productUrl = new URL(productPath, window.location.origin);
+            document.dispatchEvent(new Event("sellerhelper:qr-scan-close"));
+            window.location.assign(productUrl.toString());
+            return;
+        }
         let shopOrderPath = "";
         try {
             const scannedUrl = new URL(value, window.location.origin);

@@ -1,0 +1,341 @@
+{% extends "base.html" %}
+
+{% block title %}Staff attendance &amp; payroll · {{ shop.name }}{% endblock %}
+
+{% block content %}
+<main class="container-fluid py-4 px-3 px-lg-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+        <div>
+            <a href="{% url 'shop_staff_list_shop' shop.id %}" class="btn btn-sm btn-outline-secondary mb-2">
+                <i class="bi bi-arrow-left me-1"></i>Staff management
+            </a>
+            <h1 class="h2 fw-bold mb-1">{{ shop.name }} · Staff attendance &amp; payroll</h1>
+            <p class="text-muted mb-0">
+                {{ online_count }} of {{ staff_count }} staff online now. Duty hours are recorded by staff clock-in/out.
+            </p>
+        </div>
+        <form method="get" class="d-flex align-items-end gap-2">
+            <div>
+                <label class="form-label mb-1" for="payrollMonth">Payroll month</label>
+                <input class="form-control" type="month" id="payrollMonth"
+                       name="month" value="{{ payroll_month }}">
+            </div>
+            <button class="btn btn-outline-primary" type="submit">View month</button>
+        </form>
+    </div>
+
+    <div class="alert alert-info">
+        Monthly-prorated pay uses (duty days + approved paid-leave days) ÷ calendar days in the month.
+        Hourly pay uses recorded duty hours; approved paid leave is not credited for hourly pay.
+        Fixed monthly pay does not prorate for attendance. Completed-order bonuses are added in each mode.
+        Forgotten open sessions close automatically after 16 hours.
+    </div>
+
+    <section class="mb-5" aria-labelledby="attendance-payroll-heading">
+        <h2 id="attendance-payroll-heading" class="h4 fw-bold mb-3">Staff attendance &amp; monthly payroll</h2>
+        <div class="row g-3 mb-3">
+            <div class="col-12 col-md-4">
+                <div class="card border-0 shadow-sm"><div class="card-body">
+                    <div class="small text-muted">Monthly payroll total · {{ payroll_month }}</div>
+                    <strong class="fs-4">₹{{ payroll_totals.gross|floatformat:2 }}</strong>
+                </div></div>
+            </div>
+            <div class="col-6 col-md-4">
+                <div class="card border-0 shadow-sm"><div class="card-body">
+                    <div class="small text-muted">Marked paid</div>
+                    <strong class="fs-5 text-success">₹{{ payroll_totals.paid|floatformat:2 }}</strong>
+                </div></div>
+            </div>
+            <div class="col-6 col-md-4">
+                <div class="card border-0 shadow-sm"><div class="card-body">
+                    <div class="small text-muted">Unpaid / estimated</div>
+                    <strong class="fs-5 text-warning-emphasis">₹{{ payroll_totals.unpaid|floatformat:2 }}</strong>
+                </div></div>
+            </div>
+        </div>
+        <div class="row g-3">
+            {% for row in rows %}
+                <div class="col-12 col-xl-6">
+                    <article class="card border-0 shadow-sm h-100">
+                        <div class="card-header bg-white d-flex flex-wrap justify-content-between align-items-center gap-2">
+                            <div>
+                                <h3 class="h5 fw-bold mb-1">
+                                    {{ row.staff.user.get_full_name|default:row.staff.user.username }}
+                                </h3>
+                                <span class="small text-muted">@{{ row.staff.user.username }} · {{ row.staff.get_role_display }}</span>
+                            </div>
+                            <div class="d-flex flex-wrap gap-2">
+                                {% if row.online %}
+                                    <span class="badge text-bg-success">Online</span>
+                                {% else %}
+                                    <span class="badge text-bg-secondary">Offline</span>
+                                {% endif %}
+                                {% if row.duty.open_session %}
+                                    <span class="badge text-bg-primary">On duty</span>
+                                {% else %}
+                                    <span class="badge text-bg-light border text-dark">Off duty</span>
+                                {% endif %}
+                                {% if not row.staff.is_active %}
+                                    <span class="badge text-bg-danger">Inactive</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-2 mb-3">
+                                <div class="col-6">
+                                    <div class="rounded bg-light p-2 h-100">
+                                        <div class="small text-muted">Duty hours · {{ payroll_month }}</div>
+                                        <strong>{{ row.duty.duty_hours|floatformat:2 }}</strong>
+                                    </div>
+                                </div>
+                                <div class="col-6">
+                                    <div class="rounded bg-light p-2 h-100">
+                                        <div class="small text-muted">Duty days</div>
+                                        <strong>{{ row.duty.duty_days }}</strong>
+                                        <span class="small text-muted">+ {{ row.paid_leave_days }} paid leave days</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <details class="mb-3">
+                                <summary class="fw-semibold">Salary policy for future calculations</summary>
+                                <form method="post" class="row g-2 mt-1">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="action" value="save_salary">
+                                    <input type="hidden" name="staff_id" value="{{ row.staff.id }}">
+                                    <input type="hidden" name="month" value="{{ payroll_month }}">
+                                    {% for field in row.salary_form %}
+                                        <div class="col-12">
+                                            <label class="form-label small mb-1" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                                            {{ field }}
+                                            {% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                                        </div>
+                                    {% endfor %}
+                                    <div class="col-12">
+                                        <button type="submit" class="btn btn-outline-primary btn-sm">Save salary policy</button>
+                                    </div>
+                                </form>
+                            </details>
+
+                            <div class="border rounded-3 p-3 mb-3">
+                                <div class="d-flex justify-content-between align-items-start gap-2">
+                                    <div>
+                                        <strong>Payroll · {{ payroll_month }}</strong>
+                                        {% if row.payroll_record %}
+                                            <span class="badge {% if row.payroll_record.payment_status == 'PAID' %}text-bg-success{% else %}text-bg-warning{% endif %}">
+                                                {{ row.payroll_record.get_payment_status_display }}
+                                            </span>
+                                        {% else %}
+                                            <span class="badge text-bg-secondary">Not finalized</span>
+                                        {% endif %}
+                                    </div>
+                                    <form method="post">
+                                        {% csrf_token %}
+                                        <input type="hidden" name="month" value="{{ payroll_month }}">
+                                        <input type="hidden" name="staff_id" value="{{ row.staff.id }}">
+                                        <input type="hidden" name="action" value="calculate_one">
+                                        <button type="submit" class="btn btn-sm btn-outline-primary"
+                                                {% if row.payroll_record.payment_status == "PAID" %}disabled{% endif %}>
+                                            {% if row.payroll_record %}Recalculate{% else %}Calculate{% endif %}
+                                        </button>
+                                    </form>
+                                </div>
+                                {% if row.payroll_record %}
+                                    <div class="mt-2">
+                                        <span class="text-muted">Calculated:</span>
+                                        {{ row.payroll_record.gross_amount|floatformat:2 }}
+                                        <span class="small text-muted">
+                                            · {{ row.payroll_record.duty_hours|floatformat:2 }} hrs ·
+                                            {{ row.payroll_record.duty_days }} duty days ·
+                                            {{ row.payroll_record.completed_order_count }} completed orders
+                                        </span>
+                                    </div>
+                                    {% if row.payroll_record.payment_status == "PAID" %}
+                                        <div class="small text-success mt-1">
+                                            Paid{% if row.payroll_record.paid_at %} on {{ row.payroll_record.paid_at|date:"d M Y, h:i A" }}{% endif %}
+                                            {% if row.payroll_record.paid_by %} by {{ row.payroll_record.paid_by.username }}{% endif %}
+                                        </div>
+                                    {% endif %}
+                                    <form method="post" class="d-flex flex-wrap align-items-center gap-2 mt-2">
+                                        {% csrf_token %}
+                                        <input type="hidden" name="action" value="set_payment_status">
+                                        <input type="hidden" name="month" value="{{ payroll_month }}">
+                                        <input type="hidden" name="record_id" value="{{ row.payroll_record.id }}">
+                                        <label class="visually-hidden" for="pay-status-{{ row.payroll_record.id }}">Payment status</label>
+                                        <select class="form-select form-select-sm w-auto"
+                                                id="pay-status-{{ row.payroll_record.id }}"
+                                                name="payment_status">
+                                            {% for value, label in payroll_status_choices %}
+                                                <option value="{{ value }}" {% if row.payroll_record.payment_status == value %}selected{% endif %}>{{ label }}</option>
+                                            {% endfor %}
+                                        </select>
+                                        <button class="btn btn-sm btn-outline-success" type="submit">Save payment status</button>
+                                    </form>
+                                {% elif row.payroll_preview %}
+                                    <div class="mt-2">
+                                        <span class="text-muted">Current estimate:</span>
+                                        <strong>{{ row.payroll_preview.gross_amount|floatformat:2 }}</strong>
+                                        <span class="small text-muted">
+                                            · {{ row.payroll_preview.salary_method }} ·
+                                            {{ row.payroll_preview.completed_order_count }} completed orders
+                                        </span>
+                                    </div>
+                                {% endif %}
+                            </div>
+
+                            <details>
+                                <summary class="fw-semibold">Recent duty sessions</summary>
+                                <div class="table-responsive mt-2">
+                                    <table class="table table-sm align-middle mb-0">
+                                        <thead><tr><th>Clocked in</th><th>Clocked out</th><th>Status</th></tr></thead>
+                                        <tbody>
+                                            {% for session in row.duty.sessions|slice:":8" %}
+                                                <tr>
+                                                    <td>{{ session.started_at|date:"d M, h:i A" }}</td>
+                                                    <td>{% if session.ended_at %}{{ session.ended_at|date:"d M, h:i A" }}{% else %}—{% endif %}</td>
+                                                    <td>{% if session.auto_closed %}Auto-closed at 16h{% elif not session.ended_at %}On duty{% else %}Complete{% endif %}</td>
+                                                </tr>
+                                            {% empty %}
+                                                <tr><td colspan="3" class="text-muted">No duty sessions recorded for this month.</td></tr>
+                                            {% endfor %}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </details>
+                        </div>
+                    </article>
+                </div>
+            {% empty %}
+                <div class="col-12"><div class="alert alert-secondary">No staff memberships are registered for this shop.</div></div>
+            {% endfor %}
+        </div>
+        {% if rows %}
+            <form method="post" class="mt-3">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="calculate_all">
+                <input type="hidden" name="month" value="{{ payroll_month }}">
+                <button class="btn btn-primary" type="submit">Calculate unpaid payroll for all staff</button>
+            </form>
+        {% endif %}
+    </section>
+
+    <section class="mb-5" aria-labelledby="leave-review-heading">
+        <h2 id="leave-review-heading" class="h4 fw-bold mb-3">Pending leave applications</h2>
+        <div class="row g-3">
+            {% for application in pending_leaves %}
+                <div class="col-12 col-lg-6">
+                    <article class="card border-0 shadow-sm">
+                        <div class="card-body">
+                            <h3 class="h6 fw-bold">{{ application.staff.user.get_full_name|default:application.staff.user.username }}</h3>
+                            <p class="mb-1">{{ application.start_date|date:"d M Y" }} – {{ application.end_date|date:"d M Y" }}</p>
+                            <p class="text-muted">{{ application.reason }}</p>
+                            <div class="d-flex flex-wrap gap-2">
+                                <form method="post" class="d-flex flex-wrap align-items-center gap-2">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="action" value="review_leave">
+                                    <input type="hidden" name="month" value="{{ payroll_month }}">
+                                    <input type="hidden" name="leave_id" value="{{ application.id }}">
+                                    <input type="hidden" name="status" value="APPROVED">
+                                    <label class="form-check small">
+                                        <input class="form-check-input" type="checkbox" name="is_paid">
+                                        <span class="form-check-label">Paid leave</span>
+                                    </label>
+                                    <button class="btn btn-sm btn-success" type="submit">Approve</button>
+                                </form>
+                                <form method="post">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="action" value="review_leave">
+                                    <input type="hidden" name="month" value="{{ payroll_month }}">
+                                    <input type="hidden" name="leave_id" value="{{ application.id }}">
+                                    <input type="hidden" name="status" value="DECLINED">
+                                    <button class="btn btn-sm btn-outline-danger" type="submit">Decline</button>
+                                </form>
+                            </div>
+                        </div>
+                    </article>
+                </div>
+            {% empty %}
+                <div class="col-12"><p class="text-muted">No leave applications are waiting for review.</p></div>
+            {% endfor %}
+        </div>
+    </section>
+
+    <section class="mb-5" aria-labelledby="resignation-review-heading">
+        <h2 id="resignation-review-heading" class="h4 fw-bold mb-3">Pending resignation applications</h2>
+        <div class="row g-3">
+            {% for resignation in pending_resignations %}
+                <div class="col-12 col-lg-6">
+                    <article class="card border-0 shadow-sm">
+                        <div class="card-body">
+                            <h3 class="h6 fw-bold">{{ resignation.staff.user.get_full_name|default:resignation.staff.user.username }}</h3>
+                            <p class="mb-1">Requested last working day:
+                                <strong>{{ resignation.requested_last_working_date|date:"d M Y" }}</strong>
+                            </p>
+                            <p class="text-muted">{{ resignation.reason }}</p>
+                            <p class="small text-muted">The 15-calendar-day notice period is enforced from the submission date. Access ends after the approved last working day.</p>
+                            <div class="d-flex gap-2">
+                                {% for status, label in resignation_status_choices %}
+                                    {% if status == "APPROVED" or status == "DECLINED" %}
+                                        <form method="post">
+                                            {% csrf_token %}
+                                            <input type="hidden" name="action" value="review_resignation">
+                                            <input type="hidden" name="month" value="{{ payroll_month }}">
+                                            <input type="hidden" name="resignation_id" value="{{ resignation.id }}">
+                                            <input type="hidden" name="status" value="{{ status }}">
+                                            <button class="btn btn-sm {% if status == 'APPROVED' %}btn-success{% else %}btn-outline-danger{% endif %}"
+                                                    type="submit">{{ label }}</button>
+                                        </form>
+                                    {% endif %}
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </article>
+                </div>
+            {% empty %}
+                <div class="col-12"><p class="text-muted">No resignation applications are waiting for review.</p></div>
+            {% endfor %}
+        </div>
+    </section>
+
+    <section class="mb-4" aria-labelledby="hr-history-heading">
+        <h2 id="hr-history-heading" class="h4 fw-bold mb-3">Recent leave &amp; resignation history</h2>
+        <div class="row g-3">
+            <div class="col-12 col-xl-6">
+                <div class="card border-0 shadow-sm h-100">
+                    <div class="card-header bg-white fw-bold">Leave decisions</div>
+                    <div class="list-group list-group-flush">
+                        {% for application in recent_leave_applications %}
+                            <div class="list-group-item">
+                                <strong>{{ application.staff.user.username }}</strong>
+                                · {{ application.start_date|date:"d M" }} – {{ application.end_date|date:"d M Y" }}
+                                · {{ application.get_status_display }}
+                                {% if application.status == "APPROVED" %}
+                                    · {% if application.is_paid %}Paid{% else %}Unpaid{% endif %}
+                                {% endif %}
+                            </div>
+                        {% empty %}
+                            <div class="list-group-item text-muted">No reviewed leave applications yet.</div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+            <div class="col-12 col-xl-6">
+                <div class="card border-0 shadow-sm h-100">
+                    <div class="card-header bg-white fw-bold">Resignation decisions</div>
+                    <div class="list-group list-group-flush">
+                        {% for resignation in recent_resignations %}
+                            <div class="list-group-item">
+                                <strong>{{ resignation.staff.user.username }}</strong>
+                                · Last day {{ resignation.requested_last_working_date|date:"d M Y" }}
+                                · {{ resignation.get_status_display }}
+                            </div>
+                        {% empty %}
+                            <div class="list-group-item text-muted">No reviewed resignation applications yet.</div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+</main>
+{% endblock %}

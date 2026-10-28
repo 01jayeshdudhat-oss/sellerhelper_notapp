@@ -477,6 +477,12 @@ class DeliverySharingSettingsAdmin(admin.ModelAdmin):
         "public_rider_max_active_offers",
         "shared_rider_rate_per_km",
         "shared_rider_base_pay",
+        "public_rider_pay_include_pickup_distance",
+        "public_rider_pickup_distance_pay_percentage",
+        "public_rider_pickup_threshold_bonus_enabled",
+        "public_rider_pickup_threshold_km",
+        "public_rider_pickup_threshold_rate_per_km",
+        "public_rider_pickup_threshold_distance_method",
         "updated_at",
     )
     fieldsets = (
@@ -494,6 +500,12 @@ class DeliverySharingSettingsAdmin(admin.ModelAdmin):
                 "road_network_geojson",
                 "shared_rider_base_pay",
                 "shared_rider_rate_per_km",
+                "public_rider_pay_include_pickup_distance",
+                "public_rider_pickup_distance_pay_percentage",
+                "public_rider_pickup_threshold_bonus_enabled",
+                "public_rider_pickup_threshold_km",
+                "public_rider_pickup_threshold_rate_per_km",
+                "public_rider_pickup_threshold_distance_method",
             ),
         }),
         ("Checkout tracking", {

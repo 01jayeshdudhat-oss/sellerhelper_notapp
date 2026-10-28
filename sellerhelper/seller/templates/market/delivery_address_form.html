@@ -237,6 +237,9 @@
         >
 
             {% csrf_token %}
+            {% if next_url %}
+                <input type="hidden" name="next" value="{{ next_url }}">
+            {% endif %}
 
 
             {% if form.non_field_errors %}
@@ -423,7 +426,7 @@
                 </button>
 
                 <a
-                    href="{% url 'delivery_address_list' %}"
+                    href="{% if next_url %}{% url 'checkout' %}{% else %}{% url 'delivery_address_list' %}{% endif %}"
                     class="btn btn-outline-secondary"
                 >
                     Cancel

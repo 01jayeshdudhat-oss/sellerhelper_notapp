@@ -5,6 +5,7 @@ from django.contrib.auth import views as auth_views
 
 urlpatterns = [
     path("site.webmanifest", views.site_manifest, name="site_manifest"),
+    path("download-app/", views.app_download_page, name="app_download_page"),
     path("about/", views.public_information_page, {"page_slug": "about"}, name="about"),
     path("contact/", views.public_information_page, {"page_slug": "contact"}, name="contact"),
     path("terms/", views.public_information_page, {"page_slug": "terms"}, name="terms"),
@@ -239,6 +240,11 @@ urlpatterns = [
         "delivery-addresses/add/",
         views.delivery_address_add,
         name="delivery_address_add",
+    ),
+    path(
+        "delivery-addresses/use-current-location/",
+        views.delivery_address_use_current_location,
+        name="delivery_address_use_current_location",
     ),
 
     path(
@@ -490,6 +496,41 @@ urlpatterns = [
         "shop/staff/<int:shop_id>/<int:staff_id>/remove/",
         views.shop_staff_remove,
         name="shop_staff_remove",
+    ),
+    path(
+        "shop/staff/<int:shop_id>/hr/",
+        views.shop_staff_hr_dashboard,
+        name="shop_staff_hr",
+    ),
+    path(
+        "shop/<int:shop_id>/point-of-sale/",
+        views.shop_point_of_sale,
+        name="shop_point_of_sale",
+    ),
+    path(
+        "shop/<int:shop_id>/products/<int:product_shop_id>/qr-label/",
+        views.shop_product_qr_label,
+        name="shop_product_qr_label",
+    ),
+    path(
+        "shop/<int:shop_id>/products/<int:product_shop_id>/qr/",
+        views.shop_product_qr_detail,
+        name="shop_product_qr_detail",
+    ),
+    path(
+        "shop/<int:shop_id>/products/qr-labels/",
+        views.shop_product_qr_label,
+        name="shop_product_qr_labels",
+    ),
+    path(
+        "shop/staff/<int:staff_id>/duty/",
+        views.staff_duty_clock,
+        name="staff_duty_clock",
+    ),
+    path(
+        "staff/hr/<int:staff_id>/",
+        views.staff_hr_self_service,
+        name="staff_hr_self_service",
     ),
 
     path(

@@ -1,4 +1,3 @@
-import base64
 import io
 import json
 import csv
@@ -22,7 +21,6 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from types import SimpleNamespace
 
 import requests
-import qrcode
 from django.conf import settings
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.paginator import Paginator
@@ -47,6 +45,7 @@ from django.utils import timezone
 from django.utils.text import slugify
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_POST
 from .legal_content import (
     LEGAL_PAGES,
     REQUIRED_LEGAL_DOCUMENTS,
@@ -70,6 +69,10 @@ from .forms import (
     ProductCloneSettingsForm,
     SiteBrandingSettingsForm,
     SiteThemeSettingsForm,
+    ShopStaffPayrollSettingsForm,
+    StaffLeaveApplicationForm,
+    StaffResignationForm,
+    PublicRiderSettingsForm,
     CustomerSignupForm,
     OrderForm,
     ProductCategoryForm,
@@ -87,6 +90,7 @@ from .models import (
     HSNCodeDescription,
     ClientProfile,
     ClientDeliveryAddress,
+    INDIAN_GST_STATE_CHOICES,
     CheckoutAttempt,
     CustomerProductFeedback,
     FavoriteProduct,
@@ -130,6 +134,10 @@ from .models import (
     VendorPurchaseReturn,
     VendorPurchaseReturnItem,
     DeliverySharingSettings,
+    StaffDutySession,
+    StaffLeaveApplication,
+    StaffResignationRequest,
+    StaffPayrollRecord,
     SharedRiderGroup,
     SharedRiderGroupShop,
     OrderStatusHistory,
@@ -158,6 +166,7 @@ from .public_riders import (
     public_rider_service_enabled,
     sync_public_rider_shop_memberships,
 )
+from .qr_codes import qr_code_data_uri as _qr_code_data_uri
 from .road_routing import local_road_route_distance_km
 from .public_rider_dispatch import (
     PUBLIC_RIDER_OFFER_COOLDOWN_SECONDS,
@@ -933,50 +942,134 @@ ORDER_INSTRUCTION_AUDIO_TYPES = {
 ORDER_INSTRUCTION_AUDIO_MAX_BYTES = 10 * 1024 * 1024
 
 
+def _normalize_checkout_instruction_draft_ids(request, shop_ids, raw_draft_ids):
+    if not isinstance(raw_draft_ids, dict):
+        return {}, True
+
+    valid_recipients = {
+        OrderVoiceInstruction.RECIPIENT_SHOP,
+        OrderVoiceInstruction.RECIPIENT_RIDER,
+    }
+    candidates = []
+    for shop_id, recipient_ids in raw_draft_ids.items():
+        if isinstance(recipient_ids, dict):
+            try:
+                parsed_shop_id = int(shop_id)
+            except (TypeError, ValueError):
+                return {}, True
+            for recipient, draft_id in recipient_ids.items():
+                if recipient not in valid_recipients:
+                    return {}, True
+                candidates.append((parsed_shop_id, recipient, draft_id))
+
+    if not candidates:
+        legacy_ids = {
+            recipient: draft_id
+            for recipient, draft_id in raw_draft_ids.items()
+            if recipient in valid_recipients
+        }
+        if legacy_ids:
+            legacy_drafts = OrderVoiceInstruction.objects.filter(
+                pk__in=legacy_ids.values(),
+                customer=request.user,
+                shop_order__isnull=True,
+            ).values("pk", "shop_id", "recipient")
+            candidate_ids = {
+                draft["pk"]: (
+                    draft["shop_id"],
+                    draft["recipient"],
+                    legacy_ids[draft["recipient"]],
+                )
+                for draft in legacy_drafts
+            }
+            candidates.extend(candidate_ids.values())
+            if len(candidates) != len(legacy_ids):
+                return {}, True
+
+    parsed_candidates = []
+    for shop_id, recipient, draft_id in candidates:
+        try:
+            parsed_draft_id = int(draft_id)
+        except (TypeError, ValueError):
+            return {}, True
+        parsed_candidates.append((shop_id, recipient, parsed_draft_id))
+
+    existing = {
+        draft.pk: draft
+        for draft in OrderVoiceInstruction.objects.filter(
+            pk__in=[candidate[2] for candidate in parsed_candidates],
+            customer=request.user,
+            shop_order__isnull=True,
+        )
+    }
+    normalized = {}
+    invalid = False
+    for shop_id, recipient, draft_id in parsed_candidates:
+        draft = existing.get(draft_id)
+        if (
+            draft is None
+            or draft.shop_id != shop_id
+            or draft.recipient != recipient
+        ):
+            invalid = True
+            continue
+        normalized.setdefault(str(shop_id), {})[recipient] = draft_id
+    return normalized, invalid
+
+
 def _checkout_order_instruction_drafts(request, shop_ids):
-    draft_ids = request.session.get("order_voice_instruction_draft_ids", {})
-    if not isinstance(draft_ids, dict):
-        draft_ids = {}
+    raw_draft_ids = request.session.get("order_voice_instruction_draft_ids", {})
     legacy_draft_id = request.session.pop(
         "order_voice_instruction_draft_id",
         None,
     )
-    drafts = {}
-    for recipient in (
-        OrderVoiceInstruction.RECIPIENT_SHOP,
-        OrderVoiceInstruction.RECIPIENT_RIDER,
-    ):
-        draft_id = draft_ids.get(recipient)
-        if not draft_id and legacy_draft_id:
-            legacy_draft = OrderVoiceInstruction.objects.filter(
-                pk=legacy_draft_id,
-                customer=request.user,
-                shop_order__isnull=True,
-            ).first()
-            if legacy_draft and legacy_draft.recipient == recipient:
-                draft_id = legacy_draft.pk
-        if not draft_id:
-            continue
-
-        draft = OrderVoiceInstruction.objects.filter(
-            pk=draft_id,
+    if legacy_draft_id and not raw_draft_ids:
+        legacy_draft = OrderVoiceInstruction.objects.filter(
+            pk=legacy_draft_id,
             customer=request.user,
             shop_order__isnull=True,
-            recipient=recipient,
         ).first()
-        if draft is None:
+        if legacy_draft:
+            raw_draft_ids = {legacy_draft.recipient: legacy_draft.pk}
+
+    normalized_ids, _invalid = _normalize_checkout_instruction_draft_ids(
+        request,
+        shop_ids,
+        raw_draft_ids,
+    )
+    drafts = {}
+    for shop_id, recipient_ids in normalized_ids.items():
+        parsed_shop_id = int(shop_id)
+        if parsed_shop_id not in shop_ids:
+            stale_drafts = OrderVoiceInstruction.objects.filter(
+                pk__in=recipient_ids.values(),
+                customer=request.user,
+                shop_order__isnull=True,
+            )
+            for stale_draft in stale_drafts:
+                if stale_draft.audio_file:
+                    stale_draft.audio_file.delete(save=False)
+                stale_draft.delete()
             continue
-        if draft.shop_id not in shop_ids:
-            if draft.audio_file:
-                draft.audio_file.delete(save=False)
-            draft.delete()
-            continue
-        drafts[recipient] = draft
+        for recipient, draft_id in recipient_ids.items():
+            draft = OrderVoiceInstruction.objects.filter(
+                pk=draft_id,
+                customer=request.user,
+                shop_id=parsed_shop_id,
+                shop_order__isnull=True,
+                recipient=recipient,
+            ).first()
+            if draft:
+                drafts.setdefault(parsed_shop_id, {})[recipient] = draft
 
     normalized_ids = {
-        recipient: draft.pk for recipient, draft in drafts.items()
+        str(shop_id): {
+            recipient: draft.pk
+            for recipient, draft in recipient_drafts.items()
+        }
+        for shop_id, recipient_drafts in drafts.items()
     }
-    if draft_ids != normalized_ids or legacy_draft_id:
+    if raw_draft_ids != normalized_ids or legacy_draft_id:
         request.session["order_voice_instruction_draft_ids"] = normalized_ids
         request.session.modified = True
     return drafts
@@ -1037,79 +1130,91 @@ def _save_checkout_order_instruction(request, checkout_shops):
         request,
         {shop.pk for shop in checkout_shops},
     )
-    shop_id = request.POST.get("order_instruction_shop", "").strip()
-    selected_shop = next(
-        (shop for shop in checkout_shops if str(shop.pk) == shop_id),
-        None,
-    )
     saved_drafts = {}
-    for recipient in (
-        OrderVoiceInstruction.RECIPIENT_SHOP,
-        OrderVoiceInstruction.RECIPIENT_RIDER,
-    ):
-        field_suffix = recipient.lower()
-        draft = drafts.get(recipient)
-        instruction_text = request.POST.get(
-            f"order_instruction_text_{field_suffix}",
-            "",
-        ).strip()
-        if len(instruction_text) > 1000:
-            raise ValueError("Each order instruction must be 1,000 characters or fewer.")
+    legacy_shop_id = request.POST.get("order_instruction_shop", "").strip()
+    shop_by_id = {str(shop.pk): shop for shop in checkout_shops}
+    for shop in checkout_shops:
+        for recipient in (
+            OrderVoiceInstruction.RECIPIENT_SHOP,
+            OrderVoiceInstruction.RECIPIENT_RIDER,
+        ):
+            field_suffix = recipient.lower()
+            draft = drafts.get(shop.pk, {}).get(recipient)
+            text_field = f"order_instruction_text_{field_suffix}_{shop.pk}"
+            audio_field = f"order_instruction_audio_{field_suffix}_{shop.pk}"
+            clear_field = f"clear_order_instruction_audio_{field_suffix}_{shop.pk}"
+            if text_field not in request.POST and legacy_shop_id == str(shop.pk):
+                legacy_generic_instruction = (
+                    "order_instruction_text" in request.POST
+                    or "order_instruction_audio" in request.FILES
+                )
+                legacy_recipient = request.POST.get(
+                    "order_instruction_recipient",
+                    OrderVoiceInstruction.RECIPIENT_SHOP,
+                )
+                if legacy_generic_instruction:
+                    if recipient != legacy_recipient:
+                        continue
+                    text_field = "order_instruction_text"
+                    audio_field = "order_instruction_audio"
+                    clear_field = "clear_order_instruction_audio"
+                else:
+                    text_field = f"order_instruction_text_{field_suffix}"
+                    audio_field = f"order_instruction_audio_{field_suffix}"
+                    clear_field = f"clear_order_instruction_audio_{field_suffix}"
 
-        audio = request.FILES.get(
-            f"order_instruction_audio_{field_suffix}",
-        )
-        clear_audio = (
-            request.POST.get(
-                f"clear_order_instruction_audio_{field_suffix}",
-            )
-            == "1"
-        )
-        has_existing_audio = bool(draft and draft.audio_file and not clear_audio)
-        if not instruction_text and not audio and not has_existing_audio:
-            if draft:
+            instruction_text = request.POST.get(
+                text_field,
+                draft.instruction_text if draft else "",
+            ).strip()
+            if len(instruction_text) > 1000:
+                raise ValueError("Each order instruction must be 1,000 characters or fewer.")
+            audio = request.FILES.get(audio_field)
+            clear_audio = request.POST.get(clear_field) == "1"
+            has_existing_audio = bool(draft and draft.audio_file and not clear_audio)
+            if not instruction_text and not audio and not has_existing_audio:
+                if draft:
+                    if draft.audio_file:
+                        draft.audio_file.delete(save=False)
+                    draft.delete()
+                continue
+
+            audio_content_type = ""
+            if audio:
+                audio_content_type = (audio.content_type or "").lower().split(";", 1)[0]
+                extension = ORDER_INSTRUCTION_AUDIO_TYPES.get(audio_content_type)
+                if not extension:
+                    raise ValueError(
+                        "Use a supported audio format such as WebM, MP3, MP4, OGG, or WAV."
+                    )
+                if audio.size > ORDER_INSTRUCTION_AUDIO_MAX_BYTES:
+                    raise ValueError("Audio instructions must be 10 MB or smaller.")
+                audio.name = f"{uuid.uuid4().hex}{extension}"
+
+            if draft is None:
+                draft = OrderVoiceInstruction(
+                    customer=request.user,
+                    shop=shop,
+                    recipient=recipient,
+                )
+            draft.instruction_text = instruction_text
+            if clear_audio and draft.audio_file:
+                draft.audio_file.delete(save=False)
+                draft.audio_content_type = ""
+            if audio:
                 if draft.audio_file:
                     draft.audio_file.delete(save=False)
-                draft.delete()
-            continue
-        if selected_shop is None:
-            raise ValueError(
-                "Select the shop that should receive these order instructions."
-            )
-
-        audio_content_type = ""
-        if audio:
-            audio_content_type = (audio.content_type or "").lower().split(";", 1)[0]
-            extension = ORDER_INSTRUCTION_AUDIO_TYPES.get(audio_content_type)
-            if not extension:
-                raise ValueError(
-                    "Use a supported audio format such as WebM, MP3, MP4, OGG, or WAV."
-                )
-            if audio.size > ORDER_INSTRUCTION_AUDIO_MAX_BYTES:
-                raise ValueError("Audio instructions must be 10 MB or smaller.")
-            audio.name = f"{uuid.uuid4().hex}{extension}"
-
-        if draft is None:
-            draft = OrderVoiceInstruction(
-                customer=request.user,
-                shop=selected_shop,
-                recipient=recipient,
-            )
-        draft.shop = selected_shop
-        draft.instruction_text = instruction_text
-        if clear_audio and draft.audio_file:
-            draft.audio_file.delete(save=False)
-            draft.audio_content_type = ""
-        if audio:
-            if draft.audio_file:
-                draft.audio_file.delete(save=False)
-            draft.audio_file = audio
-            draft.audio_content_type = audio_content_type
-        draft.save()
-        saved_drafts[recipient] = draft
+                draft.audio_file = audio
+                draft.audio_content_type = audio_content_type
+            draft.save()
+            saved_drafts.setdefault(shop.pk, {})[recipient] = draft
 
     request.session["order_voice_instruction_draft_ids"] = {
-        recipient: draft.pk for recipient, draft in saved_drafts.items()
+        str(shop_id): {
+            recipient: draft.pk
+            for recipient, draft in recipient_drafts.items()
+        }
+        for shop_id, recipient_drafts in saved_drafts.items()
     }
     request.session.pop("order_voice_instruction_draft_id", None)
     return saved_drafts
@@ -1227,6 +1332,7 @@ class PortalLoginView(LoginView):
         return context
 
     def form_valid(self, form):
+        _complete_due_staff_resignations()
         user = form.get_user()
         portal = (self.request.POST.get("login_as") or "CUSTOMER").upper()
         if portal not in {"CUSTOMER", "B2B_CUSTOMER", "SHOP_OWNER", "SHOP_STAFF", "RIDER", "ADMIN"}:
@@ -1565,13 +1671,32 @@ def _require_superuser(request):
 @login_required
 def admin_panel_dashboard(request):
     _require_superuser(request)
-    return render(request, "seller/admin_panel.html")
+    settings_obj = _delivery_sharing_settings()
+    rider_settings_form = PublicRiderSettingsForm(
+        request.POST or None,
+        instance=settings_obj,
+    )
+    if request.method == "POST":
+        if rider_settings_form.is_valid():
+            rider_settings_form.save()
+            messages.success(request, "Public rider settings saved.")
+            return redirect("admin_panel_dashboard")
+        messages.error(
+            request,
+            "Review the highlighted public rider settings and try again.",
+        )
+    return render(
+        request,
+        "seller/admin_panel.html",
+        {"public_rider_settings_form": rider_settings_form},
+    )
 
 
 @login_required
 def user_presence_heartbeat(request):
     if request.method != "POST":
         return JsonResponse({"error": "POST required."}, status=405)
+    _complete_due_staff_resignations()
     portal = request.session.get("active_portal", "CUSTOMER")
     if portal not in PORTAL_LABELS:
         portal = "CUSTOMER"
@@ -3489,6 +3614,8 @@ def _shop_customer_rows(owner):
             if profile
             else f"mobile:{''.join(character for character in mobile if character.isalnum()).casefold()}"
             if mobile
+            else f"pos-order:{order.pk}"
+            if order.order_source == Order.SOURCE_POS
             else f"account:{reference.casefold()}"
         )
         customer = customers.get(identity)
@@ -3503,9 +3630,12 @@ def _shop_customer_rows(owner):
             )
             customer = {
                 "name": (
-                    profile.name.strip()
-                    if profile and profile.name.strip()
-                    else reference
+                    order.customer_name
+                    or (
+                        profile.name.strip()
+                        if profile and profile.name.strip()
+                        else reference
+                    )
                 ),
                 "mobile": mobile,
                 "email": (
@@ -6354,7 +6484,18 @@ def shop_staff_edit(request, shop_id, staff_id):
                     or staff_wallet.transactions.exists()
                 )
             )
-            if has_order_history or has_payment_history or has_wallet_history:
+            has_hr_history = (
+                StaffDutySession.objects.filter(staff=membership).exists()
+                or StaffLeaveApplication.objects.filter(staff=membership).exists()
+                or StaffResignationRequest.objects.filter(staff=membership).exists()
+                or StaffPayrollRecord.objects.filter(staff=membership).exists()
+            )
+            if (
+                has_order_history
+                or has_payment_history
+                or has_wallet_history
+                or has_hr_history
+            ):
                 membership.is_active = False
                 membership.save(update_fields=["is_active", "updated_at"])
             else:
@@ -6525,6 +6666,1382 @@ def staff_dashboard(request):
             "delivered_orders": delivered_orders,
             "total_orders": shop_orders.count(),
         }
+    )
+
+
+def _require_shop_pos_access(request, shop):
+    is_owner = shop.owner_id == request.user.pk or request.user.is_superuser
+    staff_membership = ShopStaff.objects.filter(
+        shop=shop,
+        user=request.user,
+        is_active=True,
+        is_public_rider=False,
+    ).first()
+    if not is_owner and (
+        not staff_membership or not staff_membership.can_view_orders
+    ):
+        raise PermissionDenied
+
+
+def shop_product_qr_detail(request, shop_id, product_shop_id):
+    assignment = get_object_or_404(
+        ProductShop.objects.select_related("product", "shop").filter(
+            Q(product__expiry_management_enabled=False)
+            | Q(expires_at__isnull=True)
+            | Q(expires_at__gt=timezone.now())
+        ),
+        pk=product_shop_id,
+        shop_id=shop_id,
+        is_active=True,
+        product__is_active=True,
+    )
+    is_b2b = _is_b2b_customer(request)
+    cart = _address_scoped_cart(request)[0]
+    cart_quantity = _cart_quantity(cart, assignment.pk)
+    bulk_price = assignment.effective_bulk_price_for_customer(is_b2b=is_b2b)
+    bulk_unit = assignment.bulk_unit_for_customer(is_b2b=is_b2b)
+    image_urls = assignment.display_image_urls
+    return render(
+        request,
+        "market/product_qr_detail.html",
+        {
+            "assignment": assignment,
+            "product": assignment.product,
+            "shop": assignment.shop,
+            "is_b2b": is_b2b,
+            "price": assignment.effective_price_for_customer(is_b2b=is_b2b),
+            "unit": assignment.unit_for_customer(is_b2b=is_b2b),
+            "stock": assignment.stock_for_customer(is_b2b=is_b2b),
+            "image_url": image_urls[0] if image_urls else "",
+            "image_urls": image_urls,
+            "bulk_price": bulk_price,
+            "bulk_unit": bulk_unit,
+            "bulk_min_quantity": assignment.bulk_min_quantity,
+            "bulk_cart_quantity": _cart_quantity(
+                cart,
+                assignment.pk,
+                is_bulk_order=True,
+            ),
+            "has_bulk_offer": bulk_price is not None and bool(bulk_unit),
+            "cart_quantity": cart_quantity,
+        },
+    )
+
+
+@login_required
+def shop_product_qr_label(request, shop_id, product_shop_id=None):
+    shop = get_object_or_404(Shop, pk=shop_id)
+    _require_shop_pos_access(request, shop)
+    all_products = product_shop_id is None
+    if all_products:
+        assignments = list(
+            ProductShop.objects.select_related("product")
+            .filter(shop=shop, is_active=True, product__is_active=True)
+            .order_by("product__product_name", "pk")
+        )
+        if not assignments:
+            messages.info(request, "This shop has no active products to print.")
+            return redirect("shop_point_of_sale", shop_id=shop.pk)
+    else:
+        assignments = [
+            get_object_or_404(
+                ProductShop.objects.select_related("product"),
+                pk=product_shop_id,
+                shop=shop,
+                is_active=True,
+                product__is_active=True,
+            )
+        ]
+
+    paper_sizes = {
+        "A4": (Decimal("210"), Decimal("297")),
+        "A5": (Decimal("148"), Decimal("210")),
+        "LETTER": (Decimal("216"), Decimal("279")),
+        "CUSTOM": None,
+    }
+    paper_size = request.GET.get("paper_size", "A4").upper()
+    if paper_size not in paper_sizes:
+        messages.error(request, "Choose a valid print page size. A4 was selected.")
+        paper_size = "A4"
+
+    def read_dimension(parameter, default, minimum, maximum, label):
+        raw_value = request.GET.get(parameter, str(default))
+        try:
+            value = Decimal(raw_value)
+        except (InvalidOperation, TypeError, ValueError):
+            value = Decimal("NaN")
+        if not value.is_finite() or not minimum <= value <= maximum:
+            messages.error(
+                request,
+                f"{label} must be between {minimum} mm and {maximum} mm. "
+                f"The default {default} mm was used.",
+            )
+            return default
+        return value.normalize()
+
+    label_width_mm = read_dimension(
+        "label_width_mm",
+        Decimal("50"),
+        Decimal("25"),
+        Decimal("200"),
+        "Label width",
+    )
+    label_height_mm = read_dimension(
+        "label_height_mm",
+        Decimal("65"),
+        Decimal("45"),
+        Decimal("250"),
+        "Label height",
+    )
+    if all_products:
+        label_count = len(assignments)
+    else:
+        try:
+            label_count = int(request.GET.get("label_count", "1"))
+        except (TypeError, ValueError):
+            label_count = 0
+        if not 1 <= label_count <= 500:
+            messages.error(request, "Choose between 1 and 500 QR labels. One label was selected.")
+            label_count = 1
+
+    if paper_sizes[paper_size] is None:
+        paper_width_mm = read_dimension(
+            "paper_width_mm",
+            Decimal("210"),
+            Decimal("60"),
+            Decimal("500"),
+            "Custom page width",
+        )
+        paper_height_mm = read_dimension(
+            "paper_height_mm",
+            Decimal("297"),
+            Decimal("60"),
+            Decimal("500"),
+            "Custom page height",
+        )
+    else:
+        paper_width_mm, paper_height_mm = paper_sizes[paper_size]
+    max_label_width = paper_width_mm - Decimal("10")
+    max_label_height = paper_height_mm - Decimal("10")
+    if label_width_mm > max_label_width:
+        messages.error(
+            request,
+            "The label is wider than the selected page. Its width was reduced to fit.",
+        )
+        label_width_mm = max_label_width
+    if label_height_mm > max_label_height:
+        messages.error(
+            request,
+            "The label is taller than the selected page. Its height was reduced to fit.",
+        )
+        label_height_mm = max_label_height
+    max_qr_size_mm = min(
+        label_width_mm - Decimal("8"),
+        label_height_mm - Decimal("28"),
+    )
+    qr_size_mm = read_dimension(
+        "qr_size_mm",
+        min(Decimal("35"), max_qr_size_mm),
+        Decimal("10"),
+        Decimal("150"),
+        "QR size",
+    )
+    if qr_size_mm > max_qr_size_mm:
+        messages.error(
+            request,
+            f"QR size must fit inside the label. It was reduced to {max_qr_size_mm} mm.",
+        )
+        qr_size_mm = max_qr_size_mm
+
+    label_entries = []
+    for assignment in assignments:
+        product_url = request.build_absolute_uri(
+            reverse(
+                "shop_product_qr_detail",
+                kwargs={"shop_id": shop.pk, "product_shop_id": assignment.pk},
+            )
+        )
+        entry = {
+            "assignment": assignment,
+            "qr_payload": product_url,
+            "qr_code_data_uri": "",
+        }
+        entry["qr_code_data_uri"] = _qr_code_data_uri(
+            entry["qr_payload"],
+            box_size=8,
+        )
+        copies = 1 if all_products else label_count
+        label_entries.extend([entry] * copies)
+    return render(
+        request,
+        "shop/product_qr_label.html",
+        {
+            "shop": shop,
+            "assignment": assignments[0] if len(assignments) == 1 else None,
+            "qr_payload": label_entries[0]["qr_payload"],
+            "qr_code_data_uri": label_entries[0]["qr_code_data_uri"],
+            "label_entries": label_entries,
+            "all_products": all_products,
+            "product_count": len(assignments),
+            "label_count": label_count,
+            "label_width_mm": label_width_mm,
+            "label_height_mm": label_height_mm,
+            "qr_size_mm": qr_size_mm,
+            "max_qr_size_mm": max_qr_size_mm,
+            "paper_size": paper_size,
+            "paper_width_mm": paper_width_mm,
+            "paper_height_mm": paper_height_mm,
+        },
+    )
+
+
+@login_required
+def shop_point_of_sale(request, shop_id):
+    shop = get_object_or_404(Shop, pk=shop_id)
+    _require_shop_pos_access(request, shop)
+
+    cart_session_key = f"shop_pos_cart_{shop.pk}"
+    cart = request.session.get(cart_session_key, {})
+    if not isinstance(cart, dict):
+        cart = {}
+
+    if request.method == "POST":
+        action = request.POST.get("action", "")
+        scanned_assignment_id = None
+        if action == "scan_item":
+            scanned_code = request.POST.get("scan_code", "").strip()
+            scanned_product = re.fullmatch(
+                r"sellerhelper-pos:(\d+):(\d+)",
+                scanned_code,
+            )
+            scanned_product_url = urlsplit(scanned_code)
+            scanned_product_path = re.fullmatch(
+                r"/shop/(\d+)/products/(\d+)/qr/",
+                scanned_product_url.path,
+            )
+            if scanned_product:
+                scanned_shop_id, assignment_id_from_scan = scanned_product.groups()
+            elif (
+                scanned_product_path
+                and (
+                    (not scanned_product_url.scheme and not scanned_product_url.netloc)
+                    or (
+                        scanned_product_url.scheme in {"http", "https"}
+                        and scanned_product_url.netloc.lower()
+                        == request.get_host().lower()
+                    )
+                )
+            ):
+                scanned_shop_id, assignment_id_from_scan = scanned_product_path.groups()
+            else:
+                scanned_shop_id, assignment_id_from_scan = None, None
+            if not assignment_id_from_scan or int(scanned_shop_id) != shop.pk:
+                messages.error(request, "That QR code does not belong to this shop.")
+                return redirect("shop_point_of_sale", shop_id=shop.pk)
+            action = "add_item"
+            scanned_assignment_id = assignment_id_from_scan
+
+        if action in {"add_item", "set_quantity", "remove_item"}:
+            assignment_id = (
+                scanned_assignment_id
+                if scanned_assignment_id is not None
+                else request.POST.get("product_shop_id", "")
+            )
+            assignment = get_object_or_404(
+                ProductShop.objects.select_related("product"),
+                pk=assignment_id,
+                shop=shop,
+                is_active=True,
+                product__is_active=True,
+            )
+            key = str(assignment.pk)
+            try:
+                quantity = (
+                    1
+                    if scanned_assignment_id is not None
+                    else int(request.POST.get("quantity", "1"))
+                )
+            except (TypeError, ValueError):
+                quantity = 0
+            if action == "remove_item" or quantity == 0:
+                cart.pop(key, None)
+                messages.success(request, f"{assignment.product.product_name} removed from the sale.")
+            elif quantity < 0:
+                messages.error(request, "Quantity must be zero or greater.")
+            else:
+                current_stock = assignment.stock_for_customer(is_b2b=False)
+                try:
+                    current_quantity = int(cart.get(key, 0))
+                except (TypeError, ValueError):
+                    current_quantity = 0
+                new_quantity = (
+                    current_quantity + quantity
+                    if action == "add_item"
+                    else quantity
+                )
+                if new_quantity > current_stock:
+                    messages.error(
+                        request,
+                        f"Only {current_stock} unit(s) of {assignment.product.product_name} are in stock.",
+                    )
+                else:
+                    cart[key] = new_quantity
+                    messages.success(
+                        request,
+                        f"{assignment.product.product_name} quantity updated.",
+                    )
+            request.session[cart_session_key] = cart
+            return redirect(
+                f"{reverse('shop_point_of_sale', kwargs={'shop_id': shop.pk})}"
+                + (f"?q={quote(request.GET.get('q', ''))}" if request.GET.get("q") else "")
+            )
+
+        if action == "place_sale":
+            fulfillment_type = request.POST.get("fulfillment_type", "")
+            payment_type = request.POST.get("payment_type", "")
+            customer_name = request.POST.get("customer_name", "").strip()[:200]
+            customer_phone = request.POST.get("customer_phone", "").strip()[:40]
+            delivery_address = request.POST.get("delivery_address", "").strip()
+            delivery_pincode = request.POST.get("delivery_pincode", "").strip()[:20]
+            delivery_latitude_raw = request.POST.get("delivery_latitude", "").strip()
+            delivery_longitude_raw = request.POST.get("delivery_longitude", "").strip()
+            if fulfillment_type not in {
+                ShopOrder.FULFILLMENT_COUNTER,
+                ShopOrder.FULFILLMENT_DELIVERY,
+            }:
+                messages.error(request, "Choose customer carry-out or home delivery.")
+            elif payment_type not in {"CASH", "UPI", "CARD", "OTHER"}:
+                messages.error(request, "Choose a valid payment method.")
+            elif not cart:
+                messages.error(request, "Add at least one in-stock product before placing the sale.")
+            elif fulfillment_type == ShopOrder.FULFILLMENT_DELIVERY and (
+                not customer_name
+                or not customer_phone
+                or not delivery_address
+                or not delivery_latitude_raw
+                or not delivery_longitude_raw
+            ):
+                messages.error(
+                    request,
+                    "Home delivery requires the customer's name, phone, address, and map coordinates.",
+                )
+            else:
+                try:
+                    delivery_latitude = (
+                        Decimal(delivery_latitude_raw)
+                        if delivery_latitude_raw
+                        else None
+                    )
+                    delivery_longitude = (
+                        Decimal(delivery_longitude_raw)
+                        if delivery_longitude_raw
+                        else None
+                    )
+                    if (
+                        fulfillment_type == ShopOrder.FULFILLMENT_DELIVERY
+                        and (
+                            delivery_latitude is None
+                            or delivery_longitude is None
+                            or not delivery_latitude.is_finite()
+                            or not delivery_longitude.is_finite()
+                            or not Decimal("-90") <= delivery_latitude <= Decimal("90")
+                            or not Decimal("-180") <= delivery_longitude <= Decimal("180")
+                        )
+                    ):
+                        raise ValueError
+                except (InvalidOperation, TypeError, ValueError):
+                    messages.error(request, "Enter valid customer delivery coordinates.")
+                else:
+                    now = timezone.now()
+                    delivery_location = (
+                        {
+                            "lat": float(delivery_latitude),
+                            "lng": float(delivery_longitude),
+                        }
+                        if fulfillment_type == ShopOrder.FULFILLMENT_DELIVERY
+                        else {}
+                    )
+                    if (
+                        fulfillment_type == ShopOrder.FULFILLMENT_DELIVERY
+                        and not shop_delivers_to_location(
+                            shop,
+                            lat=delivery_latitude,
+                            lng=delivery_longitude,
+                            pincode=delivery_pincode,
+                            allow_scheduled_delivery=shop.allow_scheduled_delivery,
+                        )
+                    ):
+                        messages.error(
+                            request,
+                            "The customer's map pin is outside this shop's delivery area or the shop is not accepting deliveries.",
+                        )
+                    else:
+                        try:
+                            requested_quantities = {
+                                int(assignment_id): int(quantity)
+                                for assignment_id, quantity in cart.items()
+                                if int(quantity) > 0
+                            }
+                        except (TypeError, ValueError):
+                            requested_quantities = {}
+                            messages.error(request, "The saved sale cart is invalid; please review it.")
+                        if requested_quantities:
+                            with transaction.atomic():
+                                assignments = list(
+                                    ProductShop.objects.select_for_update()
+                                    .select_related("product", "shop")
+                                    .filter(
+                                        pk__in=requested_quantities,
+                                        shop=shop,
+                                        is_active=True,
+                                        product__is_active=True,
+                                    )
+                                    .filter(
+                                        Q(product__expiry_management_enabled=False)
+                                        | Q(expires_at__isnull=True)
+                                        | Q(expires_at__gt=now)
+                                    )
+                                    .order_by("pk")
+                                )
+                                if len(assignments) != len(requested_quantities):
+                                    messages.error(
+                                        request,
+                                        "One or more cart products are no longer available. Review the sale cart.",
+                                    )
+                                else:
+                                    items = []
+                                    unavailable = []
+                                    for assignment in assignments:
+                                        quantity = requested_quantities[assignment.pk]
+                                        stock = assignment.stock_for_customer(is_b2b=False)
+                                        price = assignment.effective_price_for_customer(is_b2b=False)
+                                        if quantity > stock:
+                                            unavailable.append(
+                                                f"{assignment.product.product_name} (only {stock} available)"
+                                            )
+                                            continue
+                                        total = (price * quantity).quantize(
+                                            Decimal("0.01"),
+                                            rounding=ROUND_HALF_UP,
+                                        )
+                                        items.append({
+                                            "assignment": assignment,
+                                            "quantity": quantity,
+                                            "price": price,
+                                            "unit": assignment.unit_for_customer(is_b2b=False),
+                                            "total": total,
+                                            "is_bulk_order": False,
+                                        })
+                                    if unavailable:
+                                        messages.error(
+                                            request,
+                                            "Stock changed; update the sale cart: " + ", ".join(unavailable) + ".",
+                                        )
+                                    elif items:
+                                        subtotal = sum(
+                                            (item["total"] for item in items),
+                                            Decimal("0.00"),
+                                        )
+                                        delivery_fee = (
+                                            shop.delivery_fee
+                                            if fulfillment_type == ShopOrder.FULFILLMENT_DELIVERY
+                                            else Decimal("0.00")
+                                        )
+                                        gst_breakdown = _build_gst_breakdown(
+                                            items,
+                                            SimpleNamespace(
+                                                state_code=shop.gst_state_code,
+                                                gstin="",
+                                                location=delivery_location,
+                                            ),
+                                            delivery_fees={shop.pk: delivery_fee},
+                                        )
+                                        total_amount = (
+                                            subtotal
+                                            + gst_breakdown["total_gst"]
+                                            + gst_breakdown["delivery_total"]
+                                        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                                        shop_order_number = generate_shop_order_number(shop, now)
+                                        tracking_code = _generate_unique_tracking_code()
+                                        order_id = f"{tracking_code}-{shop_order_number}"
+                                        counter_sale = (
+                                            fulfillment_type == ShopOrder.FULFILLMENT_COUNTER
+                                        )
+                                        order = Order.objects.create(
+                                            order_id=order_id,
+                                            order_source=Order.SOURCE_POS,
+                                            tracking_code=tracking_code,
+                                            order_time=now,
+                                            order_delivered_time=now if counter_sale else None,
+                                            user="Walk-in customer",
+                                            customer_name=customer_name,
+                                            created_by=request.user,
+                                            delivery_address=delivery_address,
+                                            delivery_pincode=delivery_pincode,
+                                            delivery_location=(
+                                                f"{delivery_latitude},{delivery_longitude}"
+                                                if delivery_location
+                                                else ""
+                                            ),
+                                            delivery_contact_no=customer_phone,
+                                            payment_type=payment_type,
+                                            payment_status="PAID",
+                                            is_payment_done=True,
+                                            payment_amount=total_amount,
+                                            finally_received_amount=total_amount,
+                                            final_billing_amount=total_amount,
+                                            gst_amount=gst_breakdown["total_gst"],
+                                            is_valid_order=True,
+                                            status="DELIVERED" if counter_sale else "PLACED",
+                                            shop=shop,
+                                            shop_location=str(shop.location or ""),
+                                            shop_delivery_area=str(shop.delivery_area or ""),
+                                            shop_delivery_pincode=str(shop.delivery_pincode or ""),
+                                            placed_location={},
+                                        )
+                                        tax_row = gst_breakdown["shops"][shop.pk]
+                                        shop_order = ShopOrder.objects.create(
+                                            order=order,
+                                            shop=shop,
+                                            fulfillment_type=fulfillment_type,
+                                            pickup_location=_select_shop_pickup_location(shop, order),
+                                            shop_order_number=shop_order_number,
+                                            total_amount=subtotal,
+                                            product_count=sum(
+                                                item["quantity"] for item in items
+                                            ),
+                                            total_weight_kg=Decimal("0.00"),
+                                            delivery_fee=delivery_fee,
+                                            invoice_number=(
+                                                f"GST-{order.order_id}-{shop.pk}"
+                                                if shop.gstin
+                                                else ""
+                                            ),
+                                            seller_gstin=tax_row["seller_gstin"],
+                                            buyer_gstin=tax_row["buyer_gstin"],
+                                            seller_billing_address=tax_row["seller_billing_address"],
+                                            seller_state_code=tax_row["seller_state_code"],
+                                            buyer_state_code=tax_row["buyer_state_code"],
+                                            delivery_hsn_code=tax_row["delivery_hsn_code"],
+                                            delivery_gst_rate=tax_row["delivery_gst_rate"],
+                                            taxable_amount=tax_row["taxable_amount"],
+                                            cgst_amount=tax_row["cgst_amount"],
+                                            sgst_amount=tax_row["sgst_amount"],
+                                            igst_amount=tax_row["igst_amount"],
+                                            delivery_gst_amount=tax_row["delivery_gst_amount"],
+                                            status="DELIVERED" if counter_sale else "PLACED",
+                                            delivery_completed_at=now if counter_sale else None,
+                                            delivery_remark=(
+                                                "Customer carried the purchase from the shop."
+                                                if counter_sale
+                                                else ""
+                                            ),
+                                        )
+                                        item_snapshots = []
+                                        estimated_weight_kg = Decimal("0.000")
+                                        for item in items:
+                                            assignment = item["assignment"]
+                                            product = assignment.product
+                                            item_tax = item
+                                            estimated_weight = (
+                                                _estimated_weight_for_quantity(
+                                                    item["quantity"],
+                                                    item["unit"],
+                                                )
+                                                if product.is_approximate_weight
+                                                else None
+                                            )
+                                            OrderItem.objects.create(
+                                                shop_order=shop_order,
+                                                product=product,
+                                                product_shop=assignment,
+                                                product_name=product.product_name,
+                                                sku=product.sku or "",
+                                                quantity=item["quantity"],
+                                                is_approximate_weight=product.is_approximate_weight,
+                                                estimated_weight=estimated_weight,
+                                                unit=item["unit"] or "",
+                                                price=item["price"],
+                                                total=item["total"],
+                                                hsn_code=item_tax.get("hsn_code", ""),
+                                                gst_rate=item_tax.get("gst_rate", Decimal("0.00")),
+                                                taxable_amount=item_tax.get("taxable_amount", item["total"]),
+                                                cgst_amount=item_tax.get("cgst_amount", Decimal("0.00")),
+                                                sgst_amount=item_tax.get("sgst_amount", Decimal("0.00")),
+                                                igst_amount=item_tax.get("igst_amount", Decimal("0.00")),
+                                            )
+                                            if estimated_weight is not None:
+                                                estimated_weight_kg += _weight_in_kilograms(
+                                                    estimated_weight,
+                                                    item["unit"],
+                                                )
+                                            item_snapshots.append({
+                                                "product_id": product.pk,
+                                                "product_shop_id": assignment.pk,
+                                                "product_name": product.product_name,
+                                                "sku": product.sku or "",
+                                                "quantity": item["quantity"],
+                                                "unit": item["unit"],
+                                                "price": str(item["price"]),
+                                                "total": str(item["total"]),
+                                                "is_bulk_order": False,
+                                            })
+                                            assignment.stock -= item["quantity"]
+                                            assignment.save(update_fields=["stock"])
+                                            StockMovement.objects.create(
+                                                product_shop=assignment,
+                                                movement_type="SALE",
+                                                quantity=-item["quantity"],
+                                                reference=order.order_id,
+                                                created_by=request.user,
+                                            )
+                                        shop_order.items = item_snapshots
+                                        shop_order.total_weight_kg = estimated_weight_kg.quantize(
+                                            Decimal("0.01"),
+                                            rounding=ROUND_HALF_UP,
+                                        )
+                                        shop_order.save(update_fields=["items", "total_weight_kg"])
+                                        OrderStatusHistory.objects.create(
+                                            shop_order=shop_order,
+                                            status=shop_order.status,
+                                            remark=(
+                                                f"Counter sale completed by {request.user.username}."
+                                                if counter_sale
+                                                else f"Home delivery order placed at the shop counter by {request.user.username}."
+                                            ),
+                                        )
+                                        if not counter_sale:
+                                            reviewer_ids = set(
+                                                ShopStaff.objects.filter(
+                                                    shop=shop,
+                                                    is_active=True,
+                                                ).values_list("user_id", flat=True)
+                                            )
+                                            if shop.owner_id:
+                                                reviewer_ids.add(shop.owner_id)
+                                            Notification.objects.bulk_create([
+                                                Notification(
+                                                    user_id=user_id,
+                                                    title="New shop counter delivery order",
+                                                    message=(
+                                                        f"Home delivery order {order.order_id} was placed at the shop counter "
+                                                        "and needs preparation."
+                                                    ),
+                                                    notification_type="ORDER",
+                                                    related_url=reverse(
+                                                        "shop_order_detail",
+                                                        kwargs={"shop_order_id": shop_order.pk},
+                                                    ),
+                                                )
+                                                for user_id in reviewer_ids
+                                            ])
+                                        request.session.pop(cart_session_key, None)
+                                        messages.success(
+                                            request,
+                                            f"{'Counter sale' if counter_sale else 'Home delivery order'} "
+                                            f"{order.order_id} placed. Total paid: ₹{total_amount:.2f}.",
+                                        )
+                                        return redirect(
+                                            "shop_order_detail",
+                                            shop_order_id=shop_order.pk,
+                                        )
+
+        request.session[cart_session_key] = cart
+        return redirect("shop_point_of_sale", shop_id=shop.pk)
+
+    search = request.GET.get("q", "").strip()
+    assignments = (
+        ProductShop.objects.select_related("product")
+        .filter(
+            shop=shop,
+            is_active=True,
+            product__is_active=True,
+            stock__gt=0,
+        )
+        .filter(
+            Q(product__expiry_management_enabled=False)
+            | Q(expires_at__isnull=True)
+            | Q(expires_at__gt=timezone.now())
+        )
+    )
+    if search:
+        assignments = assignments.filter(
+            Q(product__product_name__icontains=search)
+            | Q(product__product_title__icontains=search)
+            | Q(product__sku__icontains=search)
+        )
+    product_page = Paginator(assignments.order_by("product__product_name"), 30).get_page(
+        request.GET.get("page")
+    )
+
+    cart_lines = []
+    cleaned_cart = {}
+    cart_assignments = {
+        assignment.pk: assignment
+        for assignment in ProductShop.objects.select_related("product").filter(
+            pk__in=[int(key) for key in cart if str(key).isdigit()],
+            shop=shop,
+            is_active=True,
+            product__is_active=True,
+        )
+    }
+    cart_subtotal = Decimal("0.00")
+    for assignment_id, raw_quantity in cart.items():
+        try:
+            quantity = int(raw_quantity)
+            assignment = cart_assignments.get(int(assignment_id))
+        except (TypeError, ValueError):
+            continue
+        if quantity <= 0 or assignment is None:
+            continue
+        cleaned_cart[str(assignment.pk)] = quantity
+        price = assignment.effective_price_for_customer(is_b2b=False)
+        total = price * quantity
+        cart_subtotal += total
+        cart_lines.append({
+            "assignment": assignment,
+            "quantity": quantity,
+            "price": price,
+            "total": total,
+        })
+    if cleaned_cart != cart:
+        request.session[cart_session_key] = cleaned_cart
+
+    pos_tax_items = [
+        {
+            "assignment": line["assignment"],
+            "quantity": line["quantity"],
+            "price": line["price"],
+            "total": line["total"],
+        }
+        for line in cart_lines
+    ]
+    counter_tax = _build_gst_breakdown(
+        pos_tax_items,
+        SimpleNamespace(
+            state_code=shop.gst_state_code,
+            gstin="",
+            location={},
+        ),
+        delivery_fees={shop.pk: Decimal("0.00")},
+    )
+    delivery_tax = _build_gst_breakdown(
+        pos_tax_items,
+        SimpleNamespace(
+            state_code=shop.gst_state_code,
+            gstin="",
+            location={},
+        ),
+        delivery_fees={shop.pk: shop.delivery_fee},
+    )
+    counter_total = (
+        cart_subtotal + counter_tax["total_gst"] + counter_tax["delivery_total"]
+    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    delivery_total = (
+        cart_subtotal + delivery_tax["total_gst"] + delivery_tax["delivery_total"]
+    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    return render(
+        request,
+        "shop/point_of_sale.html",
+        {
+            "shop": shop,
+            "product_page": product_page,
+            "search": search,
+            "cart_lines": cart_lines,
+            "cart_subtotal": cart_subtotal,
+            "counter_total": counter_total,
+            "delivery_total": delivery_total,
+            "fulfillment_choices": ShopOrder.FULFILLMENT_CHOICES,
+        },
+    )
+
+
+STAFF_DUTY_SESSION_MAX_HOURS = 16
+STAFF_ONLINE_WINDOW_MINUTES = 5
+
+
+def _staff_payroll_period(month_value):
+    try:
+        year, month = (
+            [int(part) for part in month_value.split("-", 1)]
+            if month_value
+            else [timezone.localdate().year, timezone.localdate().month]
+        )
+        if month < 1 or month > 12:
+            raise ValueError
+        start_day = date(year, month, 1)
+    except (AttributeError, TypeError, ValueError):
+        raise ValueError("Choose a valid payroll month in YYYY-MM format.")
+    if year < 2000 or year > timezone.localdate().year + 2:
+        raise ValueError("Choose a valid payroll year.")
+    if month == 12:
+        end_day = date(year + 1, 1, 1)
+    else:
+        end_day = date(year, month + 1, 1)
+    start_at = timezone.make_aware(datetime.combine(start_day, datetime.min.time()))
+    end_at = timezone.make_aware(datetime.combine(end_day, datetime.min.time()))
+    return start_day, end_day, start_at, end_at, (end_day - start_day).days
+
+
+def _staff_duty_summary(staff, period_start, period_end, *, now=None):
+    now = now or timezone.now()
+    max_session_length = timedelta(hours=STAFF_DUTY_SESSION_MAX_HOURS)
+    expired_sessions = StaffDutySession.objects.filter(
+        staff=staff,
+        ended_at__isnull=True,
+        started_at__lte=now - max_session_length,
+    )
+    for session in expired_sessions:
+        session.ended_at = session.started_at + max_session_length
+        session.auto_closed = True
+        session.save(update_fields=["ended_at", "auto_closed"])
+
+    sessions = StaffDutySession.objects.filter(
+        staff=staff,
+        started_at__lt=period_end,
+    ).filter(
+        Q(ended_at__isnull=True) | Q(ended_at__gt=period_start),
+    ).order_by("-started_at")
+    hours = Decimal("0.00")
+    duty_dates = set()
+    for session in sessions:
+        actual_end = session.ended_at or now
+        actual_end = min(
+            actual_end,
+            session.started_at + max_session_length,
+        )
+        cursor = max(session.started_at, period_start)
+        actual_end = min(actual_end, period_end)
+        if actual_end <= cursor:
+            continue
+        while cursor < actual_end:
+            local_day = timezone.localtime(cursor).date()
+            next_day = timezone.make_aware(
+                datetime.combine(local_day + timedelta(days=1), datetime.min.time()),
+            )
+            segment_end = min(actual_end, next_day)
+            seconds = Decimal(str((segment_end - cursor).total_seconds()))
+            hours += seconds / Decimal("3600")
+            if seconds > 0:
+                duty_dates.add(local_day)
+            cursor = segment_end
+    return {
+        "duty_hours": hours.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+        "duty_dates": duty_dates,
+        "duty_days": len(duty_dates),
+        "sessions": list(sessions[:20]),
+        "open_session": (
+            StaffDutySession.objects.filter(staff=staff, ended_at__isnull=True)
+            .order_by("-started_at")
+            .first()
+        ),
+    }
+
+
+def _staff_paid_leave_dates(staff, period_start_day, period_end_day):
+    paid_dates = set()
+    applications = StaffLeaveApplication.objects.filter(
+        staff=staff,
+        status=StaffLeaveApplication.STATUS_APPROVED,
+        is_paid=True,
+        start_date__lt=period_end_day,
+        end_date__gte=period_start_day,
+    )
+    for application in applications:
+        day = max(application.start_date, period_start_day)
+        final_day = min(application.end_date, period_end_day - timedelta(days=1))
+        while day <= final_day:
+            paid_dates.add(day)
+            day += timedelta(days=1)
+    return paid_dates
+
+
+def _calculate_staff_payroll(staff, period):
+    period_start_day, period_end_day, period_start, period_end, days_in_month = period
+    duty = _staff_duty_summary(staff, period_start, period_end)
+    paid_leave_dates = (
+        _staff_paid_leave_dates(staff, period_start_day, period_end_day)
+        - duty["duty_dates"]
+    )
+    paid_leave_days = len(paid_leave_dates)
+    completed_order_count = ShopOrder.objects.filter(
+        shop=staff.shop,
+        status="DELIVERED",
+        delivery_completed_at__gte=period_start,
+        delivery_completed_at__lt=period_end,
+    ).filter(
+        Q(assigned_rider=staff) | Q(assigned_packer=staff),
+    ).values("pk").distinct().count()
+    base_salary = staff.monthly_base_salary
+    hourly_rate = staff.hourly_rate
+    order_bonus = staff.completed_order_bonus
+    if staff.salary_method == ShopStaff.SALARY_METHOD_HOURLY:
+        base_pay = duty["duty_hours"] * hourly_rate
+    elif staff.salary_method == ShopStaff.SALARY_METHOD_MONTHLY_FIXED:
+        base_pay = base_salary
+    else:
+        paid_duty_days = min(
+            days_in_month,
+            duty["duty_days"] + paid_leave_days,
+        )
+        base_pay = (
+            base_salary
+            * Decimal(paid_duty_days)
+            / Decimal(days_in_month)
+        )
+    gross_amount = (
+        base_pay + order_bonus * completed_order_count
+    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return {
+        "salary_method": staff.salary_method,
+        "duty_hours": duty["duty_hours"],
+        "duty_days": duty["duty_days"],
+        "paid_leave_days": paid_leave_days,
+        "completed_order_count": completed_order_count,
+        "monthly_base_salary": base_salary,
+        "hourly_rate": hourly_rate,
+        "completed_order_bonus": order_bonus,
+        "gross_amount": gross_amount,
+    }
+
+
+def _complete_due_staff_resignations():
+    today = timezone.localdate()
+    due_requests = StaffResignationRequest.objects.filter(
+        status=StaffResignationRequest.STATUS_APPROVED,
+        requested_last_working_date__lt=today,
+    ).select_related("staff")
+    for resignation in due_requests:
+        membership = resignation.staff
+        if membership.is_active:
+            membership.is_active = False
+            membership.save(update_fields=["is_active", "updated_at"])
+        StaffDutySession.objects.filter(
+            staff=membership,
+            ended_at__isnull=True,
+        ).update(ended_at=timezone.now())
+        resignation.status = StaffResignationRequest.STATUS_COMPLETED
+        resignation.save(update_fields=["status", "updated_at"])
+
+
+@login_required
+@require_POST
+def staff_duty_clock(request, staff_id):
+    _complete_due_staff_resignations()
+    staff = get_object_or_404(
+        ShopStaff,
+        pk=staff_id,
+        user=request.user,
+        is_public_rider=False,
+    )
+    action = request.POST.get("action")
+    now = timezone.now()
+    if action == "clock_in":
+        if not staff.is_active:
+            raise PermissionDenied
+        _staff_duty_summary(staff, now - timedelta(days=1), now + timedelta(seconds=1), now=now)
+        if StaffLeaveApplication.objects.filter(
+            staff=staff,
+            status=StaffLeaveApplication.STATUS_APPROVED,
+            start_date__lte=timezone.localdate(),
+            end_date__gte=timezone.localdate(),
+        ).exists():
+            messages.error(request, "You cannot clock in during approved leave.")
+        elif StaffDutySession.objects.filter(staff=staff, ended_at__isnull=True).exists():
+            messages.warning(request, "You are already clocked in.")
+        else:
+            StaffDutySession.objects.create(staff=staff, started_at=now)
+            messages.success(request, "Duty clock-in recorded.")
+    elif action == "clock_out":
+        session = StaffDutySession.objects.filter(
+            staff=staff,
+            ended_at__isnull=True,
+        ).order_by("-started_at").first()
+        if not session:
+            messages.error(request, "There is no open duty session to clock out.")
+        else:
+            session.ended_at = min(
+                now,
+                session.started_at + timedelta(hours=STAFF_DUTY_SESSION_MAX_HOURS),
+            )
+            session.auto_closed = (
+                now - session.started_at
+                >= timedelta(hours=STAFF_DUTY_SESSION_MAX_HOURS)
+            )
+            session.save(update_fields=["ended_at", "auto_closed"])
+            messages.success(request, "Duty clock-out recorded.")
+    else:
+        messages.error(request, "Choose a valid clock-in or clock-out action.")
+    return redirect("staff_hr_self_service", staff_id=staff.pk)
+
+
+@login_required
+def staff_hr_self_service(request, staff_id):
+    _complete_due_staff_resignations()
+    staff = get_object_or_404(
+        ShopStaff.objects.select_related("shop", "user"),
+        pk=staff_id,
+        user=request.user,
+        is_public_rider=False,
+    )
+    if not staff.is_active:
+        raise PermissionDenied
+    leave_form = StaffLeaveApplicationForm()
+    resignation_form = StaffResignationForm()
+    if request.method == "POST":
+        action = request.POST.get("action")
+        if action == "apply_leave":
+            leave_form = StaffLeaveApplicationForm(request.POST)
+            if leave_form.is_valid():
+                application = leave_form.save(commit=False)
+                application.staff = staff
+                application.save()
+                messages.success(request, "Leave application submitted for owner review.")
+                return redirect("staff_hr_self_service", staff_id=staff.pk)
+        elif action == "apply_resignation":
+            resignation_form = StaffResignationForm(request.POST)
+            existing_request = StaffResignationRequest.objects.filter(
+                staff=staff,
+                status__in=[
+                    StaffResignationRequest.STATUS_PENDING,
+                    StaffResignationRequest.STATUS_APPROVED,
+                ],
+            ).exists()
+            if existing_request:
+                messages.error(
+                    request,
+                    "You already have a pending or approved resignation request.",
+                )
+            elif resignation_form.is_valid():
+                resignation = resignation_form.save(commit=False)
+                resignation.staff = staff
+                resignation.save()
+                messages.success(
+                    request,
+                    "Resignation submitted. Your requested last day must be at least 15 calendar days after submission and is subject to owner review.",
+                )
+                return redirect("staff_hr_self_service", staff_id=staff.pk)
+
+    today = timezone.localdate()
+    month_start, next_month, period_start, period_end, _days = _staff_payroll_period(
+        today.strftime("%Y-%m"),
+    )
+    duty_summary = _staff_duty_summary(staff, period_start, period_end)
+    presence = UserPresence.objects.filter(user=staff.user).first()
+    online = bool(
+        presence
+        and presence.active_portal == "SHOP_STAFF"
+        and presence.last_seen >= timezone.now()
+        - timedelta(minutes=STAFF_ONLINE_WINDOW_MINUTES)
+    )
+    return render(
+        request,
+        "seller/staff_hr_self_service.html",
+        {
+            "staff": staff,
+            "duty_summary": duty_summary,
+            "online": online,
+            "leave_form": leave_form,
+            "resignation_form": resignation_form,
+            "leave_applications": StaffLeaveApplication.objects.filter(
+                staff=staff,
+            )[:20],
+            "resignation_requests": StaffResignationRequest.objects.filter(
+                staff=staff,
+            )[:10],
+            "recent_sessions": StaffDutySession.objects.filter(staff=staff)[:20],
+            "today": today,
+        },
+    )
+
+
+@login_required
+@transaction.atomic
+def shop_staff_hr_dashboard(request, shop_id):
+    shop = get_object_or_404(Shop, pk=shop_id, owner=request.user)
+    _complete_due_staff_resignations()
+    month_value = request.POST.get("month") or request.GET.get("month")
+    try:
+        period = _staff_payroll_period(month_value)
+    except ValueError as error:
+        messages.error(request, str(error))
+        period = _staff_payroll_period(timezone.localdate().strftime("%Y-%m"))
+    start_day, end_day, start_at, end_at, days_in_month = period
+    period_key = start_day.strftime("%Y-%m")
+    staff_members = list(
+        ShopStaff.objects.filter(
+            shop=shop,
+            is_public_rider=False,
+        ).select_related("user").order_by("user__username")
+    )
+    rows = []
+    payroll_totals = {
+        "gross": Decimal("0.00"),
+        "paid": Decimal("0.00"),
+        "unpaid": Decimal("0.00"),
+    }
+    for membership in staff_members:
+        duty = _staff_duty_summary(membership, start_at, end_at)
+        paid_dates = _staff_paid_leave_dates(
+            membership,
+            start_day,
+            end_day,
+        ) - duty["duty_dates"]
+        record = StaffPayrollRecord.objects.filter(
+            staff=membership,
+            year=start_day.year,
+            month=start_day.month,
+        ).select_related("paid_by").first()
+        payroll_preview = (
+            _calculate_staff_payroll(membership, period)
+            if record is None or record.payment_status == StaffPayrollRecord.STATUS_UNPAID
+            else None
+        )
+        presence = UserPresence.objects.filter(user=membership.user).first()
+        online = bool(
+            membership.is_active
+            and presence
+            and presence.active_portal == "SHOP_STAFF"
+            and presence.last_seen >= timezone.now()
+            - timedelta(minutes=STAFF_ONLINE_WINDOW_MINUTES)
+        )
+        rows.append({
+            "staff": membership,
+            "online": online,
+            "duty": duty,
+            "paid_leave_days": len(paid_dates),
+            "payroll_record": record,
+            "payroll_preview": payroll_preview,
+            "salary_form": ShopStaffPayrollSettingsForm(
+                prefix=f"salary-{membership.pk}",
+                instance=membership,
+            ),
+        })
+        gross_amount = (
+            record.gross_amount
+            if record
+            else payroll_preview["gross_amount"]
+            if payroll_preview
+            else Decimal("0.00")
+        )
+        payroll_totals["gross"] += gross_amount
+        if record and record.payment_status == StaffPayrollRecord.STATUS_PAID:
+            payroll_totals["paid"] += gross_amount
+        else:
+            payroll_totals["unpaid"] += gross_amount
+
+    if request.method == "POST":
+        action = request.POST.get("action")
+        if action == "save_salary":
+            staff_id = request.POST.get("staff_id")
+            membership = get_object_or_404(
+                ShopStaff,
+                pk=staff_id,
+                shop=shop,
+                is_public_rider=False,
+            )
+            form = ShopStaffPayrollSettingsForm(
+                request.POST,
+                prefix=f"salary-{membership.pk}",
+                instance=membership,
+            )
+            if form.is_valid():
+                form.save()
+                messages.success(
+                    request,
+                    f"Salary policy saved for {membership.user.username}.",
+                )
+            else:
+                messages.error(
+                    request,
+                    "Salary settings were not saved; check the entered amounts.",
+                )
+        elif action in {"calculate_all", "calculate_one"}:
+            target_id = request.POST.get("staff_id")
+            if action == "calculate_one":
+                targets = [get_object_or_404(
+                    ShopStaff,
+                    pk=target_id,
+                    shop=shop,
+                    is_public_rider=False,
+                )]
+            else:
+                targets = staff_members
+            for membership in targets:
+                record, created = StaffPayrollRecord.objects.get_or_create(
+                    staff=membership,
+                    year=start_day.year,
+                    month=start_day.month,
+                    defaults=_calculate_staff_payroll(membership, period),
+                )
+                if not created:
+                    if record.payment_status == StaffPayrollRecord.STATUS_PAID:
+                        continue
+                    for field, value in _calculate_staff_payroll(
+                        membership,
+                        period,
+                    ).items():
+                        setattr(record, field, value)
+                    record.calculated_at = timezone.now()
+                    record.save(update_fields=[
+                        "salary_method",
+                        "duty_hours",
+                        "duty_days",
+                        "paid_leave_days",
+                        "completed_order_count",
+                        "monthly_base_salary",
+                        "hourly_rate",
+                        "completed_order_bonus",
+                        "gross_amount",
+                        "calculated_at",
+                        "updated_at",
+                    ])
+            messages.success(request, "Payroll calculated for the selected month.")
+        elif action == "set_payment_status":
+            record = get_object_or_404(
+                StaffPayrollRecord.objects.select_for_update(),
+                pk=request.POST.get("record_id"),
+                staff__shop=shop,
+                staff__is_public_rider=False,
+            )
+            status = request.POST.get("payment_status")
+            if status not in {
+                StaffPayrollRecord.STATUS_PAID,
+                StaffPayrollRecord.STATUS_UNPAID,
+            }:
+                messages.error(request, "Choose a valid payroll payment status.")
+            else:
+                record.payment_status = status
+                record.paid_at = (
+                    timezone.now()
+                    if status == StaffPayrollRecord.STATUS_PAID
+                    else None
+                )
+                record.paid_by = (
+                    request.user
+                    if status == StaffPayrollRecord.STATUS_PAID
+                    else None
+                )
+                record.save(update_fields=[
+                    "payment_status",
+                    "paid_at",
+                    "paid_by",
+                    "updated_at",
+                ])
+                messages.success(request, "Payroll payment status updated.")
+        elif action == "review_leave":
+            application = get_object_or_404(
+                StaffLeaveApplication.objects.select_for_update(),
+                pk=request.POST.get("leave_id"),
+                staff__shop=shop,
+            )
+            status = request.POST.get("status")
+            if (
+                application.status != StaffLeaveApplication.STATUS_PENDING
+                or status not in {
+                    StaffLeaveApplication.STATUS_APPROVED,
+                    StaffLeaveApplication.STATUS_DECLINED,
+                }
+            ):
+                messages.error(request, "This leave request cannot be reviewed.")
+            else:
+                application.status = status
+                application.is_paid = (
+                    status == StaffLeaveApplication.STATUS_APPROVED
+                    and request.POST.get("is_paid") == "on"
+                )
+                application.reviewed_by = request.user
+                application.reviewed_at = timezone.now()
+                application.save(update_fields=[
+                    "status",
+                    "is_paid",
+                    "reviewed_by",
+                    "reviewed_at",
+                    "updated_at",
+                ])
+                messages.success(request, "Leave request reviewed.")
+        elif action == "review_resignation":
+            resignation = get_object_or_404(
+                StaffResignationRequest.objects.select_for_update(),
+                pk=request.POST.get("resignation_id"),
+                staff__shop=shop,
+            )
+            status = request.POST.get("status")
+            minimum_last_day = (
+                timezone.localtime(resignation.created_at).date()
+                + timedelta(days=15)
+            )
+            if (
+                resignation.status != StaffResignationRequest.STATUS_PENDING
+                or status not in {
+                    StaffResignationRequest.STATUS_APPROVED,
+                    StaffResignationRequest.STATUS_DECLINED,
+                }
+            ):
+                messages.error(request, "This resignation request cannot be reviewed.")
+            elif (
+                status == StaffResignationRequest.STATUS_APPROVED
+                and resignation.requested_last_working_date < minimum_last_day
+            ):
+                messages.error(
+                    request,
+                    "Resignation approval requires at least 15 calendar days’ notice.",
+                )
+            else:
+                resignation.status = status
+                resignation.reviewed_by = request.user
+                resignation.reviewed_at = timezone.now()
+                resignation.save(update_fields=[
+                    "status",
+                    "reviewed_by",
+                    "reviewed_at",
+                    "updated_at",
+                ])
+                messages.success(request, "Resignation request reviewed.")
+        return redirect(f"{reverse('shop_staff_hr', kwargs={'shop_id': shop.pk})}?month={period_key}")
+
+    online_count = sum(1 for row in rows if row["online"])
+    pending_leaves = StaffLeaveApplication.objects.filter(
+        staff__shop=shop,
+        staff__is_public_rider=False,
+        status=StaffLeaveApplication.STATUS_PENDING,
+    ).select_related("staff__user").order_by("created_at")
+    pending_resignations = StaffResignationRequest.objects.filter(
+        staff__shop=shop,
+        staff__is_public_rider=False,
+        status=StaffResignationRequest.STATUS_PENDING,
+    ).select_related("staff__user").order_by("created_at")
+    return render(
+        request,
+        "shop/staff_hr_dashboard.html",
+        {
+            "shop": shop,
+            "rows": rows,
+            "online_count": online_count,
+            "staff_count": len(rows),
+            "payroll_totals": payroll_totals,
+            "payroll_month": period_key,
+            "pending_leaves": pending_leaves,
+            "pending_resignations": pending_resignations,
+            "recent_leave_applications": StaffLeaveApplication.objects.filter(
+                staff__shop=shop,
+                staff__is_public_rider=False,
+            ).exclude(status=StaffLeaveApplication.STATUS_PENDING).select_related(
+                "staff__user",
+                "reviewed_by",
+            )[:30],
+            "recent_resignations": StaffResignationRequest.objects.filter(
+                staff__shop=shop,
+                staff__is_public_rider=False,
+            ).exclude(status=StaffResignationRequest.STATUS_PENDING).select_related(
+                "staff__user",
+                "reviewed_by",
+            )[:30],
+            "payroll_status_choices": StaffPayrollRecord.STATUS_CHOICES,
+            "leave_status_choices": StaffLeaveApplication.STATUS_CHOICES,
+            "resignation_status_choices": StaffResignationRequest.STATUS_CHOICES,
+        },
     )
 
 
@@ -7973,6 +9490,8 @@ def shop_orders(request, shop_id):
             Q(
                 order__user__icontains=search
             )
+            | Q(order__customer_name__icontains=search)
+            | Q(order__delivery_contact_no__icontains=search)
         )
 
     return render(
@@ -8119,7 +9638,9 @@ def packer_dashboard(request):
     orders = list(selected_orders)
     for order in orders:
         order.customer_display_name = (
-            customer_names.get(order.order.user) or order.order.user
+            order.order.customer_name
+            or customer_names.get(order.order.user)
+            or order.order.user
         )
 
     return render(
@@ -8409,6 +9930,29 @@ def _public_rider_route_estimate(shop_order, rider_location, pay_settings):
     rider_to_pickup = None
     straight_line_rider_to_pickup = None
     straight_line_pickup_to_delivery = None
+    include_pickup_distance = bool(
+        pay_settings.public_rider_pay_include_pickup_distance
+    )
+    pickup_distance_pay_percentage = (
+        pay_settings.public_rider_pickup_distance_pay_percentage
+        if include_pickup_distance
+        else Decimal("0.00")
+    )
+    pickup_distance_pay_fraction = (
+        pickup_distance_pay_percentage / Decimal("100.00")
+    )
+    threshold_bonus_enabled = bool(
+        pay_settings.public_rider_pickup_threshold_bonus_enabled
+    )
+    pickup_threshold_km = (
+        pay_settings.public_rider_pickup_threshold_km
+    )
+    pickup_threshold_rate_per_km = (
+        pay_settings.public_rider_pickup_threshold_rate_per_km
+    )
+    threshold_distance_method = (
+        pay_settings.public_rider_pickup_threshold_distance_method
+    )
     unavailable_reason = ""
     if not road_network_names:
         unavailable_reason = (
@@ -8421,93 +9965,169 @@ def _public_rider_route_estimate(shop_order, rider_location, pay_settings):
             "The order delivery coordinates are missing or invalid."
         )
     else:
-        pickup_to_delivery_km = local_road_route_distance_km(
-            road_network_names,
-            pickup,
-            delivery,
-        )
-        if pickup_to_delivery_km is None:
-            unavailable_reason = (
-                "No connected road route covers the selected pickup point and delivery "
-                "locations. Check the uploaded road coverage and coordinates."
+        if road_network_names:
+            pickup_to_delivery_km = local_road_route_distance_km(
+                road_network_names,
+                pickup,
+                delivery,
             )
-        else:
-            pickup_to_delivery = Decimal(str(pickup_to_delivery_km)).quantize(
+            if pickup_to_delivery_km is None:
+                unavailable_reason = (
+                    "No connected road route covers the selected pickup point and delivery "
+                    "locations. Check the uploaded road coverage and coordinates."
+                )
+            else:
+                pickup_to_delivery = Decimal(
+                    str(pickup_to_delivery_km),
+                ).quantize(
+                    Decimal("0.001"),
+                    rounding=ROUND_HALF_UP,
+                )
+        if rider_coordinates and road_network_names:
+            rider_to_pickup_km = local_road_route_distance_km(
+                road_network_names,
+                rider_coordinates,
+                pickup,
+            )
+            if rider_to_pickup_km is not None:
+                rider_to_pickup = Decimal(
+                    str(rider_to_pickup_km),
+                ).quantize(
+                    Decimal("0.001"),
+                    rounding=ROUND_HALF_UP,
+                )
+            elif pickup_distance_pay_fraction and not unavailable_reason:
+                unavailable_reason = (
+                    "No connected road route covers your location and "
+                    "the pickup point; this distance cannot be included "
+                    "in rider pay."
+                )
+        elif not rider_coordinates and pickup_distance_pay_fraction:
+            unavailable_reason = (
+                "Allow location access or update your rider location to "
+                "calculate the rider-to-pickup distance."
+            )
+    if rider_coordinates and pickup:
+        rider_distance = distance_km_between_points(
+            rider_coordinates["lat"],
+            rider_coordinates["lng"],
+            pickup["lat"],
+            pickup["lng"],
+        )
+        if rider_distance is not None:
+            straight_line_rider_to_pickup = Decimal(
+                str(rider_distance),
+            ).quantize(
                 Decimal("0.001"),
                 rounding=ROUND_HALF_UP,
             )
-            if not rider_coordinates:
-                unavailable_reason = (
-                    "Allow location access or update your rider location to "
-                    "calculate the full distance and pay."
-                )
-            else:
-                rider_to_pickup_km = local_road_route_distance_km(
-                    road_network_names,
-                    rider_coordinates,
-                    pickup,
-                )
-                if rider_to_pickup_km is None:
-                    unavailable_reason = (
-                        "No connected road route covers your location and "
-                        "the pickup point. Check your location and road coverage."
-                    )
-                else:
-                    rider_to_pickup = Decimal(
-                        str(rider_to_pickup_km),
-                    ).quantize(
-                        Decimal("0.001"),
-                        rounding=ROUND_HALF_UP,
-                    )
+    if pickup and delivery:
+        pickup_delivery_distance = distance_km_between_points(
+            pickup["lat"],
+            pickup["lng"],
+            delivery["lat"],
+            delivery["lng"],
+        )
+        if pickup_delivery_distance is not None:
+            straight_line_pickup_to_delivery = Decimal(
+                str(pickup_delivery_distance),
+            ).quantize(
+                Decimal("0.001"),
+                rounding=ROUND_HALF_UP,
+            )
     road_total_distance = (
         rider_to_pickup + pickup_to_delivery
         if rider_to_pickup is not None and pickup_to_delivery is not None
         else None
     )
-    straight_line_total_distance = None
-    if (
-        road_total_distance is None
-        and rider_coordinates
-        and pickup
-        and delivery
+    road_pay_distance = None
+    if pickup_to_delivery is not None and (
+        not pickup_distance_pay_fraction
+        or rider_to_pickup is not None
     ):
-        straight_line_rider_to_pickup = Decimal(str(
-            distance_km_between_points(
-                rider_coordinates["lat"],
-                rider_coordinates["lng"],
-                pickup["lat"],
-                pickup["lng"],
-            ),
-        )).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
-        straight_line_pickup_to_delivery = Decimal(str(
-            distance_km_between_points(
-                pickup["lat"],
-                pickup["lng"],
-                delivery["lat"],
-                delivery["lng"],
-            ),
-        )).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
-        straight_line_total_distance = (
-            (straight_line_rider_to_pickup + straight_line_pickup_to_delivery)
-            * Decimal("1.7")
+        road_pay_distance = (
+            pickup_to_delivery
+            + (rider_to_pickup or Decimal("0.000"))
+            * pickup_distance_pay_fraction
+        )
+    straight_line_total_distance = None
+    if road_pay_distance is None and pickup and delivery:
+        if not rider_coordinates and not pickup_distance_pay_fraction:
+            straight_line_rider_to_pickup = Decimal("0.000")
+        if (
+            straight_line_pickup_to_delivery is not None
+            and (
+                not pickup_distance_pay_fraction
+                or straight_line_rider_to_pickup is not None
+            )
+        ):
+            straight_line_total_distance = (
+                (
+                    straight_line_pickup_to_delivery
+                    + (straight_line_rider_to_pickup or Decimal("0.000"))
+                    * pickup_distance_pay_fraction
+                )
+                * Decimal("1.7")
+            ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+    threshold_distance_km = None
+    threshold_distance_source = "unavailable"
+    if threshold_bonus_enabled:
+        if threshold_distance_method == "ROAD" and rider_to_pickup is not None:
+            threshold_distance_km = rider_to_pickup
+            threshold_distance_source = "road"
+        elif (
+            threshold_distance_method == "STRAIGHT_LINE"
+            and straight_line_rider_to_pickup is not None
+        ):
+            threshold_distance_km = straight_line_rider_to_pickup
+            threshold_distance_source = "straight_line"
+        elif rider_to_pickup is not None:
+            threshold_distance_km = rider_to_pickup
+            threshold_distance_source = "road"
+        elif straight_line_rider_to_pickup is not None:
+            threshold_distance_km = straight_line_rider_to_pickup
+            threshold_distance_source = "straight_line"
+    threshold_bonus_distance_km = (
+        max(
+            Decimal("0.000"),
+            threshold_distance_km - pickup_threshold_km,
         ).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+        if threshold_distance_km is not None
+        else Decimal("0.000")
+    )
+    pickup_threshold_bonus = (
+        (
+            threshold_bonus_distance_km
+            * pickup_threshold_rate_per_km
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if threshold_bonus_enabled
+        else Decimal("0.00")
+    )
     distance_calculation_method = (
-        "road" if road_total_distance is not None
+        "road" if road_pay_distance is not None
         else "straight_line_fallback"
         if straight_line_total_distance is not None
         else "unavailable"
     )
     estimated_pay_distance = (
-        road_total_distance
-        if road_total_distance is not None
+        road_pay_distance
+        if road_pay_distance is not None
         else straight_line_total_distance
     )
-    estimated_pay = (
+    estimated_pay_before_threshold_bonus = (
         (
             pay_settings.shared_rider_base_pay
             + estimated_pay_distance * pay_settings.shared_rider_rate_per_km
         ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         if estimated_pay_distance is not None
+        else None
+    )
+    estimated_pay = (
+        (
+            estimated_pay_before_threshold_bonus
+            + pickup_threshold_bonus
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if estimated_pay_before_threshold_bonus is not None
         else None
     )
     load_estimate = _shop_order_estimated_load(shop_order)
@@ -8526,6 +10146,19 @@ def _public_rider_route_estimate(shop_order, rider_location, pay_settings):
         "straight_line_rider_to_pickup_km": straight_line_rider_to_pickup,
         "straight_line_pickup_to_delivery_km": straight_line_pickup_to_delivery,
         "estimated_pay_distance_km": estimated_pay_distance,
+        "pickup_distance_included": include_pickup_distance,
+        "pickup_distance_pay_percentage": pickup_distance_pay_percentage,
+        "pickup_threshold_bonus_enabled": threshold_bonus_enabled,
+        "pickup_threshold_km": pickup_threshold_km,
+        "pickup_threshold_rate_per_km": pickup_threshold_rate_per_km,
+        "pickup_threshold_distance_method": threshold_distance_method,
+        "pickup_threshold_distance_km": threshold_distance_km,
+        "pickup_threshold_distance_source": threshold_distance_source,
+        "pickup_threshold_bonus_distance_km": threshold_bonus_distance_km,
+        "pickup_threshold_bonus": pickup_threshold_bonus,
+        "estimated_pay_before_threshold_bonus": (
+            estimated_pay_before_threshold_bonus
+        ),
         "distance_calculation_method": distance_calculation_method,
         "base_fare": pay_settings.shared_rider_base_pay,
         "rate_per_km": pay_settings.shared_rider_rate_per_km,
@@ -8905,19 +10538,27 @@ def _approved_public_rider(user):
     ).first()
 
 
-def _qr_code_data_uri(value, box_size=3):
-    qr_code = qrcode.QRCode(
-        version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,
-        box_size=box_size,
-        border=2,
+def app_download_page(request):
+    branding = SiteBrandingSettings.objects.first()
+    if not branding or not (branding.android_app_url or branding.ios_app_url):
+        raise Http404("App downloads are not configured.")
+    app_downloads = []
+    for platform, label, url in (
+        ("android", "Download for Android", branding.android_app_url),
+        ("ios", "Download for iPhone or iPad", branding.ios_app_url),
+    ):
+        if url:
+            app_downloads.append({
+                "platform": platform,
+                "label": label,
+                "url": url,
+                "qr_code_data_uri": _qr_code_data_uri(url, box_size=5),
+            })
+    return render(
+        request,
+        "seller/app_download.html",
+        {"app_downloads": app_downloads},
     )
-    qr_code.add_data(value)
-    qr_code.make(fit=True)
-    image = qr_code.make_image(fill_color="black", back_color="white")
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
 def _upi_payment_qr_data_uri(upi_id, payee_name, amount, order_reference):
@@ -9549,6 +11190,18 @@ def rider_dashboard(request):
             for active in active_load_orders
         )
     )
+    public_rider_collection_window_closed = bool(
+        public_rider
+        and active_load_orders
+        and any(
+            active.status in {"READY", "RIDER_ASSIGNED"}
+            for active in active_load_orders
+        )
+        and (
+            public_rider_collection_window_expired
+            or not public_rider.public_rider_batch_accepting
+        )
+    )
     if public_rider_collection_window_expired:
         collection_notification_title = "Collection window closed"
         collection_notification_message = (
@@ -9568,7 +11221,7 @@ def rider_dashboard(request):
                 notification_type="ORDER",
                 related_url=f"{reverse('rider_dashboard')}?view=active",
             )
-    if public_rider_collection_window_expired and selected_view == "available":
+    if public_rider_collection_window_closed and selected_view == "available":
         selected_view = "active"
         available_view = False
         active_view = True
@@ -9874,7 +11527,19 @@ def rider_dashboard(request):
                 and isinstance(saved_route_estimate, dict)
                 and saved_route_estimate
             ):
-                order_obj.public_rider_route_display = saved_route_estimate
+                order_obj.public_rider_route_display = {
+                    **saved_route_estimate,
+                    "pickup_distance_included": saved_route_estimate.get(
+                        "pickup_distance_included",
+                        True,
+                    ),
+                    "pickup_distance_pay_percentage": (
+                        saved_route_estimate.get(
+                            "pickup_distance_pay_percentage",
+                            "100.00",
+                        )
+                    ),
+                }
             elif available_view or order_obj.is_collection_offer:
                 order_obj.public_rider_route_display = (
                     _public_rider_route_estimate(
@@ -10054,9 +11719,12 @@ def rider_dashboard(request):
                     order_obj.order.wallet_amount_used
                 )
         order_obj.customer_display_name = (
-            customer_profile.name.strip()
-            if customer_profile and customer_profile.name.strip()
-            else order_obj.order.user
+            order_obj.order.customer_name
+            or (
+                customer_profile.name.strip()
+                if customer_profile and customer_profile.name.strip()
+                else order_obj.order.user
+            )
         )
 
         order_obj.rider_otp = (
@@ -10192,7 +11860,8 @@ def rider_dashboard(request):
                 navigation_stops.append({
                     "order_id": assigned_order.order.order_id,
                     "customer_name": (
-                        customer_names.get(assigned_order.order.user)
+                        assigned_order.order.customer_name
+                        or customer_names.get(assigned_order.order.user)
                         or assigned_order.order.user
                         or "Customer"
                     ),
@@ -10266,7 +11935,7 @@ def rider_dashboard(request):
             "hide_available_tab": bool(
                 active_delivery_in_progress
                 or rider_offer_cooldown_seconds
-                or public_rider_collection_window_expired
+                or public_rider_collection_window_closed
             ),
             "earnings_view": earnings_view,
             "earnings_period": earnings_period,
@@ -10274,6 +11943,9 @@ def rider_dashboard(request):
             "public_rider_batch_expires_at": public_rider_batch_expires_at,
             "public_rider_collection_window_expired": (
                 public_rider_collection_window_expired
+            ),
+            "public_rider_collection_window_closed": (
+                public_rider_collection_window_closed
             ),
             "public_rider_base_fare": public_rider_base_fare,
             "public_rider_rate_per_km": public_rider_rate_per_km,
@@ -10424,6 +12096,15 @@ def shop_order_list(request):
         owner_shops
         | staff_shops
     ).distinct()
+    point_of_sale_shops = Shop.objects.filter(
+        Q(owner=user)
+        | Q(
+            staff_members__user=user,
+            staff_members__is_active=True,
+            staff_members__is_public_rider=False,
+            staff_members__can_view_orders=True,
+        )
+    ).distinct()
     pickup_verification_shops = Shop.objects.filter(
         Q(owner=user)
         | (
@@ -10550,7 +12231,9 @@ def shop_order_list(request):
     if order_number:
         shop_orders = shop_orders.filter(
             Q(order__order_id__icontains=order_number)
-            | Q(shop_order_number__icontains=order_number),
+            | Q(shop_order_number__icontains=order_number)
+            | Q(order__customer_name__icontains=order_number)
+            | Q(order__delivery_contact_no__icontains=order_number),
         )
 
     verified_orders = (
@@ -10845,6 +12528,7 @@ def shop_order_list(request):
         "shop/shop_order_list.html",
         {
             "shops": shops,
+            "point_of_sale_shops": point_of_sale_shops,
             "shop_orders": shop_orders,
             "rider_cod_handover_groups": rider_cod_handover_groups,
             "order_date_filter": order_date_value,
@@ -11148,9 +12832,13 @@ def shop_order_detail(request, shop_order_id):
         }
         and (shop_order.assigned_rider_id or rider_order_is_accepted)
     )
-    customer_name = ClientProfile.objects.filter(
-        user__username=shop_order.order.user,
-    ).values_list("name", flat=True).first() or shop_order.order.user
+    customer_name = (
+        shop_order.order.customer_name
+        or ClientProfile.objects.filter(
+            user__username=shop_order.order.user,
+        ).values_list("name", flat=True).first()
+        or shop_order.order.user
+    )
     voice_instruction = (
         OrderVoiceInstruction.objects
         .filter(
@@ -13164,23 +14852,50 @@ def set_public_rider_availability(request):
 
 
 @login_required
+@transaction.atomic
 def stop_public_rider_batch_offers(request):
     if request.method != "POST":
         return HttpResponse("POST required.", status=405)
     if request.session.get("active_portal") != "RIDER":
         raise PermissionDenied
-    updated_applications = PublicRiderApplication.objects.filter(
+    application = PublicRiderApplication.objects.select_for_update().filter(
         user=request.user,
         status=PublicRiderApplication.STATUS_APPROVED,
-    ).update(
-        public_rider_batch_accepting=False,
-        updated_at=timezone.now(),
-    )
-    if not updated_applications:
+    ).first()
+    if not application:
         raise PermissionDenied
+    application.public_rider_batch_accepting = False
+    application.save(update_fields=[
+        "public_rider_batch_accepting",
+        "updated_at",
+    ])
+
+    pending_offer_ids = list(
+        ShopOrder.objects.select_for_update()
+        .filter(
+            public_rider_offer_user=request.user,
+            public_rider_offer_expires_at__gt=timezone.now(),
+            status="READY",
+            assigned_rider__isnull=True,
+            delivery_completed_at__isnull=True,
+        )
+        .values_list("pk", flat=True)
+    )
+    for shop_order_id in pending_offer_ids:
+        ShopOrder.objects.filter(
+            pk=shop_order_id,
+            public_rider_offer_user=request.user,
+        ).update(
+            public_rider_offer_user=None,
+            public_rider_offer_expires_at=None,
+            public_rider_offer_retry_at=None,
+            updated_at=timezone.now(),
+        )
+        advance_public_rider_offer(shop_order_id)
+
     messages.success(
         request,
-        "New delivery offers are paused while your active deliveries are unfinished.",
+        "New offers stopped. Collect your accepted parcels from the shops and scan each shop's order QR to start delivery.",
     )
     return redirect(f"{reverse('rider_dashboard')}?view=active")
 
@@ -13468,6 +15183,8 @@ def _credit_shop_wallet_for_delivery(shop_order):
             _record_public_rider_delivery_fare(shop_order)
         else:
             _record_shared_rider_delivery_payment(shop_order)
+    if shop_order.order.order_source == Order.SOURCE_POS:
+        return
     if (
         shop_order.status != "DELIVERED"
         or not shop_order.delivery_completed_at
@@ -15269,6 +16986,67 @@ def accept_rider_order(request, shop_order_id):
                 "estimated_pay_distance_km": str(
                     public_rider_route_estimate["estimated_pay_distance_km"],
                 ),
+                "pickup_distance_included": (
+                    public_rider_route_estimate["pickup_distance_included"]
+                ),
+                "pickup_distance_pay_percentage": str(
+                    public_rider_route_estimate[
+                        "pickup_distance_pay_percentage"
+                    ],
+                ),
+                "pickup_threshold_bonus_enabled": (
+                    public_rider_route_estimate[
+                        "pickup_threshold_bonus_enabled"
+                    ]
+                ),
+                "pickup_threshold_km": str(
+                    public_rider_route_estimate["pickup_threshold_km"],
+                ),
+                "pickup_threshold_rate_per_km": str(
+                    public_rider_route_estimate[
+                        "pickup_threshold_rate_per_km"
+                    ],
+                ),
+                "pickup_threshold_distance_method": (
+                    public_rider_route_estimate[
+                        "pickup_threshold_distance_method"
+                    ]
+                ),
+                "pickup_threshold_distance_km": (
+                    str(
+                        public_rider_route_estimate[
+                            "pickup_threshold_distance_km"
+                        ],
+                    )
+                    if public_rider_route_estimate[
+                        "pickup_threshold_distance_km"
+                    ] is not None
+                    else None
+                ),
+                "pickup_threshold_distance_source": (
+                    public_rider_route_estimate[
+                        "pickup_threshold_distance_source"
+                    ]
+                ),
+                "pickup_threshold_bonus_distance_km": str(
+                    public_rider_route_estimate[
+                        "pickup_threshold_bonus_distance_km"
+                    ],
+                ),
+                "pickup_threshold_bonus": str(
+                    public_rider_route_estimate["pickup_threshold_bonus"],
+                ),
+                "estimated_pay_before_threshold_bonus": (
+                    str(
+                        public_rider_route_estimate[
+                            "estimated_pay_before_threshold_bonus"
+                        ],
+                    )
+                    if public_rider_route_estimate[
+                        "estimated_pay_before_threshold_bonus"
+                    ] is not None
+                    else None
+                ),
                 "distance_calculation_method": (
                     public_rider_route_estimate["distance_calculation_method"]
                 ),
@@ -16132,7 +17910,6 @@ def shop_staff_toggle(request, shop_id, staff_id):
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import get_object_or_404, redirect
-from django.views.decorators.http import require_POST
 
 from .models import Shop
 from .utils import user_can_access_shop
@@ -16174,10 +17951,16 @@ def shop_staff_remove(request, shop_id, staff_id):
             or staff_wallet.transactions.exists()
         )
     )
-    if has_order_history or has_payment_history or has_wallet_history:
+    has_hr_history = (
+        StaffDutySession.objects.filter(staff=staff).exists()
+        or StaffLeaveApplication.objects.filter(staff=staff).exists()
+        or StaffResignationRequest.objects.filter(staff=staff).exists()
+        or StaffPayrollRecord.objects.filter(staff=staff).exists()
+    )
+    if has_order_history or has_payment_history or has_wallet_history or has_hr_history:
         messages.error(
             request,
-            "This staff membership has order or payment history and cannot be deleted without affecting records. Disable the staff member to remove their access instead.",
+            "This staff membership has order, payment, attendance, leave, resignation, or payroll history and cannot be deleted without affecting records. Disable the staff member to remove their access instead.",
         )
         return redirect("shop_staff_list_shop", shop_id=shop.pk)
 
@@ -20962,6 +22745,28 @@ def checkout(request):
         request,
         checkout_shop_ids,
     )
+    checkout_shop_instructions = [
+        {
+            "shop": shop,
+            "shop_instruction": order_instruction_drafts.get(
+                shop.pk,
+                {},
+            ).get(OrderVoiceInstruction.RECIPIENT_SHOP),
+            "rider_instruction": order_instruction_drafts.get(
+                shop.pk,
+                {},
+            ).get(OrderVoiceInstruction.RECIPIENT_RIDER),
+        }
+        for shop in checkout_shops
+    ]
+    checkout_rider_instruction = next(
+        (
+            shop_instruction["rider_instruction"]
+            for shop_instruction in checkout_shop_instructions
+            if shop_instruction["rider_instruction"]
+        ),
+        None,
+    )
 
     quantities_by_assignment = {}
     for item in items:
@@ -21172,8 +22977,11 @@ def checkout(request):
                 "amount_paise": amount_paise,
                 "order_instruction_draft_ids": (
                     {
-                        recipient: draft.pk
-                        for recipient, draft in order_instruction_drafts.items()
+                        str(shop_id): {
+                            recipient: draft.pk
+                            for recipient, draft in recipient_drafts.items()
+                        }
+                        for shop_id, recipient_drafts in order_instruction_drafts.items()
                     }
                 ),
                 "address_id": address.pk,
@@ -21242,7 +23050,8 @@ def checkout(request):
                     ),
                     "scheduled_delivery_shop_names": scheduled_delivery_shop_names,
                     "checkout_shops": checkout_shops,
-                    "order_instruction_drafts": order_instruction_drafts,
+                    "checkout_shop_instructions": checkout_shop_instructions,
+                    "checkout_rider_instruction": checkout_rider_instruction,
                 },
             )
         if payment_method != "COD":
@@ -21352,7 +23161,8 @@ def checkout(request):
             ),
             "scheduled_delivery_shop_names": scheduled_delivery_shop_names,
             "checkout_shops": checkout_shops,
-            "order_instruction_drafts": order_instruction_drafts,
+            "checkout_shop_instructions": checkout_shop_instructions,
+            "checkout_rider_instruction": checkout_rider_instruction,
         }
     )
 @login_required
@@ -21605,34 +23415,48 @@ def create_order(
                 legacy_instruction.recipient: legacy_instruction.pk,
             }
 
-    instruction_drafts = {}
-    for recipient, draft_id in instruction_draft_ids.items():
-        if recipient not in {
-            OrderVoiceInstruction.RECIPIENT_SHOP,
-            OrderVoiceInstruction.RECIPIENT_RIDER,
-        }:
-            return _checkout_failure_response(
-                request,
-                "An order instruction could not be matched. Please review checkout and try again.",
-            )
-        draft = (
-            OrderVoiceInstruction.objects
-            .select_for_update()
-            .filter(
-                pk=draft_id,
-                customer=request.user,
-                shop_order__isnull=True,
-                recipient=recipient,
-            )
-            .first()
+    normalized_instruction_draft_ids, invalid_instruction_drafts = (
+        _normalize_checkout_instruction_draft_ids(
+            request,
+            set(shops_in_order),
+            instruction_draft_ids,
         )
-        if draft is None or draft.shop_id not in shops_in_order:
+    )
+    if invalid_instruction_drafts:
+        return _checkout_failure_response(
+            request,
+            "An order instruction could not be matched. Please review checkout and try again.",
+        )
+
+    instruction_drafts = {}
+    for shop_id, recipient_ids in normalized_instruction_draft_ids.items():
+        parsed_shop_id = int(shop_id)
+        if parsed_shop_id not in shops_in_order:
             return _checkout_failure_response(
                 request,
                 "The selected shop instruction could not be matched to this order. Please review checkout and try again.",
                 status=409,
             )
-        instruction_drafts[recipient] = draft
+        for recipient, draft_id in recipient_ids.items():
+            draft = (
+                OrderVoiceInstruction.objects
+                .select_for_update()
+                .filter(
+                    pk=draft_id,
+                    customer=request.user,
+                    shop_id=parsed_shop_id,
+                    shop_order__isnull=True,
+                    recipient=recipient,
+                )
+                .first()
+            )
+            if draft is None:
+                return _checkout_failure_response(
+                    request,
+                    "The selected shop instruction could not be matched to this order. Please review checkout and try again.",
+                    status=409,
+                )
+            instruction_drafts.setdefault(parsed_shop_id, {})[recipient] = draft
     shop_order_numbers = {
         shop_id: generate_shop_order_number(
             shops_in_order[shop_id],
@@ -21907,10 +23731,9 @@ def create_order(
 
             status="PLACED",
         )
-        for instruction_draft in instruction_drafts.values():
-            if instruction_draft.shop_id == shop_id:
-                instruction_draft.shop_order = shop_order
-                instruction_draft.save(update_fields=["shop_order"])
+        for instruction_draft in instruction_drafts.get(shop_id, {}).values():
+            instruction_draft.shop_order = shop_order
+            instruction_draft.save(update_fields=["shop_order"])
 
         shop_items_json = []
         estimated_shop_weight_kg = Decimal("0.000")
@@ -23470,14 +25293,22 @@ def delivery_address_add(request):
         form = ClientDeliveryAddressForm(
             request.POST
         )
+        next_url = (
+            request.POST.get("next")
+            or request.GET.get("next")
+            or ""
+        ).strip()
 
         if form.is_valid():
 
+            active_cart, _ = _address_scoped_cart(request)
+            cart_snapshot = dict(active_cart)
             address = form.save(
                 commit=False
             )
 
             address.client = client
+            address.is_default = True
 
             lat = form.cleaned_data.get(
                 "latitude"
@@ -23502,28 +25333,126 @@ def delivery_address_add(request):
                 "pincode": pincode or "",
             }
 
-            address.save()
+            with transaction.atomic():
+                ClientDeliveryAddress.objects.filter(
+                    client=client,
+                    is_default=True,
+                ).update(is_default=False)
+                address.save()
+            _switch_address_scoped_cart(request, address)
+            _save_address_scoped_cart(request, cart_snapshot)
 
             messages.success(
                 request,
                 "Delivery address saved successfully."
             )
 
-            return redirect(
-                "delivery_address_list"
-            )
+            if next_url and url_has_allowed_host_and_scheme(
+                next_url,
+                allowed_hosts={request.get_host()},
+            ):
+                return redirect(next_url)
+            return redirect("delivery_address_list")
 
     else:
 
         form = ClientDeliveryAddressForm()
+        next_url = request.GET.get("next", "").strip()
 
     return render(
         request,
         "market/delivery_address_form.html",
         {
             "form": form,
+            "next_url": next_url,
         }
     )
+
+
+@login_required
+@require_POST
+def delivery_address_use_current_location(request):
+    client = get_object_or_404(ClientProfile, user=request.user)
+    try:
+        latitude = Decimal(request.POST.get("latitude", ""))
+        longitude = Decimal(request.POST.get("longitude", ""))
+    except (InvalidOperation, TypeError, ValueError):
+        return JsonResponse(
+            {"success": False, "message": "Share a valid current location to continue."},
+            status=400,
+        )
+    if (
+        not latitude.is_finite()
+        or not longitude.is_finite()
+        or not Decimal("-90") <= latitude <= Decimal("90")
+        or not Decimal("-180") <= longitude <= Decimal("180")
+    ):
+        return JsonResponse(
+            {"success": False, "message": "The shared location is outside valid map coordinates."},
+            status=400,
+        )
+
+    state_name = request.POST.get("state_name", "").strip()
+    normalized_state_name = re.sub(
+        r"\b(?:the|state of|union territory of)\b",
+        "",
+        state_name.casefold(),
+    )
+    normalized_state_name = re.sub(r"[^a-z]", "", normalized_state_name)
+    state_aliases = {
+        "nctdelhi": "07",
+        "nationalcapitalterritorydelhi": "07",
+        "orissa": "21",
+        "pondicherry": "34",
+        "uttaranchal": "05",
+        "andhrapradesh": "37",
+    }
+    state_code = state_aliases.get(normalized_state_name)
+    if not state_code:
+        state_code = next(
+            (
+                code
+                for code, name in INDIAN_GST_STATE_CHOICES
+                if re.sub(r"[^a-z]", "", name.casefold()) == normalized_state_name
+            ),
+            "",
+        )
+    if not state_code:
+        return JsonResponse(
+            {
+                "success": False,
+                "message": (
+                    "Could not determine your delivery state from this location. "
+                    "Add an address and select its state."
+                ),
+            },
+            status=400,
+        )
+
+    with transaction.atomic():
+        ClientDeliveryAddress.objects.filter(
+            client=client,
+            is_default=True,
+        ).update(is_default=False)
+        address = ClientDeliveryAddress.objects.create(
+            client=client,
+            label="Current location",
+            address="Current device location",
+            state_code=state_code,
+            latitude=latitude,
+            longitude=longitude,
+            location={
+                "lat": float(latitude),
+                "lng": float(longitude),
+            },
+            is_active=True,
+            is_default=True,
+        )
+    _switch_address_scoped_cart(request, address)
+    return JsonResponse({
+        "success": True,
+        "redirect_url": reverse("checkout"),
+    })
 
 @login_required
 def delivery_address_edit(request, pk):

@@ -1,0 +1,290 @@
+{% extends "base.html" %}
+
+{% block title %}{{ product.product_name }} · {{ shop.name }}{% endblock %}
+
+{% block content %}
+<div class="container py-2">
+    <a href="{% url 'market' %}" class="btn btn-sm btn-outline-secondary mb-3">
+        <i class="bi bi-arrow-left me-1"></i>Marketplace
+    </a>
+    <article class="card border-0 shadow-sm overflow-hidden">
+        <div class="row g-0">
+            <div class="col-12 col-md-5 bg-light d-flex align-items-center justify-content-center p-2">
+                {% if image_urls %}
+                    <div id="qrProductImageCarousel" class="carousel slide w-100 qr-product-gallery"
+                         data-bs-interval="false">
+                        <div class="carousel-inner">
+                            {% for product_image_url in image_urls %}
+                                <div class="carousel-item {% if forloop.first %}active{% endif %}">
+                                    <img src="{{ product_image_url }}"
+                                         alt="{{ product.product_name }}{% if not forloop.first %} image {{ forloop.counter }}{% endif %}"
+                                         class="d-block w-100"
+                                         style="height: 16rem; object-fit: contain">
+                                </div>
+                            {% endfor %}
+                        </div>
+                        {% if image_urls|length > 1 %}
+                            <div class="carousel-indicators position-static mt-3 mb-0">
+                                {% for product_image_url in image_urls %}
+                                    <button type="button"
+                                            data-bs-target="#qrProductImageCarousel"
+                                            data-bs-slide-to="{{ forloop.counter0 }}"
+                                            aria-label="Show product image {{ forloop.counter }}"
+                                            {% if forloop.first %}class="active" aria-current="true"{% endif %}>
+                                        <img src="{{ product_image_url }}" alt=""
+                                             style="width: 100%; height: 100%; object-fit: contain">
+                                    </button>
+                                {% endfor %}
+                            </div>
+                            <button class="carousel-control-prev" type="button"
+                                    data-bs-target="#qrProductImageCarousel" data-bs-slide="prev"
+                                    aria-label="Previous product image">
+                                <span class="carousel-control-prev-icon" aria-hidden="true"
+                                      style="filter: invert(1)"></span>
+                            </button>
+                            <button class="carousel-control-next" type="button"
+                                    data-bs-target="#qrProductImageCarousel" data-bs-slide="next"
+                                    aria-label="Next product image">
+                                <span class="carousel-control-next-icon" aria-hidden="true"
+                                      style="filter: invert(1)"></span>
+                            </button>
+                        {% endif %}
+                    </div>
+                {% else %}
+                    <div class="text-center text-muted py-5">
+                        <i class="bi bi-box-seam display-1 d-block"></i>
+                        Product image unavailable
+                    </div>
+                {% endif %}
+            </div>
+            <div class="col-12 col-md-7">
+                <div class="card-body p-3 p-lg-4">
+                    <span class="badge text-bg-light">{{ shop.name }}</span>
+                    {% if product.product_category %}
+                        <span class="badge text-bg-secondary">{{ product.product_category }}</span>
+                    {% endif %}
+                    <h1 class="h2 fw-bold mt-3">{{ product.product_name }}</h1>
+                    {% if product.product_title %}
+                        <p class="lead text-muted">{{ product.product_title }}</p>
+                    {% endif %}
+                    <p class="fs-3 fw-bold text-success mb-1">
+                        ₹{{ price|floatformat:2 }}
+                        {% if unit %}<span class="fs-6 fw-normal text-muted">/ {{ unit }}</span>{% endif %}
+                    </p>
+                    {% if user.is_authenticated %}
+                        {% if stock > 0 %}
+                            <form method="post"
+                                  action="{% url 'cart_update' assignment.id %}"
+                                  class="mt-3"
+                                  data-qr-product-cart
+                                  data-stock="{{ stock|floatformat:'-4' }}"
+                                  data-offer="retail">
+                                {% csrf_token %}
+                                <input type="hidden" name="offer" value="retail">
+                                <label class="form-label fw-semibold" for="qrCartQuantity">
+                                    Quantity in cart
+                                </label>
+                                <div class="d-flex flex-wrap align-items-center gap-2">
+                                    <input class="form-control" id="qrCartQuantity" name="quantity"
+                                           type="number" min="1" max="{{ stock|floatformat:'-4' }}"
+                                           value="{% if cart_quantity %}{{ cart_quantity }}{% else %}1{% endif %}"
+                                           inputmode="numeric" style="width: 6rem" required>
+                                    <button class="btn btn-success" type="submit">
+                                        <i class="bi bi-cart-plus me-1"></i>
+                                        {% if cart_quantity %}Update cart{% else %}Add to cart{% endif %}
+                                    </button>
+                                    <a class="btn btn-outline-primary" href="{% url 'cart' %}">
+                                        View cart
+                                    </a>
+                                </div>
+                                <div class="small text-muted mt-2" data-qr-cart-quantity aria-live="polite">
+                                    {% if cart_quantity %}{{ cart_quantity }} in cart{% else %}Not yet added to cart{% endif %}
+                                </div>
+                                <div class="small text-success mt-1" data-qr-cart-status role="status" aria-live="polite"></div>
+                                <div class="small text-danger mt-1" data-qr-cart-error role="alert" hidden></div>
+                            </form>
+                        {% else %}
+                            <button class="btn btn-secondary mt-3" type="button" disabled>
+                                Currently out of stock
+                            </button>
+                        {% endif %}
+                        {% if has_bulk_offer %}
+                            <div class="border rounded p-3 mt-3">
+                                <div class="fw-semibold">
+                                    {% if is_b2b %}B2B bulk offer{% else %}Bulk offer{% endif %}
+                                </div>
+                                <div class="text-success">
+                                    ₹{{ bulk_price|floatformat:2 }} / {{ bulk_unit }}
+                                </div>
+                                <div class="small text-muted">
+                                    Minimum {{ bulk_min_quantity }} {{ bulk_unit }}
+                                </div>
+                                {% if user.is_authenticated %}
+                                    {% if stock >= bulk_min_quantity %}
+                                        <form method="post"
+                                              action="{% url 'cart_update' assignment.id %}"
+                                              class="mt-2"
+                                              data-qr-product-cart
+                                              data-stock="{{ stock|floatformat:'-4' }}"
+                                              data-offer="bulk">
+                                            {% csrf_token %}
+                                            <input type="hidden" name="offer" value="bulk">
+                                            <label class="form-label fw-semibold"
+                                                   for="qrBulkCartQuantity">
+                                                Bulk quantity
+                                            </label>
+                                            <div class="d-flex flex-wrap align-items-center gap-2">
+                                                <input class="form-control" id="qrBulkCartQuantity"
+                                                       name="quantity" type="number"
+                                                       min="{{ bulk_min_quantity }}"
+                                                       max="{{ stock|floatformat:'-4' }}"
+                                                       value="{% if bulk_cart_quantity %}{{ bulk_cart_quantity }}{% else %}{{ bulk_min_quantity }}{% endif %}"
+                                                       inputmode="numeric" style="width: 6rem" required>
+                                                <button class="btn btn-outline-success" type="submit">
+                                                    <i class="bi bi-cart-plus me-1"></i>
+                                                    {% if bulk_cart_quantity %}Update bulk{% else %}Add bulk{% endif %}
+                                                </button>
+                                                <a class="btn btn-outline-primary" href="{% url 'cart' %}">
+                                                    View cart
+                                                </a>
+                                            </div>
+                                            <div class="small text-muted mt-2"
+                                                 data-qr-cart-quantity aria-live="polite">
+                                                {% if bulk_cart_quantity %}
+                                                    {{ bulk_cart_quantity }} bulk in cart
+                                                {% else %}
+                                                    Bulk offer not yet added
+                                                {% endif %}
+                                            </div>
+                                            <div class="small text-success mt-1"
+                                                 data-qr-cart-status role="status" aria-live="polite"></div>
+                                            <div class="small text-danger mt-1"
+                                                 data-qr-cart-error role="alert" hidden></div>
+                                        </form>
+                                    {% else %}
+                                        <div class="small text-muted mt-2">
+                                            Not enough stock to meet the bulk minimum.
+                                        </div>
+                                    {% endif %}
+                                {% else %}
+                                    <a class="btn btn-outline-success btn-sm mt-2"
+                                       href="{% url 'login' %}?next={{ request.get_full_path|urlencode }}">
+                                        Sign in to add bulk
+                                    </a>
+                                {% endif %}
+                            </div>
+                        {% endif %}
+                        {% else %}
+                            <a class="btn btn-success mt-3"
+                               href="{% url 'login' %}?next={{ request.get_full_path|urlencode }}">
+                            <i class="bi bi-box-arrow-in-right me-1"></i>Sign in to add to cart
+                        </a>
+                    {% endif %}
+                    <hr>
+                    <h2 class="h5 fw-semibold">Product details</h2>
+                    {% if product.product_description %}
+                        <p class="text-muted">{{ product.product_description|linebreaksbr }}</p>
+                    {% else %}
+                        <p class="text-muted">{{ product.product_name }} is listed by {{ shop.name }}.</p>
+                    {% endif %}
+                    <dl class="row mb-0">
+                        {% if product.sku %}
+                            <dt class="col-sm-4">SKU</dt><dd class="col-sm-8">{{ product.sku }}</dd>
+                        {% endif %}
+                        {% if product.product_color %}
+                            <dt class="col-sm-4">Color</dt><dd class="col-sm-8">{{ product.product_color }}</dd>
+                        {% endif %}
+                        {% if product.product_size %}
+                            <dt class="col-sm-4">Size</dt><dd class="col-sm-8">{{ product.product_size }}</dd>
+                        {% endif %}
+                        <dt class="col-sm-4">Availability</dt>
+                        <dd class="col-sm-8">
+                            {% if stock > 0 %}{{ stock|floatformat:-4 }} available{% else %}Currently out of stock{% endif %}
+                        </dd>
+                    </dl>
+                </div>
+            </div>
+        </div>
+    </article>
+</div>
+<style>
+    .qr-product-gallery .carousel-indicators [data-bs-target] {
+        box-sizing: border-box;
+        width: 3.5rem;
+        height: 3.5rem;
+        margin: 0;
+        padding: .15rem;
+        border: 2px solid transparent;
+        border-radius: .375rem;
+        text-indent: 0;
+        background: transparent;
+        opacity: .6;
+    }
+
+    .qr-product-gallery .carousel-indicators [data-bs-target].active {
+        border-color: var(--bs-primary);
+        opacity: 1;
+    }
+
+    @media (max-width: 767.98px) {
+        .qr-product-gallery .carousel-item img {
+            height: 12rem !important;
+        }
+    }
+</style>
+{% if user.is_authenticated %}
+<script>
+(() => {
+    document.querySelectorAll("[data-qr-product-cart]").forEach((form) => {
+        const quantityInput = form.querySelector('[name="quantity"]');
+        const submitButton = form.querySelector('button[type="submit"]');
+        const quantityStatus = form.querySelector("[data-qr-cart-quantity]");
+        const status = form.querySelector("[data-qr-cart-status]");
+        const error = form.querySelector("[data-qr-cart-error]");
+        const offer = form.dataset.offer;
+        const stock = Number(form.dataset.stock);
+
+        form.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            error.hidden = true;
+            status.textContent = "";
+            submitButton.disabled = true;
+            try {
+                const response = await fetch(form.action, {
+                    method: "POST",
+                    body: new FormData(form),
+                    credentials: "same-origin",
+                    headers: { "X-Requested-With": "XMLHttpRequest" }
+                });
+                const result = await response.json();
+                if (!response.ok || !result.success) {
+                    throw new Error(result.message || "Could not update your cart.");
+                }
+                quantityInput.value = String(result.quantity);
+                quantityStatus.textContent = result.quantity
+                    ? `${result.quantity}${offer === "bulk" ? " bulk" : ""} in cart`
+                    : `${offer === "bulk" ? "Bulk offer" : "Product"} not yet added to cart`;
+                status.textContent = result.quantity
+                    ? `${offer === "bulk" ? "Bulk offer" : "Product"} added to your cart.`
+                    : `${offer === "bulk" ? "Bulk offer" : "Product"} removed from your cart.`;
+                document.querySelectorAll("[data-cart-count]").forEach((badge) => {
+                    badge.textContent = String(result.cart_count);
+                    badge.classList.toggle("d-none", result.cart_count <= 0);
+                });
+                submitButton.innerHTML = result.quantity
+                    ? '<i class="bi bi-cart-check me-1"></i>Update cart'
+                    : '<i class="bi bi-cart-plus me-1"></i>Add to cart';
+            } catch (requestError) {
+                error.textContent = requestError instanceof Error
+                    ? requestError.message
+                    : "Could not update your cart. Please try again.";
+                error.hidden = false;
+            } finally {
+                submitButton.disabled = !(stock > 0);
+            }
+        });
+    });
+})();
+</script>
+{% endif %}
+{% endblock %}

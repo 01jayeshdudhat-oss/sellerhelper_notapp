@@ -183,6 +183,22 @@
             <span class="badge bg-primary fs-6">
                 {% if handover_view %}{{ handover_action_count }} pending handovers{% elif verified_view %}{{ verified_order_count }} Recently verified{% elif abandoned_view %}{{ abandoned_checkout_count }} abandoned checkouts{% else %}{{ shop_orders|length }} Orders{% endif %}
             </span>
+            {% if point_of_sale_shops %}
+                <details class="d-inline-block ms-2 position-relative">
+                    <summary class="btn btn-success">
+                        <i class="bi bi-cart-check me-1"></i>Counter sale
+                    </summary>
+                    <div class="position-absolute end-0 bg-white border rounded shadow p-2 mt-1"
+                         style="z-index: 5; min-width: 14rem">
+                        {% for pos_shop in point_of_sale_shops %}
+                            <a class="dropdown-item rounded px-2 py-2"
+                               href="{% url 'shop_point_of_sale' pos_shop.id %}">
+                                {{ pos_shop.name }}
+                            </a>
+                        {% endfor %}
+                    </div>
+                </details>
+            {% endif %}
         </div>
 
     </div>
@@ -740,10 +756,10 @@
 
 
                             <!-- Customer -->
-                            <td data-sort-value="{{ shop_order.order.user|default:'Customer' }}">
+                            <td data-sort-value="{{ shop_order.order.customer_name|default:shop_order.order.user|default:'Customer' }}">
 
                                 <div class="fw-semibold">
-                                    {{ shop_order.order.user|default:"Customer" }}
+                                    {{ shop_order.order.customer_name|default:shop_order.order.user|default:"Customer" }}
                                 </div>
 
                             </td>

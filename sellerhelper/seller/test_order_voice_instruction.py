@@ -140,6 +140,116 @@ class OrderVoiceInstructionTests(TestCase):
         self.assertEqual(b"".join(audio_response.streaming_content), b"sample voice data")
         self.assertEqual(audio_response["Cache-Control"], "private, no-store")
 
+    def test_checkout_saves_independent_text_and_voice_instructions_per_shop(self):
+        second_owner = User.objects.create_user(
+            username="voice_instruction_second_owner",
+        )
+        second_shop = Shop.objects.create(
+            name="Second Voice Shop",
+            owner=second_owner,
+        )
+        second_product = Product.objects.create(
+            created_by=second_owner,
+            product_name="Second Voice Item",
+            price=Decimal("30.00"),
+            unit="piece",
+            product_category="OTHER",
+        )
+        second_assignment = ProductShop.objects.create(
+            shop=second_shop,
+            product=second_product,
+            price=Decimal("30.00"),
+            stock=5,
+            is_active=True,
+        )
+        self._set_cart({
+            str(self.assignment.pk): 1,
+            str(second_assignment.pk): 1,
+        })
+
+        checkout_page = self.client.get(reverse("checkout"))
+        self.assertEqual(checkout_page.status_code, 200)
+        self.assertContains(
+            checkout_page,
+            f'name="order_instruction_text_shop_{self.shop.pk}"',
+        )
+        self.assertContains(
+            checkout_page,
+            f'name="order_instruction_text_shop_{second_shop.pk}"',
+        )
+        response = self.client.post(
+            reverse("checkout"),
+            {
+                "address": self.address.pk,
+                "payment_method": "COD",
+                f"order_instruction_text_shop_{self.shop.pk}": "Pack this shop order separately.",
+                f"order_instruction_text_rider_{self.shop.pk}": "Call at the first entrance.",
+                f"order_instruction_audio_shop_{self.shop.pk}": self._audio_upload(),
+                f"order_instruction_text_shop_{second_shop.pk}": "Keep chilled products cold.",
+                f"order_instruction_text_rider_{second_shop.pk}": "Use the side gate.",
+                f"order_instruction_audio_rider_{second_shop.pk}": self._audio_upload(),
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        shop_orders = {
+            shop_order.shop_id: shop_order
+            for shop_order in ShopOrder.objects.filter(
+                order__user=self.customer.username,
+            )
+        }
+        self.assertEqual(set(shop_orders), {self.shop.pk, second_shop.pk})
+        instructions_by_shop = {
+            shop_id: {
+                instruction.recipient: instruction
+                for instruction in OrderVoiceInstruction.objects.filter(
+                    shop_order=shop_order,
+                )
+            }
+            for shop_id, shop_order in shop_orders.items()
+        }
+        self.assertEqual(
+            instructions_by_shop[self.shop.pk][
+                OrderVoiceInstruction.RECIPIENT_SHOP
+            ].instruction_text,
+            "Pack this shop order separately.",
+        )
+        self.assertEqual(
+            instructions_by_shop[self.shop.pk][
+                OrderVoiceInstruction.RECIPIENT_RIDER
+            ].instruction_text,
+            "Call at the first entrance.",
+        )
+        self.assertTrue(
+            instructions_by_shop[self.shop.pk][
+                OrderVoiceInstruction.RECIPIENT_SHOP
+            ].audio_file
+        )
+        self.assertEqual(
+            instructions_by_shop[second_shop.pk][
+                OrderVoiceInstruction.RECIPIENT_SHOP
+            ].instruction_text,
+            "Keep chilled products cold.",
+        )
+        self.assertEqual(
+            instructions_by_shop[second_shop.pk][
+                OrderVoiceInstruction.RECIPIENT_RIDER
+            ].instruction_text,
+            "Use the side gate.",
+        )
+        self.assertTrue(
+            instructions_by_shop[second_shop.pk][
+                OrderVoiceInstruction.RECIPIENT_RIDER
+            ].audio_file
+        )
+        for instructions in instructions_by_shop.values():
+            for instruction in instructions.values():
+                if instruction.audio_file:
+                    self.addCleanup(
+                        instruction.audio_file.storage.delete,
+                        instruction.audio_file.name,
+                    )
+
     def test_rider_instruction_is_only_shown_and_playable_by_assigned_rider(self):
         rider_user = User.objects.create_user(
             username="voice_instruction_rider",

@@ -15,6 +15,7 @@ from django.core.validators import (
     RegexValidator,
 )
 from django.db import models
+from django.utils import timezone
 
 from .private_storage import PrivateOrderAudioStorage, PrivateRiderDocumentStorage
 from .road_routing import validate_road_network_geojson
@@ -684,6 +685,18 @@ class SiteBrandingSettings(models.Model):
     support_email = models.EmailField(blank=True, default="")
     support_phone = models.CharField(max_length=40, blank=True, default="")
     support_address = models.TextField(blank=True, default="")
+    android_app_url = models.URLField(
+        max_length=1000,
+        blank=True,
+        default="",
+        help_text="Public APK download or Google Play URL. Leave empty to hide Android app links.",
+    )
+    ios_app_url = models.URLField(
+        max_length=1000,
+        blank=True,
+        default="",
+        help_text="Public App Store URL. Leave empty to hide iOS app links.",
+    )
     logo = models.FileField(upload_to="site-branding/", blank=True)
     app_icon = models.FileField(upload_to="site-branding/", blank=True)
     favicon = models.FileField(upload_to="site-branding/", blank=True)
@@ -1076,6 +1089,61 @@ class DeliverySharingSettings(models.Model):
         default=Decimal("10.00"),
         validators=[MinValueValidator(Decimal("0.00"))],
     )
+    public_rider_pay_include_pickup_distance = models.BooleanField(
+        default=True,
+        help_text=(
+            "Include the public rider's current-location-to-pickup distance "
+            "when calculating offer estimates and final rider fare."
+        ),
+    )
+    public_rider_pickup_distance_pay_percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal("100.00"),
+        validators=[
+            MinValueValidator(Decimal("0.00")),
+            MaxValueValidator(Decimal("100.00")),
+        ],
+        help_text=(
+            "Percentage of the road distance from the rider's current "
+            "location to pickup counted at the per-kilometer rate. Set from "
+            "0 to 100; ignored when pickup distance is disabled."
+        ),
+    )
+    public_rider_pickup_threshold_bonus_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Add a separate bonus for rider-to-pickup distance beyond the "
+            "configured threshold."
+        ),
+    )
+    public_rider_pickup_threshold_km = models.DecimalField(
+        max_digits=6,
+        decimal_places=3,
+        default=Decimal("2.000"),
+        validators=[
+            MinValueValidator(Decimal("0.000")),
+            MaxValueValidator(Decimal("999.999")),
+        ],
+        help_text="No threshold bonus is paid for the first configured kilometers.",
+    )
+    public_rider_pickup_threshold_rate_per_km = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+        help_text="Additional rupees per kilometer beyond the pickup threshold.",
+    )
+    public_rider_pickup_threshold_distance_method = models.CharField(
+        max_length=16,
+        choices=(
+            ("ROAD", "Local road route"),
+            ("STRAIGHT_LINE", "Straight-line distance"),
+            ("EITHER", "Road route, or straight-line when road route is unavailable"),
+        ),
+        default="EITHER",
+        help_text="Distance source used only for the additional pickup threshold bonus.",
+    )
     packer_monthly_base_salary = models.DecimalField(
         max_digits=10,
         decimal_places=2,
@@ -1317,6 +1385,14 @@ class ShopStaff(models.Model):
         ("DELIVERY", "Delivery Staff"),
         ("RIDER", "Rider"),
     ]
+    SALARY_METHOD_MONTHLY_PRORATED = "MONTHLY_PRORATED"
+    SALARY_METHOD_MONTHLY_FIXED = "MONTHLY_FIXED"
+    SALARY_METHOD_HOURLY = "HOURLY"
+    SALARY_METHOD_CHOICES = [
+        (SALARY_METHOD_MONTHLY_PRORATED, "Monthly salary prorated by duty days"),
+        (SALARY_METHOD_MONTHLY_FIXED, "Fixed monthly salary"),
+        (SALARY_METHOD_HOURLY, "Hourly pay"),
+    ]
 
     shop = models.ForeignKey(
         Shop,
@@ -1366,6 +1442,30 @@ class ShopStaff(models.Model):
         help_text="Maximum rider load volume in cubic feet. Leave blank to disable capacity checks.",
     )
     last_location = models.JSONField(default=dict, blank=True, null=True)
+    salary_method = models.CharField(
+        max_length=20,
+        choices=SALARY_METHOD_CHOICES,
+        default=SALARY_METHOD_MONTHLY_PRORATED,
+    )
+    monthly_base_salary = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    hourly_rate = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    completed_order_bonus = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+        help_text="Additional bonus per order completed by this staff member.",
+    )
 
     is_active = models.BooleanField(
         default=True
@@ -1425,6 +1525,191 @@ class ShopStaff(models.Model):
         ):
             self.verification_otp = generate_otp_code()
         super().save(*args, **kwargs)
+
+
+class StaffDutySession(models.Model):
+    staff = models.ForeignKey(
+        ShopStaff,
+        on_delete=models.CASCADE,
+        related_name="duty_sessions",
+    )
+    started_at = models.DateTimeField(default=timezone.now, db_index=True)
+    ended_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    auto_closed = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-started_at", "-pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=("staff",),
+                condition=models.Q(ended_at__isnull=True),
+                name="uniq_open_duty_session_per_staff",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(ended_at__isnull=True)
+                    | models.Q(ended_at__gte=models.F("started_at"))
+                ),
+                name="staff_duty_session_end_after_start",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=("staff", "started_at")),
+        ]
+
+
+class StaffLeaveApplication(models.Model):
+    STATUS_PENDING = "PENDING"
+    STATUS_APPROVED = "APPROVED"
+    STATUS_DECLINED = "DECLINED"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending review"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_DECLINED, "Declined"),
+    ]
+    staff = models.ForeignKey(
+        ShopStaff,
+        on_delete=models.CASCADE,
+        related_name="leave_applications",
+    )
+    start_date = models.DateField()
+    end_date = models.DateField()
+    reason = models.TextField(max_length=2000)
+    status = models.CharField(
+        max_length=12,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+        db_index=True,
+    )
+    is_paid = models.BooleanField(default=False)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_staff_leaves",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-pk"]
+
+
+class StaffResignationRequest(models.Model):
+    STATUS_PENDING = "PENDING"
+    STATUS_APPROVED = "APPROVED"
+    STATUS_DECLINED = "DECLINED"
+    STATUS_COMPLETED = "COMPLETED"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending review"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_DECLINED, "Declined"),
+        (STATUS_COMPLETED, "Completed"),
+    ]
+    staff = models.ForeignKey(
+        ShopStaff,
+        on_delete=models.CASCADE,
+        related_name="resignation_requests",
+    )
+    requested_last_working_date = models.DateField()
+    reason = models.TextField(max_length=2000)
+    status = models.CharField(
+        max_length=12,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+        db_index=True,
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_staff_resignations",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-pk"]
+
+
+class StaffPayrollRecord(models.Model):
+    STATUS_UNPAID = "UNPAID"
+    STATUS_PAID = "PAID"
+    STATUS_CHOICES = [
+        (STATUS_UNPAID, "Unpaid"),
+        (STATUS_PAID, "Paid"),
+    ]
+    staff = models.ForeignKey(
+        ShopStaff,
+        on_delete=models.CASCADE,
+        related_name="payroll_records",
+    )
+    year = models.PositiveSmallIntegerField()
+    month = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(12)],
+    )
+    salary_method = models.CharField(
+        max_length=20,
+        choices=ShopStaff.SALARY_METHOD_CHOICES,
+    )
+    duty_hours = models.DecimalField(
+        max_digits=9,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    duty_days = models.PositiveSmallIntegerField(default=0)
+    paid_leave_days = models.PositiveSmallIntegerField(default=0)
+    completed_order_count = models.PositiveIntegerField(default=0)
+    monthly_base_salary = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    hourly_rate = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    completed_order_bonus = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    gross_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
+    payment_status = models.CharField(
+        max_length=8,
+        choices=STATUS_CHOICES,
+        default=STATUS_UNPAID,
+        db_index=True,
+    )
+    paid_at = models.DateTimeField(null=True, blank=True)
+    paid_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="marked_staff_payroll_paid",
+    )
+    calculated_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-year", "-month", "staff__user__username"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=("staff", "year", "month"),
+                name="uniq_staff_payroll_month",
+            ),
+        ]
 
 
 class PublicRiderApplication(models.Model):
@@ -2521,11 +2806,24 @@ class ClientWalletTransaction(models.Model):
 
             
 class Order(models.Model):
+    SOURCE_MARKETPLACE = "MARKETPLACE"
+    SOURCE_POS = "POS"
+    SOURCE_CHOICES = [
+        (SOURCE_MARKETPLACE, "Marketplace"),
+        (SOURCE_POS, "Shop point of sale"),
+    ]
+
     order_time = models.DateTimeField(null=True, blank=True)
     order_suggested_delivery_minute = models.PositiveIntegerField(null=True, blank=True)
     order_suggested_delivery_time = models.DateTimeField(null=True, blank=True)
     order_delivered_time = models.DateTimeField(null=True, blank=True)
     order_id = models.CharField(max_length=120, unique=True)
+    order_source = models.CharField(
+        max_length=12,
+        choices=SOURCE_CHOICES,
+        default=SOURCE_MARKETPLACE,
+        db_index=True,
+    )
     is_b2b_order = models.BooleanField(default=False)
     tracking_code = models.CharField(
         max_length=6,
@@ -2552,9 +2850,18 @@ class Order(models.Model):
     payment_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     finally_received_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     user = models.CharField(max_length=150, blank=True)
+    customer_name = models.CharField(max_length=200, blank=True, default="")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_shop_orders",
+    )
     order_data = models.TextField(blank=True)
     delivery_address = models.TextField(blank=True)
     delivery_location = models.CharField(max_length=255, blank=True)
+    delivery_pincode = models.CharField(max_length=20, blank=True, default="")
     placed_location = models.JSONField(default=dict, blank=True)
     customer_live_location = models.JSONField(default=dict, blank=True)
     delivery_contact_no = models.CharField(max_length=40, blank=True)
@@ -2602,6 +2909,12 @@ class Order(models.Model):
 
 class ShopOrder(models.Model):
 
+    FULFILLMENT_DELIVERY = "DELIVERY"
+    FULFILLMENT_COUNTER = "COUNTER"
+    FULFILLMENT_CHOICES = [
+        (FULFILLMENT_DELIVERY, "Home delivery"),
+        (FULFILLMENT_COUNTER, "Customer carried from shop"),
+    ]
 
     order = models.ForeignKey(
         Order,
@@ -2613,6 +2926,12 @@ class ShopOrder(models.Model):
         Shop,
         on_delete=models.CASCADE,
         related_name="shop_orders"
+    )
+    fulfillment_type = models.CharField(
+        max_length=12,
+        choices=FULFILLMENT_CHOICES,
+        default=FULFILLMENT_DELIVERY,
+        db_index=True,
     )
     pickup_location = models.JSONField(
         default=dict,

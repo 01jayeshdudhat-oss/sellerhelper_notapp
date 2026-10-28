@@ -53,6 +53,76 @@
         </div>
     </section>
 
+    <section id="public-rider-settings" class="admin-panel-card p-4 p-lg-5 mb-4"
+             aria-labelledby="public-rider-settings-heading">
+        <div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4">
+            <div>
+                <h2 id="public-rider-settings-heading" class="h3 fw-bold mb-2">
+                    Public rider settings
+                </h2>
+                <p class="text-muted mb-0">
+                    Configure rider access, offer limits, coverage, and delivery pay.
+                    Threshold pay is an extra bonus added to the existing fare.
+                </p>
+            </div>
+            <a class="btn btn-outline-secondary align-self-lg-start"
+               href="{% url 'admin:seller_deliverysharingsettings_change' 1 %}">
+                Manage local road-network files <i class="bi bi-box-arrow-up-right ms-1"></i>
+            </a>
+        </div>
+        <form method="post" action="{% url 'admin_panel_dashboard' %}">
+            {% csrf_token %}
+            {% if public_rider_settings_form.non_field_errors %}
+                <div class="alert alert-danger" role="alert">
+                    {{ public_rider_settings_form.non_field_errors }}
+                </div>
+            {% endif %}
+            <div class="row g-3">
+                {% for field in public_rider_settings_form %}
+                    {% if field.field.widget.input_type == "checkbox" %}
+                        <div class="col-12 col-md-6">
+                            <div class="form-check h-100 p-3 border rounded-3">
+                                {{ field }}
+                                <label class="form-check-label fw-semibold"
+                                       for="{{ field.id_for_label }}">
+                                    {{ field.label }}
+                                </label>
+                                {% if field.help_text %}
+                                    <div class="form-text">{{ field.help_text }}</div>
+                                {% endif %}
+                                {% for error in field.errors %}
+                                    <div class="invalid-feedback d-block">{{ error }}</div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    {% else %}
+                        <div class="col-12 col-md-6 col-xl-4">
+                            <label class="form-label fw-semibold"
+                                   for="{{ field.id_for_label }}">
+                                {{ field.label }}
+                            </label>
+                            {{ field }}
+                            {% if field.help_text %}
+                                <div class="form-text">{{ field.help_text }}</div>
+                            {% endif %}
+                            {% for error in field.errors %}
+                                <div class="invalid-feedback d-block">{{ error }}</div>
+                            {% endfor %}
+                        </div>
+                    {% endif %}
+                {% endfor %}
+            </div>
+            <div class="d-flex flex-wrap align-items-center gap-2 mt-4">
+                <button type="submit" class="btn btn-primary btn-lg">
+                    Save public rider settings
+                </button>
+                <span class="small text-muted">
+                    Road-network uploads are managed in Django administration.
+                </span>
+            </div>
+        </form>
+    </section>
+
     <section class="mb-4" aria-labelledby="admin-platform-heading">
         <div class="mb-3">
             <h2 id="admin-platform-heading" class="h4 fw-bold mb-1">Platform operations</h2>
@@ -116,6 +186,9 @@
                     <p class="text-muted">Open the framework administration for registered models and settings.</p>
                     <a class="btn btn-outline-secondary" href="/admin/">
                         Open Django admin <i class="bi bi-box-arrow-up-right ms-1"></i>
+                    </a>
+                    <a class="btn btn-outline-primary mt-2" href="#public-rider-settings">
+                        Edit public rider settings <i class="bi bi-arrow-up ms-1"></i>
                     </a>
                 </article>
             </div>

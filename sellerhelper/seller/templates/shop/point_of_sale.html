@@ -1,0 +1,303 @@
+{% extends "base.html" %}
+
+{% block title %}Counter sale · {{ shop.name }}{% endblock %}
+
+{% block content %}
+<main class="container-fluid px-3 px-lg-4 py-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+        <div>
+            <a href="{% url 'shop_order_list' %}?shop={{ shop.id }}" class="btn btn-sm btn-outline-secondary mb-2">
+                <i class="bi bi-arrow-left me-1"></i>Shop orders
+            </a>
+            <h1 class="h2 fw-bold mb-1">{{ shop.name }} · Counter sale</h1>
+            <p class="text-muted mb-0">Record an in-store purchase or create a home-delivery order for a walk-in customer.</p>
+        </div>
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <a class="btn btn-outline-secondary"
+               href="{% url 'shop_product_qr_labels' shop.id %}"
+               target="_blank" rel="noopener">
+                <i class="bi bi-qr-code me-1"></i>Print all product QR labels
+            </a>
+            <span class="badge rounded-pill text-bg-success px-3 py-2">Stock updates when the sale is placed</span>
+        </div>
+    </div>
+
+    <div class="row g-4 align-items-start">
+        <section class="col-12 col-xl-7" aria-labelledby="products-heading">
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-body">
+                    <h2 class="h5 fw-bold">Scan product QR</h2>
+                    <p class="small text-muted">Scan a shop product label to add one unit to this sale.</p>
+                    <form method="post" id="scanQrForm" class="d-flex flex-wrap gap-2">
+                        {% csrf_token %}
+                        <input type="hidden" name="action" value="scan_item">
+                        <label class="visually-hidden" for="scanCode">Scanned product QR code</label>
+                        <input class="form-control flex-grow-1" id="scanCode" name="scan_code"
+                               placeholder="Scan QR with a connected scanner" autocomplete="off" required>
+                        <button class="btn btn-outline-success" type="submit">
+                            <i class="bi bi-qr-code-scan me-1"></i>Add scanned product
+                        </button>
+                    </form>
+                    <div class="d-flex flex-wrap align-items-center gap-2 mt-3">
+                        <button class="btn btn-sm btn-outline-primary" id="startQrCamera" type="button">
+                            <i class="bi bi-camera me-1"></i>Use camera
+                        </button>
+                        <span id="qrScanStatus" class="small text-muted" aria-live="polite"></span>
+                    </div>
+                </div>
+            </div>
+            <div class="card border-0 shadow-sm">
+                <div class="card-header bg-white py-3">
+                    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+                        <h2 id="products-heading" class="h5 fw-bold mb-0">Shop products</h2>
+                        <form method="get" class="d-flex gap-2" role="search">
+                            <label class="visually-hidden" for="productSearch">Search products</label>
+                            <input class="form-control" id="productSearch" name="q" value="{{ search }}"
+                                   placeholder="Product name or SKU" type="search">
+                            <button class="btn btn-outline-primary" type="submit">Search</button>
+                        </form>
+                    </div>
+                </div>
+                <div class="list-group list-group-flush">
+                    {% for assignment in product_page %}
+                        <article class="list-group-item py-3">
+                            <div class="d-flex justify-content-between align-items-center gap-3">
+                                <div class="min-w-0">
+                                    <h3 class="h6 fw-semibold mb-1">{{ assignment.product.product_name }}</h3>
+                                    <div class="small text-muted">
+                                        {% if assignment.product.sku %}SKU {{ assignment.product.sku }} · {% endif %}
+                                        {{ assignment.product.unit|default:"unit" }} ·
+                                        {{ assignment.stock|floatformat:-4 }} available
+                                    </div>
+                                    <strong class="d-block mt-1">₹{{ assignment.effective_price|floatformat:2 }}</strong>
+                                </div>
+                                <div class="d-flex flex-wrap align-items-center gap-2 flex-shrink-0">
+                                    <form method="post" class="d-flex align-items-center gap-2">
+                                        {% csrf_token %}
+                                        <input type="hidden" name="action" value="add_item">
+                                        <input type="hidden" name="product_shop_id" value="{{ assignment.id }}">
+                                        <label class="visually-hidden" for="add-quantity-{{ assignment.id }}">Quantity to add</label>
+                                        <input class="form-control form-control-sm" id="add-quantity-{{ assignment.id }}"
+                                               name="quantity" type="number" min="1" max="{{ assignment.stock|floatformat:0 }}"
+                                               value="1" inputmode="numeric" style="width: 5.25rem">
+                                        <button class="btn btn-sm btn-success" type="submit" aria-label="Add {{ assignment.product.product_name }}">
+                                            <i class="bi bi-plus-lg me-1"></i>Add
+                                        </button>
+                                    </form>
+                                    <a class="btn btn-sm btn-outline-secondary"
+                                       href="{% url 'shop_product_qr_label' shop.id assignment.id %}"
+                                       target="_blank" rel="noopener">
+                                        <i class="bi bi-qr-code me-1"></i>Print QR
+                                    </a>
+                                </div>
+                            </div>
+                        </article>
+                    {% empty %}
+                        <div class="list-group-item py-5 text-center text-muted">
+                            {% if search %}No in-stock products match “{{ search }}”.{% else %}No active products are currently in stock.{% endif %}
+                        </div>
+                    {% endfor %}
+                </div>
+                {% if product_page.has_other_pages %}
+                    <div class="card-footer bg-white d-flex justify-content-between align-items-center">
+                        <span class="small text-muted">Page {{ product_page.number }} of {{ product_page.paginator.num_pages }}</span>
+                        <div class="d-flex gap-2">
+                            {% if product_page.has_previous %}
+                                <a class="btn btn-sm btn-outline-secondary" href="?q={{ search|urlencode }}&amp;page={{ product_page.previous_page_number }}">Previous</a>
+                            {% endif %}
+                            {% if product_page.has_next %}
+                                <a class="btn btn-sm btn-outline-secondary" href="?q={{ search|urlencode }}&amp;page={{ product_page.next_page_number }}">Next</a>
+                            {% endif %}
+                        </div>
+                    </div>
+                {% endif %}
+            </div>
+        </section>
+
+        <aside class="col-12 col-xl-5" aria-labelledby="sale-heading">
+            <div class="card border-0 shadow-sm">
+                <div class="card-header bg-white py-3">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h2 id="sale-heading" class="h5 fw-bold mb-0">Current sale</h2>
+                        <span class="badge text-bg-primary">{{ cart_lines|length }} product{{ cart_lines|length|pluralize }}</span>
+                    </div>
+                </div>
+                <div class="card-body">
+                    {% for line in cart_lines %}
+                        <div class="d-flex justify-content-between align-items-center gap-2 border-bottom py-3">
+                            <div class="min-w-0">
+                                <strong class="d-block">{{ line.assignment.product.product_name }}</strong>
+                                <span class="small text-muted">₹{{ line.price|floatformat:2 }} each</span>
+                            </div>
+                            <div class="d-flex align-items-center gap-1">
+                                <form method="post">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="action" value="set_quantity">
+                                    <input type="hidden" name="product_shop_id" value="{{ line.assignment.id }}">
+                                    <input type="hidden" name="quantity" value="{{ line.quantity|add:"-1" }}">
+                                    <button class="btn btn-sm btn-outline-secondary" type="submit" aria-label="Decrease quantity">−</button>
+                                </form>
+                                <span class="px-2 fw-semibold">{{ line.quantity }}</span>
+                                <form method="post">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="action" value="add_item">
+                                    <input type="hidden" name="product_shop_id" value="{{ line.assignment.id }}">
+                                    <input type="hidden" name="quantity" value="1">
+                                    <button class="btn btn-sm btn-outline-secondary" type="submit" aria-label="Increase quantity">+</button>
+                                </form>
+                                <strong class="ms-2 text-nowrap">₹{{ line.total|floatformat:2 }}</strong>
+                                <form method="post" class="ms-1">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="action" value="remove_item">
+                                    <input type="hidden" name="product_shop_id" value="{{ line.assignment.id }}">
+                                    <button class="btn btn-sm btn-outline-danger" type="submit" aria-label="Remove {{ line.assignment.product.product_name }}">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                    {% empty %}
+                        <div class="text-center text-muted py-4">
+                            <i class="bi bi-cart3 fs-2 d-block mb-2"></i>
+                            Add products to start a sale.
+                        </div>
+                    {% endfor %}
+
+                    <div class="d-flex justify-content-between align-items-center py-3">
+                        <span class="fw-semibold">Items subtotal</span>
+                        <strong class="fs-5">₹{{ cart_subtotal|floatformat:2 }}</strong>
+                    </div>
+                    <div id="counterTotalSummary" class="d-flex justify-content-between align-items-center border-top pt-3">
+                        <span class="fw-bold">Total to collect</span>
+                        <strong class="fs-4 text-success">₹{{ counter_total|floatformat:2 }}</strong>
+                    </div>
+                    <div id="deliveryTotalSummary" class="d-flex justify-content-between align-items-center border-top pt-3" hidden>
+                        <span class="fw-bold">Total to collect, including delivery</span>
+                        <strong class="fs-4 text-success">₹{{ delivery_total|floatformat:2 }}</strong>
+                    </div>
+                    <p class="small text-muted mt-2 mb-0">Totals include applicable GST and the shop's home-delivery fee.</p>
+                </div>
+                <div class="card-body border-top">
+                    <form method="post" id="placeSaleForm">
+                        {% csrf_token %}
+                        <input type="hidden" name="action" value="place_sale">
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold" for="customerName">Customer name <span class="text-muted fw-normal">(optional for carry-out)</span></label>
+                            <input class="form-control" id="customerName" name="customer_name" maxlength="200" autocomplete="name">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold" for="customerPhone">Customer phone <span class="text-muted fw-normal">(optional for carry-out)</span></label>
+                            <input class="form-control" id="customerPhone" name="customer_phone" maxlength="40"
+                                   type="tel" inputmode="tel" autocomplete="tel">
+                        </div>
+
+                        <fieldset class="mb-3">
+                            <legend class="form-label fw-semibold">How will the customer receive the products?</legend>
+                            {% for value, label in fulfillment_choices %}
+                                <label class="form-check border rounded p-3 mb-2">
+                                    <input class="form-check-input ms-0 me-2" type="radio" name="fulfillment_type"
+                                           value="{{ value }}" {% if value == "COUNTER" %}checked{% endif %}>
+                                    <span class="form-check-label fw-semibold">{{ label }}</span>
+                                    <span class="d-block small text-muted ms-4">
+                                        {% if value == "COUNTER" %}Customer takes the purchase now; no rider is assigned.{% else %}Create a shop order for delivery to the customer's location.{% endif %}
+                                    </span>
+                                </label>
+                            {% endfor %}
+                        </fieldset>
+
+                        <div id="deliveryFields" class="border rounded p-3 mb-3" hidden>
+                            <h3 class="h6 fw-bold">Home-delivery details</h3>
+                            <p class="small text-muted">Enter the customer's address and the map-pin coordinates they provide. The order will enter the shop's normal rider assignment flow.</p>
+                            <div class="mb-3">
+                                <label class="form-label" for="deliveryAddress">Delivery address</label>
+                                <textarea class="form-control" id="deliveryAddress" name="delivery_address" rows="2" maxlength="2000"></textarea>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label" for="deliveryPincode">Delivery PIN <span class="text-muted">(if available)</span></label>
+                                <input class="form-control" id="deliveryPincode" name="delivery_pincode" maxlength="20"
+                                       inputmode="numeric" autocomplete="postal-code">
+                            </div>
+                            <div class="row g-2">
+                                <div class="col-6">
+                                    <label class="form-label" for="deliveryLatitude">Map latitude</label>
+                                    <input class="form-control" id="deliveryLatitude" name="delivery_latitude" type="number"
+                                           min="-90" max="90" step="any" inputmode="decimal">
+                                </div>
+                                <div class="col-6">
+                                    <label class="form-label" for="deliveryLongitude">Map longitude</label>
+                                    <input class="form-control" id="deliveryLongitude" name="delivery_longitude" type="number"
+                                           min="-180" max="180" step="any" inputmode="decimal">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold" for="paymentType">Payment received by</label>
+                            <select class="form-select" id="paymentType" name="payment_type" required>
+                                <option value="CASH">Cash</option>
+                                <option value="UPI">UPI</option>
+                                <option value="CARD">Card</option>
+                                <option value="OTHER">Other</option>
+                            </select>
+                            <div class="form-text">Payment will be recorded as received.</div>
+                        </div>
+
+                        <button class="btn btn-primary btn-lg w-100" type="submit" {% if not cart_lines %}disabled{% endif %}>
+                            <i class="bi bi-check2-circle me-1"></i>Place sale
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </aside>
+    </div>
+</main>
+<script>
+(() => {
+    const startQrCamera = document.getElementById("startQrCamera");
+    const qrScanStatus = document.getElementById("qrScanStatus");
+    const scanForm = document.getElementById("scanQrForm");
+    const scanCode = document.getElementById("scanCode");
+
+    startQrCamera.addEventListener("click", () => {
+        qrScanStatus.textContent = "Opening camera…";
+        document.dispatchEvent(new CustomEvent("sellerhelper:open-qr-scanner", {
+            detail: { purpose: "counter-sale-product" }
+        }));
+    });
+
+    document.addEventListener("sellerhelper:qr-scanned", (event) => {
+        if (event.detail?.purpose !== "counter-sale-product") return;
+        const value = typeof event.detail.value === "string" ? event.detail.value.trim() : "";
+        if (!value) {
+            qrScanStatus.textContent = "No QR value was received. Try scanning again.";
+            return;
+        }
+        document.dispatchEvent(new Event("sellerhelper:qr-scan-close"));
+        scanCode.value = value;
+        qrScanStatus.textContent = "QR scanned. Adding product to the sale…";
+        scanForm.requestSubmit();
+    });
+
+    const fulfillmentOptions = document.querySelectorAll('input[name="fulfillment_type"]');
+    const deliveryFields = document.getElementById("deliveryFields");
+    const deliveryInputs = deliveryFields.querySelectorAll("input, textarea");
+    const counterTotalSummary = document.getElementById("counterTotalSummary");
+    const deliveryTotalSummary = document.getElementById("deliveryTotalSummary");
+    const customerName = document.getElementById("customerName");
+    const customerPhone = document.getElementById("customerPhone");
+    const updateDeliveryFields = () => {
+        const deliverySelected = document.querySelector('input[name="fulfillment_type"]:checked')?.value === "DELIVERY";
+        deliveryFields.hidden = !deliverySelected;
+        counterTotalSummary.hidden = deliverySelected;
+        deliveryTotalSummary.hidden = !deliverySelected;
+        deliveryInputs.forEach((input) => {
+            input.required = deliverySelected;
+        });
+        customerName.required = deliverySelected;
+        customerPhone.required = deliverySelected;
+    };
+    fulfillmentOptions.forEach((option) => option.addEventListener("change", updateDeliveryFields));
+    updateDeliveryFields();
+})();
+</script>
+{% endblock %}

@@ -243,10 +243,10 @@
                             </h5>
 
                             <a
-                                href="{% url 'delivery_address_list' %}"
+                                href="{% url 'delivery_address_add' %}?next=checkout"
                                 class="btn btn-sm btn-outline-primary"
                             >
-                                Manage
+                                Add address
                             </a>
 
                         </div>
@@ -267,7 +267,7 @@
                                         <small class="text-muted">PIN: {{ selected_address.pincode }}</small>
                                     {% endif %}
                                     {% if selected_address.state_code %}
-                                        <small class="text-muted ms-2">State: {{ selected_address.state_code }}</small>
+                                        <small class="text-muted ms-2">State: {{ selected_address.get_state_code_display }}</small>
                                     {% endif %}
                                 </div>
                             </div>
@@ -292,7 +292,7 @@
                                                     <small class="text-muted">PIN: {{ address.pincode }}</small>
                                                 {% endif %}
                                                 {% if address.state_code %}
-                                                    <small class="text-muted ms-2">State: {{ address.state_code }}</small>
+                                                    <small class="text-muted ms-2">State: {{ address.get_state_code_display }}</small>
                                                 {% endif %}
                                             </div>
                                         </div>
@@ -315,7 +315,7 @@
                                             <small class="text-muted">PIN: {{ address.pincode }}</small>
                                         {% endif %}
                                         {% if address.state_code %}
-                                            <small class="text-muted ms-2">State: {{ address.state_code }}</small>
+                                            <small class="text-muted ms-2">State: {{ address.get_state_code_display }}</small>
                                         {% endif %}
                                     </div>
                                 </div>
@@ -324,7 +324,7 @@
                         {% else %}
                         <div class="alert alert-warning">
                             No delivery address found.
-                            <a href="{% url 'delivery_address_list' %}">
+                            <a href="{% url 'delivery_address_add' %}?next=checkout">
                                 Add an address
                             </a>
                         </div>
@@ -407,77 +407,115 @@
 
                 <details class="card border-0 checkout-card checkout-collapsible mt-3">
                     <summary>
-                        Order instructions
-                        <span class="small fw-normal text-muted ms-2">Optional · separate note or recording for each recipient</span>
+                        Shop-wise order instructions
+                        <span class="small fw-normal text-muted ms-2">Optional · select each shop to add its instruction</span>
                     </summary>
                     <div class="checkout-collapsible-body">
                         <p class="small text-muted">
-                            Add separate instructions for the shop team and the assigned rider (shop staff or public rider). Both instructions apply to the selected shop order. Audio is available until one hour after delivery.
+                            Choose a shop, record its shop-team instruction, then select another shop if needed. One rider instruction applies to deliveries for all shops. Audio is available until one hour after delivery.
                         </p>
-                        <label class="form-label" for="orderInstructionShop">Shop order</label>
-                        <select class="form-select mb-3" id="orderInstructionShop" name="order_instruction_shop">
-                            <option value="">Select a shop</option>
-                            {% for shop in checkout_shops %}
-                                <option value="{{ shop.id }}"
-                                        {% if order_instruction_drafts.SHOP.shop_id == shop.id or order_instruction_drafts.RIDER.shop_id == shop.id %}selected{% endif %}>
-                                    {{ shop.name }}
+                        <label class="form-label fw-semibold" for="checkoutInstructionShop">Select shop</label>
+                        <select id="checkoutInstructionShop" class="form-select mb-3">
+                            {% for shop_instruction in checkout_shop_instructions %}
+                                <option value="{{ shop_instruction.shop.id }}">
+                                    {{ shop_instruction.shop.name }}
                                 </option>
                             {% endfor %}
                         </select>
-                        <section class="border rounded p-3 mb-3" data-order-instruction-recorder>
-                            <h6>Shop team instruction</h6>
-                            <label class="form-label" for="orderInstructionTextSHOP">Written instruction (optional)</label>
-                            <textarea class="form-control mb-3" id="orderInstructionTextSHOP"
-                                      name="order_instruction_text_shop" rows="2" maxlength="1000"
-                                      placeholder="For example: Please pack the vegetables separately.">{{ order_instruction_drafts.SHOP.instruction_text|default:"" }}</textarea>
-                            <div class="d-flex flex-wrap gap-2 align-items-center">
-                                <button class="btn btn-outline-primary" type="button" data-start-instruction-recording>
-                                    <i class="bi bi-mic me-1"></i>Record shop instruction
-                                </button>
-                                <button class="btn btn-outline-danger" type="button" data-stop-instruction-recording disabled>
-                                    Stop recording
-                                </button>
-                                <label class="btn btn-outline-secondary mb-0" for="orderInstructionAudioSHOP">Choose audio file</label>
-                                <button class="btn btn-link text-danger" type="button" data-clear-instruction-audio>Clear recording</button>
-                            </div>
-                            <input class="visually-hidden" type="file" id="orderInstructionAudioSHOP"
-                                   name="order_instruction_audio_shop" accept="audio/*">
-                            <input type="hidden" name="clear_order_instruction_audio_shop" value="0"
-                                   data-clear-instruction-audio-value>
-                            {% if order_instruction_drafts.SHOP.audio_file %}
-                                <div class="small text-success mt-2" data-instruction-recording-status>Voice recording ready to send with this order.</div>
-                            {% else %}
-                                <div class="small text-muted mt-2" data-instruction-recording-status aria-live="polite">
-                                    Recording limit: 2 minutes and 10 MB. Microphone access requires HTTPS.
+                        {% for shop_instruction in checkout_shop_instructions %}
+                            <section class="border rounded p-3 mb-3"
+                                     data-shop-instruction-panel
+                                     data-shop-id="{{ shop_instruction.shop.id }}"
+                                     {% if not forloop.first %}hidden{% endif %}>
+                                <h6><i class="bi bi-shop me-1"></i>{{ shop_instruction.shop.name }} instruction</h6>
+                                <label class="form-label"
+                                       for="orderInstructionTextSHOP{{ shop_instruction.shop.id }}">
+                                    Written instruction (optional)
+                                </label>
+                                <textarea class="form-control mb-3"
+                                          id="orderInstructionTextSHOP{{ shop_instruction.shop.id }}"
+                                          name="order_instruction_text_shop_{{ shop_instruction.shop.id }}"
+                                          rows="2" maxlength="1000"
+                                          placeholder="For example: Please pack the vegetables separately.">{{ shop_instruction.shop_instruction.instruction_text|default:"" }}</textarea>
+                                <div class="d-flex flex-wrap gap-2 align-items-center">
+                                    <button class="btn btn-outline-primary" type="button" data-start-instruction-recording>
+                                        <i class="bi bi-mic me-1"></i>Record shop instruction
+                                    </button>
+                                    <button class="btn btn-outline-danger" type="button" data-stop-instruction-recording disabled>Stop recording</button>
+                                    <label class="btn btn-outline-secondary mb-0"
+                                           for="orderInstructionAudioSHOP{{ shop_instruction.shop.id }}">Choose audio file</label>
+                                    <button class="btn btn-link text-danger" type="button" data-clear-instruction-audio>Clear recording</button>
                                 </div>
+                                <input class="visually-hidden" type="file"
+                                       id="orderInstructionAudioSHOP{{ shop_instruction.shop.id }}"
+                                       name="order_instruction_audio_shop_{{ shop_instruction.shop.id }}" accept="audio/*">
+                                <input type="hidden"
+                                       name="clear_order_instruction_audio_shop_{{ shop_instruction.shop.id }}"
+                                       value="0" data-clear-instruction-audio-value>
+                                {% if shop_instruction.shop_instruction.audio_file %}
+                                    <div class="small text-success mt-2" data-instruction-recording-status>
+                                        Voice recording ready to send with this order.
+                                    </div>
+                                {% else %}
+                                    <div class="small text-muted mt-2" data-instruction-recording-status aria-live="polite">
+                                        Recording limit: 2 minutes and 10 MB. Microphone access requires HTTPS.
+                                    </div>
+                                {% endif %}
+                                <audio class="w-100 mt-2" data-instruction-audio-preview controls hidden></audio>
+                            </section>
+                        {% endfor %}
+                        <div class="border-top pt-3" aria-live="polite">
+                            <h6 class="fw-semibold">Shop instruction records</h6>
+                            <div data-shop-instruction-record-list class="d-grid gap-2">
+                                {% for shop_instruction in checkout_shop_instructions %}
+                                    <div class="border rounded px-3 py-2"
+                                         data-shop-instruction-record
+                                         data-shop-id="{{ shop_instruction.shop.id }}"
+                                         data-saved-text="{% if shop_instruction.shop_instruction.instruction_text %}true{% else %}false{% endif %}"
+                                         data-saved-audio="{% if shop_instruction.shop_instruction.audio_file %}true{% else %}false{% endif %}"
+                                         {% if not shop_instruction.shop_instruction.instruction_text and not shop_instruction.shop_instruction.audio_file %}hidden{% endif %}>
+                                        <div class="fw-semibold">{{ shop_instruction.shop.name }}</div>
+                                        <div class="small text-muted" data-shop-instruction-record-status>
+                                            {% if shop_instruction.shop_instruction.instruction_text %}Written note{% endif %}{% if shop_instruction.shop_instruction.instruction_text and shop_instruction.shop_instruction.audio_file %} · {% endif %}{% if shop_instruction.shop_instruction.audio_file %}Voice recording{% endif %}
+                                        </div>
+                                        <div class="small mt-1 text-break" data-shop-instruction-record-text>{{ shop_instruction.shop_instruction.instruction_text|default:"" }}</div>
+                                    </div>
+                                {% endfor %}
+                            </div>
+                            {% if not checkout_shop_instructions %}
+                                <div class="small text-muted">No shop instructions are needed for this cart.</div>
                             {% endif %}
-                            <audio class="w-100 mt-2" data-instruction-audio-preview controls hidden></audio>
-                        </section>
-                        <section class="border rounded p-3" data-order-instruction-recorder>
-                            <h6>Assigned rider instruction</h6>
-                            <label class="form-label" for="orderInstructionTextRIDER">Written instruction (optional)</label>
-                            <textarea class="form-control mb-3" id="orderInstructionTextRIDER"
-                                      name="order_instruction_text_rider" rows="2" maxlength="1000"
-                                      placeholder="For example: Please call when you arrive.">{{ order_instruction_drafts.RIDER.instruction_text|default:"" }}</textarea>
+                        </div>
+                        <section class="border rounded p-3 mt-3" data-order-instruction-recorder data-shared-rider-instruction>
+                            <h6>One instruction for all delivery riders</h6>
+                            <label class="form-label" for="orderInstructionTextRIDER">
+                                Written instruction (optional)
+                            </label>
+                            <textarea class="form-control mb-3"
+                                      id="orderInstructionTextRIDER"
+                                      name="shared_rider_instruction_text"
+                                      rows="2" maxlength="1000"
+                                      placeholder="For example: Please call when you arrive.">{{ checkout_rider_instruction.instruction_text|default:"" }}</textarea>
                             <div class="d-flex flex-wrap gap-2 align-items-center">
                                 <button class="btn btn-outline-primary" type="button" data-start-instruction-recording>
                                     <i class="bi bi-mic me-1"></i>Record rider instruction
                                 </button>
-                                <button class="btn btn-outline-danger" type="button" data-stop-instruction-recording disabled>
-                                    Stop recording
-                                </button>
+                                <button class="btn btn-outline-danger" type="button" data-stop-instruction-recording disabled>Stop recording</button>
                                 <label class="btn btn-outline-secondary mb-0" for="orderInstructionAudioRIDER">Choose audio file</label>
                                 <button class="btn btn-link text-danger" type="button" data-clear-instruction-audio>Clear recording</button>
                             </div>
                             <input class="visually-hidden" type="file" id="orderInstructionAudioRIDER"
-                                   name="order_instruction_audio_rider" accept="audio/*">
-                            <input type="hidden" name="clear_order_instruction_audio_rider" value="0"
+                                   name="shared_rider_instruction_audio" accept="audio/*"
+                                   data-shared-rider-audio>
+                            <input type="hidden" name="clear_shared_rider_instruction_audio" value="0"
                                    data-clear-instruction-audio-value>
-                            {% if order_instruction_drafts.RIDER.audio_file %}
-                                <div class="small text-success mt-2" data-instruction-recording-status>Voice recording ready to send with this order.</div>
+                            {% if checkout_rider_instruction.audio_file %}
+                                <div class="small text-success mt-2" data-instruction-recording-status>
+                                    Voice recording ready to send with this order.
+                                </div>
                             {% else %}
                                 <div class="small text-muted mt-2" data-instruction-recording-status aria-live="polite">
-                                    Recording limit: 2 minutes and 10 MB. Microphone access requires HTTPS.
+                                    This single instruction is shared with the rider assigned to each shop delivery.
                                 </div>
                             {% endif %}
                             <audio class="w-100 mt-2" data-instruction-audio-preview controls hidden></audio>
@@ -683,6 +721,44 @@
 
 {{ checkout_shop_summary|json_script:"checkout-shop-summary" }}
 
+{% if not addresses %}
+<div class="modal fade" id="noDeliveryAddressModal" tabindex="-1"
+     aria-labelledby="noDeliveryAddressHeading" aria-hidden="true"
+     data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow">
+            <div class="modal-header">
+                <h2 class="modal-title fs-5 fw-bold" id="noDeliveryAddressHeading">
+                    Choose a delivery location
+                </h2>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted">
+                    Share your current location for this delivery, or add a saved delivery address.
+                    Your new address will be set as the default.
+                </p>
+                <form method="post" action="{% url 'delivery_address_use_current_location' %}"
+                      id="useCurrentLocationForm">
+                    {% csrf_token %}
+                    <input type="hidden" name="latitude">
+                    <input type="hidden" name="longitude">
+                    <input type="hidden" name="state_name">
+                    <button class="btn btn-success w-100" type="button" data-use-current-location>
+                        <i class="bi bi-geo-alt me-1" aria-hidden="true"></i>Use my current location
+                    </button>
+                    <div class="small text-danger mt-2" data-current-location-error role="alert" hidden></div>
+                </form>
+                <div class="text-center text-muted small my-3">or</div>
+                <a class="btn btn-outline-primary w-100"
+                   href="{% url 'delivery_address_add' %}?next=checkout">
+                    <i class="bi bi-house-add me-1" aria-hidden="true"></i>Add delivery address
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <div class="modal fade" id="orderConfirmationModal" tabindex="-1"
      aria-labelledby="orderConfirmationTitle" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
@@ -728,6 +804,87 @@
 {% endblock %}
 
 {% block extra_js %}
+{% if not addresses %}
+<script>
+(() => {
+    const modal = document.getElementById("noDeliveryAddressModal");
+    const locationForm = document.getElementById("useCurrentLocationForm");
+    const locationButton = locationForm?.querySelector("[data-use-current-location]");
+    const error = locationForm?.querySelector("[data-current-location-error]");
+    if (!modal || !locationForm || !locationButton || !window.bootstrap?.Modal) return;
+
+    window.bootstrap.Modal.getOrCreateInstance(modal, {
+        backdrop: "static",
+        keyboard: false
+    }).show();
+
+    locationButton.addEventListener("click", () => {
+        error.hidden = true;
+        if (!navigator.geolocation) {
+            error.textContent = "Location access is not available in this browser. Add a delivery address instead.";
+            error.hidden = false;
+            return;
+        }
+        locationButton.disabled = true;
+        locationButton.textContent = "Finding your location…";
+        navigator.geolocation.getCurrentPosition(async (position) => {
+            locationForm.elements.latitude.value = String(position.coords.latitude);
+            locationForm.elements.longitude.value = String(position.coords.longitude);
+            try {
+                const reverseGeocodeUrl = new URL(
+                    "https://nominatim.openstreetmap.org/reverse"
+                );
+                reverseGeocodeUrl.search = new URLSearchParams({
+                    format: "jsonv2",
+                    lat: String(position.coords.latitude),
+                    lon: String(position.coords.longitude),
+                    zoom: "18",
+                    addressdetails: "1"
+                });
+                const geocodeResponse = await fetch(reverseGeocodeUrl, {
+                    headers: {"Accept": "application/json"}
+                });
+                if (!geocodeResponse.ok) {
+                    throw new Error("Could not look up your delivery state. Add an address and select its state.");
+                }
+                const geocodeResult = await geocodeResponse.json();
+                const stateName = geocodeResult?.address?.state?.trim();
+                if (!stateName) {
+                    throw new Error("Could not determine your delivery state from this location. Add an address and select its state.");
+                }
+                locationForm.elements.state_name.value = stateName;
+
+                const response = await fetch(locationForm.action, {
+                    method: "POST",
+                    body: new FormData(locationForm),
+                    credentials: "same-origin",
+                    headers: {"X-Requested-With": "XMLHttpRequest"}
+                });
+                const result = await response.json();
+                if (!response.ok || !result.success || !result.redirect_url) {
+                    throw new Error(result.message || "Could not save your current location.");
+                }
+                window.location.assign(result.redirect_url);
+            } catch (requestError) {
+                error.textContent = requestError instanceof Error
+                    ? requestError.message
+                    : "Could not save your current location. Add a delivery address instead.";
+                error.hidden = false;
+                locationButton.disabled = false;
+                locationButton.innerHTML = '<i class="bi bi-geo-alt me-1" aria-hidden="true"></i>Use my current location';
+            }
+        }, (geoError) => {
+            locationButton.disabled = false;
+            locationButton.innerHTML = '<i class="bi bi-geo-alt me-1" aria-hidden="true"></i>Use my current location';
+            error.textContent = geoError.code === geoError.PERMISSION_DENIED
+                ? "Location permission was denied. Allow location access or add a delivery address."
+                : "Could not determine your location. Try again or add a delivery address.";
+            error.hidden = false;
+        }, {enableHighAccuracy: true, timeout: 15000, maximumAge: 0});
+    });
+})();
+</script>
+{% endif %}
 <script>
 (() => {
     const maximumBytes = 10 * 1024 * 1024;
@@ -834,6 +991,85 @@
             clearValue.value = "1";
             status.textContent = "Recording cleared.";
         });
+    });
+})();
+</script>
+<script>
+(() => {
+    const checkoutForm = document.getElementById("checkoutForm");
+    const shopSelector = document.getElementById("checkoutInstructionShop");
+    const shopPanels = Array.from(document.querySelectorAll("[data-shop-instruction-panel]"));
+    const shopRecords = Array.from(document.querySelectorAll("[data-shop-instruction-record]"));
+    const sharedRiderText = document.getElementById("orderInstructionTextRIDER");
+    const sharedRiderAudio = document.querySelector("[data-shared-rider-audio]");
+    const sharedRiderClear = document.querySelector(
+        "[data-shared-rider-instruction] [data-clear-instruction-audio-value]"
+    );
+
+    const selectShopPanel = () => {
+        const selectedShopId = shopSelector?.value;
+        shopPanels.forEach((panel) => {
+            panel.hidden = panel.dataset.shopId !== selectedShopId;
+        });
+    };
+    shopSelector?.addEventListener("change", selectShopPanel);
+    selectShopPanel();
+
+    shopPanels.forEach((panel) => {
+        const shopId = panel.dataset.shopId;
+        const textInput = panel.querySelector("textarea");
+        const audioInput = panel.querySelector('input[type="file"]');
+        const clearInput = panel.querySelector("[data-clear-instruction-audio-value]");
+        const clearButton = panel.querySelector("[data-clear-instruction-audio]");
+        const record = shopRecords.find((entry) => entry.dataset.shopId === shopId);
+        const recordStatus = record?.querySelector("[data-shop-instruction-record-status]");
+        const recordText = record?.querySelector("[data-shop-instruction-record-text]");
+        if (!textInput || !audioInput || !record || !recordStatus || !recordText) return;
+
+        const updateRecord = () => {
+            const hasText = Boolean(textInput.value.trim());
+            const selectedAudio = audioInput.files?.[0];
+            const hasNewAudio = Boolean(selectedAudio && selectedAudio.size <= 10 * 1024 * 1024);
+            const hasSavedAudio = record.dataset.savedAudio === "true"
+                && clearInput?.value !== "1";
+            const hasAudio = hasNewAudio || hasSavedAudio;
+            record.hidden = !hasText && !hasAudio;
+            recordStatus.textContent = [
+                hasText ? "Written note" : "",
+                hasAudio ? "Voice recording" : ""
+            ].filter(Boolean).join(" · ");
+            recordText.textContent = textInput.value.trim();
+        };
+        textInput.addEventListener("input", updateRecord);
+        audioInput.addEventListener("change", updateRecord);
+        clearButton?.addEventListener("click", () => {
+            record.dataset.savedAudio = "false";
+            updateRecord();
+        });
+        updateRecord();
+    });
+
+    checkoutForm?.addEventListener("formdata", (event) => {
+        if (!shopSelector || !sharedRiderText || !sharedRiderClear) return;
+        for (const option of shopSelector.options) {
+            const shopId = option.value;
+            event.formData.set(
+                `order_instruction_text_rider_${shopId}`,
+                sharedRiderText.value
+            );
+            event.formData.set(
+                `clear_order_instruction_audio_rider_${shopId}`,
+                sharedRiderClear.value
+            );
+            const audio = sharedRiderAudio?.files?.[0];
+            if (audio) {
+                event.formData.set(
+                    `order_instruction_audio_rider_${shopId}`,
+                    audio,
+                    audio.name
+                );
+            }
+        }
     });
 })();
 </script>

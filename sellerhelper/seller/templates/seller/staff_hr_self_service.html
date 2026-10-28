@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+
+{% block title %}Duty, leave &amp; resignation · {{ staff.shop.name }}{% endblock %}
+
+{% block content %}
+<main class="container py-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+        <div>
+            <a href="{% url 'staff_dashboard' %}" class="btn btn-sm btn-outline-secondary mb-2">
+                <i class="bi bi-arrow-left me-1"></i>Staff dashboard
+            </a>
+            <h1 class="h2 fw-bold mb-1">Duty &amp; HR requests</h1>
+            <p class="text-muted mb-0">{{ staff.shop.name }} · {{ staff.get_role_display }}</p>
+        </div>
+        <div class="d-flex flex-wrap gap-2">
+            <span class="badge rounded-pill {% if online %}text-bg-success{% else %}text-bg-secondary{% endif %} align-self-start">
+                {% if online %}Online{% else %}Offline{% endif %}
+            </span>
+            <span class="badge rounded-pill {% if duty_summary.open_session %}text-bg-primary{% else %}text-bg-light border text-dark{% endif %} align-self-start">
+                {% if duty_summary.open_session %}On duty{% else %}Off duty{% endif %}
+            </span>
+        </div>
+    </div>
+
+    <section class="card border-0 shadow-sm mb-4" aria-labelledby="duty-heading">
+        <div class="card-body p-4">
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+                <div>
+                    <h2 id="duty-heading" class="h4 fw-bold mb-1">Duty time this month</h2>
+                    <p class="text-muted mb-0">
+                        {{ duty_summary.duty_hours|floatformat:2 }} hours ·
+                        {{ duty_summary.duty_days }} duty days
+                    </p>
+                    {% if duty_summary.open_session %}
+                        <div class="small text-primary mt-2">
+                            Clocked in {{ duty_summary.open_session.started_at|date:"d M Y, h:i A" }}.
+                            Sessions automatically close after 16 hours.
+                        </div>
+                    {% endif %}
+                </div>
+                <form method="post" action="{% url 'staff_duty_clock' staff.id %}">
+                    {% csrf_token %}
+                    {% if duty_summary.open_session %}
+                        <input type="hidden" name="action" value="clock_out">
+                        <button class="btn btn-lg btn-outline-danger" type="submit">
+                            <i class="bi bi-stop-circle me-1"></i>Clock out
+                        </button>
+                    {% else %}
+                        <input type="hidden" name="action" value="clock_in">
+                        <button class="btn btn-lg btn-primary" type="submit">
+                            <i class="bi bi-play-circle me-1"></i>Clock in
+                        </button>
+                    {% endif %}
+                </form>
+            </div>
+        </div>
+    </section>
+
+    <section class="row g-4 mb-4">
+        <div class="col-12 col-lg-6">
+            <div class="card border-0 shadow-sm h-100">
+                <div class="card-body p-4">
+                    <h2 class="h4 fw-bold">Apply for leave</h2>
+                    <p class="text-muted">Your shop owner reviews the dates and decides whether approved leave is paid or unpaid.</p>
+                    <form method="post">
+                        {% csrf_token %}
+                        <input type="hidden" name="action" value="apply_leave">
+                        {% for field in leave_form %}
+                            <div class="mb-3">
+                                <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                                {{ field }}
+                                {% for error in field.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+                            </div>
+                        {% endfor %}
+                        {% for error in leave_form.non_field_errors %}<div class="alert alert-danger">{{ error }}</div>{% endfor %}
+                        <button class="btn btn-outline-primary" type="submit">Submit leave application</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-lg-6">
+            <div class="card border-0 shadow-sm h-100">
+                <div class="card-body p-4">
+                    <h2 class="h4 fw-bold">Submit resignation</h2>
+                    <div class="alert alert-warning small">
+                        The requested last working day must be at least 15 calendar days after you submit.
+                        The request requires owner review; approved access ends after the approved last day.
+                    </div>
+                    {% if resignation_requests %}
+                        <div class="mb-3">
+                            {% for resignation in resignation_requests %}
+                                <div class="border rounded p-2 mb-2">
+                                    <strong>{{ resignation.get_status_display }}</strong>
+                                    · Requested last day {{ resignation.requested_last_working_date|date:"d M Y" }}
+                                </div>
+                            {% endfor %}
+                        </div>
+                    {% endif %}
+                    <form method="post">
+                        {% csrf_token %}
+                        <input type="hidden" name="action" value="apply_resignation">
+                        {% for field in resignation_form %}
+                            <div class="mb-3">
+                                <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                                {{ field }}
+                                {% for error in field.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+                            </div>
+                        {% endfor %}
+                        {% for error in resignation_form.non_field_errors %}<div class="alert alert-danger">{{ error }}</div>{% endfor %}
+                        <button class="btn btn-outline-danger" type="submit">Submit resignation application</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="card border-0 shadow-sm mb-4">
+        <div class="card-header bg-white"><h2 class="h5 fw-bold mb-0">Leave application history</h2></div>
+        <div class="table-responsive">
+            <table class="table align-middle mb-0">
+                <thead class="table-light"><tr><th>Dates</th><th>Reason</th><th>Status</th><th>Pay</th></tr></thead>
+                <tbody>
+                    {% for leave in leave_applications %}
+                        <tr>
+                            <td>{{ leave.start_date|date:"d M Y" }} – {{ leave.end_date|date:"d M Y" }}</td>
+                            <td>{{ leave.reason }}</td>
+                            <td>{{ leave.get_status_display }}</td>
+                            <td>{% if leave.status == "APPROVED" %}{% if leave.is_paid %}Paid{% else %}Unpaid{% endif %}{% else %}—{% endif %}</td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="4" class="text-muted">No leave requests yet.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="card border-0 shadow-sm">
+        <div class="card-header bg-white"><h2 class="h5 fw-bold mb-0">Recent duty sessions</h2></div>
+        <div class="table-responsive">
+            <table class="table align-middle mb-0">
+                <thead class="table-light"><tr><th>Clocked in</th><th>Clocked out</th><th>Session status</th></tr></thead>
+                <tbody>
+                    {% for session in recent_sessions %}
+                        <tr>
+                            <td>{{ session.started_at|date:"d M Y, h:i A" }}</td>
+                            <td>{% if session.ended_at %}{{ session.ended_at|date:"d M Y, h:i A" }}{% else %}—{% endif %}</td>
+                            <td>{% if session.auto_closed %}Auto-closed after 16 hours{% elif not session.ended_at %}On duty{% else %}Complete{% endif %}</td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="3" class="text-muted">No duty sessions recorded.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+</main>
+{% endblock %}

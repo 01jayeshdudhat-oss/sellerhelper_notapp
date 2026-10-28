@@ -85,13 +85,26 @@ window.setTimeout(
      data-expires-at="{{ public_rider_batch_expires_at|date:'c' }}"
      role="status"
      aria-live="polite">
-    <span><strong>Order collection window:</strong> accept any additional offers before the timer ends, then collect your parcels from the shops.</span>
-    <span class="badge text-bg-primary" data-collection-window-countdown>05:00</span>
+    <span><strong>Order collection window:</strong> accept additional offers until the timer ends or you close collection, then collect your parcels from the shops.</span>
+    <div class="d-flex flex-wrap align-items-center gap-2">
+        <span class="badge text-bg-primary" data-collection-window-countdown>05:00</span>
+        <form method="post" action="{% url 'stop_public_rider_batch_offers' %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-sm btn-danger">
+                <i class="bi bi-stop-circle me-1" aria-hidden="true"></i>Stop offers &amp; start pickup
+            </button>
+        </form>
+    </div>
 </div>
-{% elif public_rider_collection_window_expired %}
+{% elif public_rider_collection_window_closed %}
 <div class="alert alert-warning mb-3" role="status" aria-live="polite">
-    <strong>Offer window closed.</strong> No new delivery offers are available for this batch.
-    Go to each shop and collect the accepted parcel. Scan the shop's printed order QR after the shop verifies your pickup.
+    <strong>Offer window closed.</strong>
+    {% if public_rider_collection_window_expired %}
+        The collection timer has ended, so no more offers will be sent for this batch.
+    {% else %}
+        You stopped new offers for this batch.
+    {% endif %}
+    Go to each shop and collect the accepted parcel. Shop staff must verify pickup; scan the shop's printed order QR to confirm it. Once pickup is verified, use <strong>Start delivery</strong> to begin the customer route.
 </div>
 {% endif %}
 
@@ -810,9 +823,14 @@ window.setTimeout(
                                     {% if route.pickup_to_delivery_km != None %}{{ route.pickup_to_delivery_km|floatformat:2 }} km{% else %}Route unavailable{% endif %}
                                 </span>
                             </div>
+                            <div>Current location to pickup counted for pay:
+                                <strong>
+                                    {% if route.pickup_distance_included %}{{ route.pickup_distance_pay_percentage|floatformat:2 }}%{% else %}Not included{% endif %}
+                                </strong>
+                            </div>
                             <div class="small text-muted mt-1">
                                 {% if route.distance_calculation_method == "straight_line_fallback" %}
-                                    Straight-line distances (sum × 1.7 used for fallback pay estimate):
+                                    Straight-line distances; fallback pay applies the configured pickup-distance percentage, then × 1.7:
                                 {% else %}
                                     Straight-line distances (display only; pay uses road distance):
                                 {% endif %}
@@ -823,9 +841,9 @@ window.setTimeout(
                             <div>Pickup to delivery:
                                 <span data-public-straight-pickup-delivery>Calculating…</span>
                             </div>
-                            <div>Total distance:
+                            <div>Distance counted for pay:
                                 <strong data-public-total-distance>
-                                    {% if route.distance_calculation_method == "straight_line_fallback" %}{{ route.estimated_pay_distance_km|floatformat:2 }} km (straight-line sum × 1.7 pay estimate){% elif route.total_distance_km != None %}{{ route.total_distance_km|floatformat:2 }} km (road){% elif route.needs_rider_location %}Waiting for your current location{% else %}Road route unavailable{% endif %}
+                                    {% if route.distance_calculation_method == "straight_line_fallback" %}{{ route.estimated_pay_distance_km|floatformat:2 }} km (weighted straight-line estimate × 1.7){% elif route.estimated_pay_distance_km != None %}{{ route.estimated_pay_distance_km|floatformat:2 }} km (road){% elif route.needs_rider_location %}Waiting for your current location{% else %}Road route unavailable{% endif %}
                                 </strong>
                             </div>
                             <div>Estimated rider pay:
@@ -833,6 +851,15 @@ window.setTimeout(
                                     {% if route.estimated_pay != None %}₹{{ route.estimated_pay|floatformat:2 }}{% if route.distance_calculation_method == "straight_line_fallback" %} (straight-line estimate){% endif %}{% elif route.needs_rider_location %}Waiting for your current location{% else %}Unavailable{% endif %}
                                 </strong>
                             </div>
+                            {% if route.pickup_threshold_bonus_enabled %}
+                                <div>Extra pickup-distance bonus:
+                                    <strong>₹{{ route.pickup_threshold_bonus|floatformat:2 }}</strong>
+                                    ({{ route.pickup_threshold_bonus_distance_km|floatformat:2 }} km above
+                                    {{ route.pickup_threshold_km|floatformat:3 }} km,
+                                    {{ route.pickup_threshold_distance_source }} distance at
+                                    ₹{{ route.pickup_threshold_rate_per_km|floatformat:2 }}/km)
+                                </div>
+                            {% endif %}
                             <div>Order quantity: <strong>{{ order.load_estimate.item_count }} items</strong></div>
                             <div>Estimated total weight: <strong>{{ order.load_estimate.weight_kg|floatformat:2 }} kg</strong></div>
                             <div>Estimated total volume: <strong>{{ order.load_estimate.volume_cubic_ft|floatformat:2 }} cu ft</strong></div>
@@ -849,7 +876,7 @@ window.setTimeout(
                             {% endwith %}
                             <div class="small text-muted mt-2">
                                 Distance is calculated on the locally uploaded road network, without an external routing service.
-                                Pay uses base fare + per-km rate × road distance when available; otherwise, it uses (rider-to-pickup + pickup-to-delivery) × 1.7.
+                                Pay uses base fare + per-km rate × the pickup-to-delivery distance plus the configured percentage of rider-to-pickup distance. If road routing is unavailable, the weighted straight-line distance is multiplied by 1.7.
                             </div>
                         </div>
                     {% endif %}
@@ -995,6 +1022,9 @@ window.setTimeout(
                             {% endif %}
                         </div>
                         <div><strong>Address:</strong> {{ order.order.delivery_address }}</div>
+                        {% if order.order.delivery_pincode %}
+                            <div><strong>PIN:</strong> {{ order.order.delivery_pincode }}</div>
+                        {% endif %}
                         {% if active_view and order.delivery_coordinates %}
                             <div class="small text-primary">
                                 {% if order.pickup_coordinates %}
@@ -1291,17 +1321,31 @@ window.setTimeout(
                             </div>
                             {% if route.distance_calculation_method == "straight_line_fallback" %}
                                 <div>Road route unavailable; straight-line distance was used for the pay estimate.</div>
-                                <div>Rider to pickup (straight-line): {{ route.straight_line_rider_to_pickup_km|floatformat:2 }} km</div>
+                                <div>Rider to pickup (straight-line): {% if route.straight_line_rider_to_pickup_km != None %}{{ route.straight_line_rider_to_pickup_km|floatformat:2 }} km{% else %}Unavailable{% endif %}</div>
                                 <div>Pickup to delivery (straight-line): {{ route.straight_line_pickup_to_delivery_km|floatformat:2 }} km</div>
                             {% else %}
-                                <div>Rider to pickup by road: {{ route.rider_to_pickup_km|floatformat:2 }} km</div>
+                                <div>Rider to pickup by road: {% if route.rider_to_pickup_km != None %}{{ route.rider_to_pickup_km|floatformat:2 }} km{% elif route.pickup_distance_included %}Unavailable{% else %}Not included in pay{% endif %}</div>
                                 <div>Pickup to delivery by road: {{ route.pickup_to_delivery_km|floatformat:2 }} km</div>
                             {% endif %}
-                            <div>Total distance:
+                            <div>Distance counted for pay:
                                 <strong>{{ route.estimated_pay_distance_km|default_if_none:route.total_distance_km|floatformat:2 }} km{% if route.distance_calculation_method == "straight_line_fallback" %} (straight-line){% else %} (road){% endif %}</strong>
                             </div>
                             <div>Estimated rider pay:
                                 <strong>₹{{ route.estimated_pay|floatformat:2 }}</strong>
+                            </div>
+                            {% if route.pickup_threshold_bonus_enabled %}
+                                <div>Extra pickup-distance bonus:
+                                    <strong>₹{{ route.pickup_threshold_bonus|floatformat:2 }}</strong>
+                                    ({{ route.pickup_threshold_bonus_distance_km|floatformat:2 }} km above
+                                    {{ route.pickup_threshold_km|floatformat:3 }} km,
+                                    {{ route.pickup_threshold_distance_source }} distance at
+                                    ₹{{ route.pickup_threshold_rate_per_km|floatformat:2 }}/km)
+                                </div>
+                            {% endif %}
+                            <div>Current location to pickup counted for pay:
+                                <strong>
+                                    {% if route.pickup_distance_included %}{{ route.pickup_distance_pay_percentage|floatformat:2 }}%{% else %}Not included{% endif %}
+                                </strong>
                             </div>
                             <div>Order quantity: <strong>{{ route.item_count }} items</strong></div>
                             <div>Estimated total weight: <strong>{{ route.weight_kg|floatformat:2 }} kg</strong></div>
@@ -1785,7 +1829,7 @@ window.setTimeout(
         Both pickup and delivery locations must be inside your saved area.
     {% elif public_rider_batch_expires_at %}
         You have five minutes from the first accepted order to collect additional nearby offers.
-        New offers stop when you start pickup or when a parcel is collected.
+        Stop offers at any time to begin pickups, or wait for the window to close automatically.
     {% else %}
         Pickup and delivery locations must both be inside your saved work area. Keep this tab open
         for timed offers. You can have up to two offers at a time; each offer has a randomized

@@ -552,12 +552,16 @@ def advance_public_rider_offer(shop_order_id, declined_user_id=None):
             seconds=PUBLIC_RIDER_OFFER_MIN_GAP_SECONDS,
         )
         if now < next_offer_at:
+            shop_order.public_rider_offer_user = None
+            shop_order.public_rider_offer_expires_at = None
             if shop_order.public_rider_offer_retry_at != next_offer_at:
                 shop_order.public_rider_offer_retry_at = next_offer_at
-                shop_order.save(update_fields=[
-                    "public_rider_offer_retry_at",
-                    "updated_at",
-                ])
+            shop_order.save(update_fields=[
+                "public_rider_offer_user",
+                "public_rider_offer_expires_at",
+                "public_rider_offer_retry_at",
+                "updated_at",
+            ])
             return None
 
     attempted_user_ids = [

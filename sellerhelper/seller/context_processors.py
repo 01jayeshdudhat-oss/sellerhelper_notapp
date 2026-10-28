@@ -9,8 +9,27 @@ from .models import (
     SiteThemeSettings,
 )
 from .public_riders import public_rider_service_enabled
+from .qr_codes import qr_code_data_uri
 from django.db.models import Q
 from django.utils import timezone
+
+
+def _app_downloads(site_branding):
+    if site_branding is None:
+        return []
+    app_downloads = []
+    for platform, label, url in (
+        ("android", "Download for Android", site_branding.android_app_url),
+        ("ios", "Download for iPhone or iPad", site_branding.ios_app_url),
+    ):
+        if url:
+            app_downloads.append({
+                "platform": platform,
+                "label": label,
+                "url": url,
+                "qr_code_data_uri": qr_code_data_uri(url, box_size=3),
+            })
+    return app_downloads
 
 
 def _cart_count(request, addresses=()):
@@ -150,6 +169,7 @@ def unread_notifications_count(request):
             "mobile_app_portal_content_zoom_enabled": mobile_app_portal_content_zoom_enabled,
             "mobile_app_desktop_view_enabled": mobile_app_desktop_view_enabled,
             "site_branding": site_branding,
+            "app_downloads": _app_downloads(site_branding),
             "site_theme": site_theme,
             "site_theme_orders": theme_orders,
             "site_homepage_theme_order": homepage_theme_order,
@@ -259,6 +279,7 @@ def unread_notifications_count(request):
         "mobile_app_portal_content_zoom_enabled": mobile_app_portal_content_zoom_enabled,
         "mobile_app_desktop_view_enabled": mobile_app_desktop_view_enabled,
         "site_branding": site_branding,
+        "app_downloads": _app_downloads(site_branding),
         "site_theme": site_theme,
         "site_theme_orders": theme_orders,
         "site_homepage_theme_order": homepage_theme_order,

@@ -104,6 +104,9 @@ Order {{ shop_order.shop_order_number|default:shop_order.order.order_id }}
             {{ shop_order.created_at|date:"d M Y, h:i A" }}
 
         </div>
+        {% if shop_order.order.order_source == "POS" %}
+            <span class="badge text-bg-info mt-1">Created at shop counter</span>
+        {% endif %}
 
     </div>
 
@@ -656,6 +659,17 @@ Order {{ shop_order.shop_order_number|default:shop_order.order.order_id }}
                     <strong>Customer:</strong>
                     {{ customer_name }}
                 </div>
+                {% if shop_order.fulfillment_type == "COUNTER" %}
+                <div class="mt-2">
+                    <strong>Fulfillment:</strong>
+                    <span class="badge text-bg-success">Customer carried from shop</span>
+                </div>
+                {% elif shop_order.fulfillment_type == "DELIVERY" %}
+                <div class="mt-2">
+                    <strong>Fulfillment:</strong>
+                    <span class="badge text-bg-primary">Home delivery</span>
+                </div>
+                {% endif %}
 
                 <div class="mt-2">
 
@@ -676,6 +690,11 @@ Order {{ shop_order.shop_order_number|default:shop_order.order.order_id }}
                     </div>
 
                 </div>
+                {% if shop_order.order.delivery_pincode %}
+                <div class="mt-2">
+                    <strong>Delivery PIN:</strong> {{ shop_order.order.delivery_pincode }}
+                </div>
+                {% endif %}
 
                 {% if shop_order.order.delivery_location %}
 

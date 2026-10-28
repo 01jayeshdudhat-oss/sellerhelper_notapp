@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Download app · {{ site_branding.site_name|default:'Seller Helper' }}{% endblock %}
+
+{% block content %}
+<main class="container py-4">
+    <div class="mx-auto" style="max-width: 760px">
+        <div class="text-center mb-4">
+            <h1 class="h2 fw-bold">Download the app</h1>
+            <p class="text-muted mb-0">Scan a QR code with your device or use the download button.</p>
+        </div>
+        <div class="row g-3 justify-content-center">
+            {% for app in app_downloads %}
+                <div class="col-12 col-md-6">
+                    <section class="card h-100 border-0 shadow-sm text-center">
+                        <div class="card-body p-4">
+                            <h2 class="h5 fw-bold">
+                                {% if app.platform == "android" %}
+                                    <i class="bi bi-android2 me-1" aria-hidden="true"></i>Android
+                                {% else %}
+                                    <i class="bi bi-apple me-1" aria-hidden="true"></i>iOS
+                                {% endif %}
+                            </h2>
+                            <img src="{{ app.qr_code_data_uri }}"
+                                 alt="QR code to download the app for {{ app.platform }}"
+                                 class="img-fluid my-3" style="width: 220px; height: 220px">
+                            <div>
+                                <a class="btn btn-success" href="{{ app.url }}"
+                                   target="_blank" rel="noopener noreferrer">
+                                    <i class="bi bi-download me-1" aria-hidden="true"></i>
+                                    {{ app.label }}
+                                </a>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            {% endfor %}
+        </div>
+    </div>
+</main>
+{% endblock %}

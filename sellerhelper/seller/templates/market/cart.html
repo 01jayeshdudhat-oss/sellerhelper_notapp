@@ -5,16 +5,36 @@
 {% block content %}
 
 <style>
+    .cart-item-card {
+        margin-bottom: .5rem !important;
+    }
+    .cart-item-card > .card-body {
+        padding: .65rem .75rem;
+    }
+    .cart-product-image,
+    .cart-product-placeholder {
+        width: 64px !important;
+        height: 64px !important;
+    }
+    .cart-details-column {
+        line-height: 1.25;
+    }
+    .cart-save-product > summary {
+        cursor: pointer;
+        color: var(--bs-primary);
+        font-size: .875rem;
+        font-weight: 600;
+    }
+    .cart-save-product[open] > summary {
+        margin-bottom: .5rem;
+    }
     @media (max-width: 575.98px) {
         .cart-page-shell {
             padding-left: .5rem;
             padding-right: .5rem;
         }
-        .cart-item-card {
-            margin-bottom: .5rem !important;
-        }
         .cart-item-card > .card-body {
-            padding: .65rem;
+            padding: .55rem;
         }
         .cart-item-row {
             display: grid;
@@ -281,34 +301,35 @@
                     <div class="small text-danger mt-2" data-cart-update-error role="alert" hidden></div>
 
                     {% if saved_baskets and item.quantity > 0 %}
-                    <form
-                        method="post"
-                        action="{% url 'cart_basket_add_item' item.assignment.id %}"
-                        class="row g-2 align-items-center mt-2 pt-2 border-top"
-                    >
-                        {% csrf_token %}
-                        <input type="hidden" name="offer" value="{% if item.is_bulk_order %}bulk{% else %}retail{% endif %}">
-                        <div class="col-12 col-sm-auto">
-                            <label class="small text-muted" for="basket-{{ item.assignment.id }}">Save this product to</label>
-                        </div>
-                        <div class="col-12 col-sm">
-                            <select
-                                id="basket-{{ item.assignment.id }}"
-                                name="basket_id"
-                                class="form-select form-select-sm"
-                                required
-                            >
-                                {% for basket in saved_baskets %}
-                                <option value="{{ basket.pk }}">{{ basket.name }}</option>
-                                {% endfor %}
-                            </select>
-                        </div>
-                        <div class="col-12 col-sm-auto">
-                            <button type="submit" class="btn btn-sm btn-outline-primary">
-                                <i class="bi bi-basket-plus me-1"></i>Add product to basket
-                            </button>
-                        </div>
-                    </form>
+                    <details class="cart-save-product mt-2 pt-2 border-top">
+                        <summary>Save this product to</summary>
+                        <form
+                            method="post"
+                            action="{% url 'cart_basket_add_item' item.assignment.id %}"
+                            class="row g-2 align-items-center mt-1"
+                        >
+                            {% csrf_token %}
+                            <input type="hidden" name="offer" value="{% if item.is_bulk_order %}bulk{% else %}retail{% endif %}">
+                            <div class="col-12 col-sm">
+                                <label class="visually-hidden" for="basket-{{ item.line_key|slugify }}">Choose a saved basket</label>
+                                <select
+                                    id="basket-{{ item.line_key|slugify }}"
+                                    name="basket_id"
+                                    class="form-select form-select-sm"
+                                    required
+                                >
+                                    {% for basket in saved_baskets %}
+                                    <option value="{{ basket.pk }}">{{ basket.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-12 col-sm-auto">
+                                <button type="submit" class="btn btn-sm btn-outline-primary">
+                                    <i class="bi bi-basket-plus me-1"></i>Add product to basket
+                                </button>
+                            </div>
+                        </form>
+                    </details>
                     {% elif not saved_baskets and item.quantity > 0 %}
                     <div class="small text-muted mt-2 pt-2 border-top">
                         Save a named basket below first, then you can add individual cart products to it.

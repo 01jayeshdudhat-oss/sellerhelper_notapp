@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+
+{% block title %}Product QR labels · {{ shop.name }}{% endblock %}
+
+{% block content %}
+<div class="container-fluid px-3 px-lg-4 py-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3 d-print-none">
+        <a class="btn btn-outline-secondary" href="{% url 'shop_point_of_sale' shop.id %}">
+            <i class="bi bi-arrow-left me-1"></i>Back to counter sale
+        </a>
+        <button class="btn btn-primary" type="button" onclick="window.print()">
+            <i class="bi bi-printer me-1"></i>Print {{ label_count }} label{{ label_count|pluralize }}
+        </button>
+    </div>
+
+    <section class="card border-0 shadow-sm mb-4 d-print-none">
+        <div class="card-body">
+            <h1 class="h4 fw-bold">Product QR print settings</h1>
+            <p class="text-muted">
+                {% if all_products %}
+                    One QR label will print for each active product in this shop.
+                {% else %}
+                    Choose the number of copies to print.
+                {% endif %}
+                Set label size, QR size, and the paper loaded in your printer. Dimensions are in millimeters.
+            </p>
+            <form method="get" class="row g-3 align-items-end">
+                {% if not all_products %}
+                <div class="col-6 col-lg-2">
+                    <label class="form-label" for="labelCount">Number of QR labels</label>
+                    <input class="form-control" id="labelCount" name="label_count" type="number"
+                           min="1" max="500" step="1" value="{{ label_count }}" required>
+                </div>
+                {% endif %}
+                <div class="col-6 col-lg-2">
+                    <label class="form-label" for="labelWidth">Label width (mm)</label>
+                    <input class="form-control" id="labelWidth" name="label_width_mm" type="number"
+                           min="25" max="200" step="1" value="{{ label_width_mm|floatformat:'-2' }}" required>
+                </div>
+                <div class="col-6 col-lg-2">
+                    <label class="form-label" for="labelHeight">Label height (mm)</label>
+                    <input class="form-control" id="labelHeight" name="label_height_mm" type="number"
+                           min="45" max="250" step="1" value="{{ label_height_mm|floatformat:'-2' }}" required>
+                </div>
+                <div class="col-6 col-lg-2">
+                    <label class="form-label" for="qrSize">QR code size (mm)</label>
+                    <input class="form-control" id="qrSize" name="qr_size_mm" type="number"
+                           min="10" max="{{ max_qr_size_mm|floatformat:'-2' }}" step="1"
+                           value="{{ qr_size_mm|floatformat:'-2' }}" required>
+                    <div class="form-text">Square QR; maximum {{ max_qr_size_mm|floatformat:'-2' }} mm for this label.</div>
+                </div>
+                <div class="col-6 col-lg-2">
+                    <label class="form-label" for="paperSize">Print page size</label>
+                    <select class="form-select" id="paperSize" name="paper_size">
+                        <option value="A4" {% if paper_size == "A4" %}selected{% endif %}>A4 (210 × 297 mm)</option>
+                        <option value="A5" {% if paper_size == "A5" %}selected{% endif %}>A5 (148 × 210 mm)</option>
+                        <option value="LETTER" {% if paper_size == "LETTER" %}selected{% endif %}>Letter (216 × 279 mm)</option>
+                        <option value="CUSTOM" {% if paper_size == "CUSTOM" %}selected{% endif %}>Custom page</option>
+                    </select>
+                </div>
+                <div class="col-6 col-lg-2 custom-paper-field" {% if paper_size != "CUSTOM" %}hidden{% endif %}>
+                    <label class="form-label" for="paperWidth">Page width (mm)</label>
+                    <input class="form-control" id="paperWidth" name="paper_width_mm" type="number"
+                           min="60" max="500" step="1" value="{{ paper_width_mm|floatformat:'-2' }}">
+                </div>
+                <div class="col-6 col-lg-2 custom-paper-field" {% if paper_size != "CUSTOM" %}hidden{% endif %}>
+                    <label class="form-label" for="paperHeight">Page height (mm)</label>
+                    <input class="form-control" id="paperHeight" name="paper_height_mm" type="number"
+                           min="60" max="500" step="1" value="{{ paper_height_mm|floatformat:'-2' }}">
+                </div>
+                <div class="col-12">
+                    <button class="btn btn-outline-primary" type="submit">
+                        <i class="bi bi-sliders me-1"></i>Update print preview
+                    </button>
+                </div>
+            </form>
+        </div>
+    </section>
+
+    <div class="d-print-none small text-muted mb-2">
+        Preview: {{ label_count }} label{{ label_count|pluralize }}
+        {% if all_products %}(one for each active product){% endif %} ·
+        {{ label_width_mm|floatformat:'-2' }} × {{ label_height_mm|floatformat:'-2' }} mm ·
+        QR {{ qr_size_mm|floatformat:'-2' }} mm square ·
+        {{ paper_width_mm|floatformat:'-2' }} × {{ paper_height_mm|floatformat:'-2' }} mm page
+    </div>
+    <section class="product-qr-sheet" aria-label="Printable product QR labels">
+        {% for entry in label_entries %}
+            <article class="product-qr-label text-center">
+                <div class="label-shop">{{ shop.name }}</div>
+                <h2 class="label-product">{{ entry.assignment.product.product_name }}</h2>
+                {% if entry.assignment.product.sku %}
+                    <div class="label-sku">SKU {{ entry.assignment.product.sku }}</div>
+                {% endif %}
+                <img class="product-qr-image" src="{{ entry.qr_code_data_uri }}" alt="QR code for {{ entry.assignment.product.product_name }}">
+                <div class="label-unit">{{ entry.assignment.product.unit|default:"unit" }}</div>
+            </article>
+        {% endfor %}
+    </section>
+</div>
+
+<style>
+    .product-qr-sheet {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, {{ label_width_mm|floatformat:'-2' }}mm);
+        align-items: start;
+        justify-content: start;
+        gap: 2mm;
+    }
+    .product-qr-label {
+        box-sizing: border-box;
+        width: {{ label_width_mm|floatformat:'-2' }}mm;
+        height: {{ label_height_mm|floatformat:'-2' }}mm;
+        padding: 2mm;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1mm;
+        background: #fff;
+        color: #111;
+        border: 1px dashed #adb5bd;
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }
+    .label-shop, .label-sku, .label-unit {
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 8pt;
+    }
+    .label-shop {
+        font-weight: 700;
+        text-transform: uppercase;
+    }
+    .label-product {
+        max-width: 100%;
+        margin: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 10pt;
+        font-weight: 700;
+    }
+    .product-qr-image {
+        width: {{ qr_size_mm|floatformat:'-2' }}mm;
+        height: {{ qr_size_mm|floatformat:'-2' }}mm;
+        flex: 0 0 auto;
+        image-rendering: pixelated;
+    }
+    @media print {
+        @page {
+            size: {{ paper_width_mm|floatformat:'-2' }}mm {{ paper_height_mm|floatformat:'-2' }}mm;
+            margin: 5mm;
+        }
+        .site-layout {
+            display: block !important;
+            min-height: 0 !important;
+            height: auto !important;
+        }
+        .site-layout > :not(.main-container) {
+            display: none !important;
+        }
+        html, body, main {
+            width: auto !important;
+            max-width: none !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            background: #fff !important;
+        }
+        .main-container,
+        .main-container > .container-fluid {
+            width: 100% !important;
+            min-height: 0 !important;
+        }
+        .product-qr-sheet {
+            gap: 2mm;
+        }
+        .product-qr-label {
+            border-color: #ddd;
+        }
+    }
+</style>
+<script>
+(() => {
+    const paperSize = document.getElementById("paperSize");
+    const customFields = document.querySelectorAll(".custom-paper-field");
+    const updateCustomPaperFields = () => {
+        const isCustom = paperSize.value === "CUSTOM";
+        customFields.forEach((field) => {
+            field.hidden = !isCustom;
+            field.querySelector("input").required = isCustom;
+        });
+    };
+    paperSize.addEventListener("change", updateCustomPaperFields);
+    updateCustomPaperFields();
+})();
+</script>
+{% endblock %}
