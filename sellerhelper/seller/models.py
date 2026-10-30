@@ -1917,6 +1917,13 @@ class Product(models.Model):
         blank=True,
     )
 
+    barcode = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        db_index=True,
+    )
+
     product_category = models.CharField(
         max_length=80,
         default="OTHER",

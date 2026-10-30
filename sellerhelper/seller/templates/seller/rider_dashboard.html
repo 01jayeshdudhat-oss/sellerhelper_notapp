@@ -977,18 +977,25 @@ window.setTimeout(
                                 {% endif %}
                             {% endif %}
                         </div>
-                        <div><strong>Customer:</strong> {{ order.customer_display_name }}</div>
-                        {% if available_view or order.is_collection_offer %}
-                            <div class="small text-muted">
-                                    {{ order.load_estimate.item_count }} items · approx.
-                                    {{ order.load_estimate.weight_kg|floatformat:2 }} kg ·
-                                    {{ order.load_estimate.volume_cubic_ft|floatformat:2 }} cu ft
+                        {% if order.shop.contact_no %}
+                            <div class="mb-2">
+                                <strong>Shop: {{ order.shop.name }}</strong>
+                                <a
+                                    class="rider-copy-phone"
+                                    href="tel:{{ order.shop.contact_no }}"
+                                    data-phone="{{ order.shop.contact_no }}"
+                                    aria-label="Call and copy shop phone number {{ order.shop.contact_no }}"
+                                >
+                                    {{ order.shop.contact_no }}
+                                </a>
+                                <span class="visually-hidden" aria-live="polite"></span>
+                            </div>
+                        {% else %}
+                            <div class="mb-2">
+                                <strong>Shop: {{ order.shop.name }}</strong>
+                                <span class="text-muted">(Phone not provided)</span>
                             </div>
                         {% endif %}
-                        {% if not order.shop.require_customer_otp_verification %}
-                            <div><strong>Customer OTP:</strong> {{ order.customer_otp }}</div>
-                        {% endif %}
-                        <!-- <div><strong>Rider OTP:</strong> {{ order.rider_otp }}</div> -->
                         <div>
                             <strong>Payment:</strong>
                             {% if order.order.payment_status == "COD" %}
@@ -999,28 +1006,36 @@ window.setTimeout(
                                 <span class="badge text-bg-secondary">{{ order.payment_status }}</span>
                             {% endif %}
                         </div>
+                        <div><strong>Customer:</strong> {{ order.customer_display_name }}</div>
+                        {% if available_view or order.is_collection_offer %}
+                            <div class="small text-muted">
+                                    {{ order.load_estimate.item_count }} items · approx.
+                                    {{ order.load_estimate.weight_kg|floatformat:2 }} kg ·
+                                    {{ order.load_estimate.volume_cubic_ft|floatformat:2 }} cu ft
+                            </div>
+                        {% endif %}
+                        {% if not order.requires_customer_otp %}
+                            <div><strong>Customer OTP:</strong> {{ order.customer_otp }}</div>
+                        {% endif %}
+                        <!-- <div><strong>Rider OTP:</strong> {{ order.rider_otp }}</div> -->
+                        
                         <div class="mb-2">
-                            <strong>Phone:</strong>
+                            <strong>Customer: {{ order.customer_display_name }}</strong>
                             {% if order.order.delivery_contact_no %}
-                                <a href="tel:{{ order.order.delivery_contact_no }}">{{ order.order.delivery_contact_no }}</a>
-                                <button
-                                    type="button"
-                                    class="btn btn-sm btn-outline-secondary ms-1 rider-copy-phone"
-                                    data-phone="{{ order.order.delivery_contact_no }}"
-                                >
-                                    <i class="bi bi-clipboard me-1" aria-hidden="true"></i>Copy number
-                                </button>
                                 <a
-                                    class="btn btn-sm btn-success ms-1"
+                                    class="rider-copy-phone"
                                     href="tel:{{ order.order.delivery_contact_no }}"
+                                    data-phone="{{ order.order.delivery_contact_no }}"
+                                    aria-label="Call and copy customer phone number {{ order.order.delivery_contact_no }}"
                                 >
-                                    <i class="bi bi-telephone me-1" aria-hidden="true"></i>Call customer
+                                    {{ order.order.delivery_contact_no }}
                                 </a>
-                                <span class="small ms-1" aria-live="polite"></span>
                             {% else %}
-                                <span class="text-muted">Not provided</span>
+                                <span class="text-muted">(Phone not provided)</span>
                             {% endif %}
+                            <span class="visually-hidden" aria-live="polite"></span>
                         </div>
+                        
                         <div><strong>Address:</strong> {{ order.order.delivery_address }}</div>
                         {% if order.order.delivery_pincode %}
                             <div><strong>PIN:</strong> {{ order.order.delivery_pincode }}</div>
@@ -1425,7 +1440,7 @@ window.setTimeout(
                                 Check this parcel is in your active orders
                             </button>
                         {% elif order.status == "OUT_FOR_DELIVERY" %}
-                            {% if order.shop.require_customer_otp_verification %}
+                            {% if order.requires_customer_otp %}
                                 {% if order.customer_otp_verified %}
                                     <div class="alert alert-success small mb-2">Customer OTP verified. Record any returned items below, then complete delivery.</div>
                                 {% else %}
@@ -1469,7 +1484,7 @@ window.setTimeout(
                             {% else %}
                                 <div class="alert alert-secondary small mb-2">Customer OTP verification is not required for this shop.</div>
                             {% endif %}
-                            {% if not order.shop.require_customer_otp_verification or order.customer_otp_verified %}
+                            {% if not order.requires_customer_otp or order.customer_otp_verified %}
                                 {% if order.cod_payment_approval.status == "QR_READY" %}
                                     <div class="border border-info rounded p-3 mt-2 text-center" id="rider-next-action-{{ order.id }}">
                                         <h6 class="fw-bold">Shop UPI payment QR</h6>
@@ -1579,8 +1594,8 @@ window.setTimeout(
                                                    placeholder="Enter amount collected after returns" required>
                                             <button type="button" class="btn btn-outline-success btn-sm w-100 mt-2"
                                                     data-fill-full-cod="{{ order.cod_due_amount|floatformat:2 }}"
-                                                    data-received-amount-input="received-{{ order.id }}">
-                                                Fill full payment received · ₹{{ order.cod_due_amount|floatformat:2 }}
+                                                    onclick="document.getElementById('received-{{ order.id }}').value = this.dataset.fillFullCod;">
+                                                Fill full payment received for this shop · ₹{{ order.cod_due_amount|floatformat:2 }}
                                             </button>
                                             <div class="form-text">
                                                 Enter the amount actually received. Money sent to your personal UPI is debited from your staff wallet until the shop confirms handover.
@@ -2351,18 +2366,6 @@ window.setTimeout(
             );
         });
     }
-    document.querySelectorAll("[data-fill-full-cod]").forEach((button) => {
-        button.addEventListener("click", () => {
-            const amountInput = document.getElementById(button.dataset.receivedAmountInput);
-            if (!amountInput) {
-                console.error("Could not find the COD amount input for the selected order.");
-                return;
-            }
-            amountInput.value = button.dataset.fillFullCod || "";
-            amountInput.dispatchEvent(new Event("input", {bubbles: true}));
-            amountInput.dispatchEvent(new Event("change", {bubbles: true}));
-        });
-    });
     const configureRoute = (buttonId, statusId, stopsId, stopType, groupedStopsId = null) => {
         const routeButton = document.getElementById(buttonId);
         const routeStatus = document.getElementById(statusId);
@@ -2718,15 +2721,19 @@ document.querySelectorAll(".rider-copy-coordinates").forEach((button) => {
 });
 
 document.querySelectorAll(".rider-copy-phone").forEach((button) => {
-button.addEventListener("click", async () => {
-    const status = button.parentElement.querySelector('[aria-live="polite"]');
-    try {
-        await copyTextToClipboard(button.dataset.phone || "");
-        status.textContent = "Phone number copied.";
-    } catch (error) {
-        status.textContent = "Could not copy the phone number. Check browser clipboard permission.";
-    }
-});
+    button.addEventListener("click", async (event) => {
+        event.preventDefault();
+        const status = button.parentElement.querySelector('[aria-live="polite"]');
+        try {
+            await copyTextToClipboard(button.dataset.phone || "");
+            if (status) status.textContent = "Phone number copied.";
+        } catch (error) {
+            if (status) {
+                status.textContent = "Could not copy the phone number. Check browser clipboard permission.";
+            }
+        }
+        window.location.href = button.href;
+    });
 });
 
 document.querySelectorAll(".rider-delivery-form").forEach((form) => {

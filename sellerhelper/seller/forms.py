@@ -1215,6 +1215,20 @@ class StaffResignationForm(forms.ModelForm):
 
 
 class StorefrontProductEditForm(forms.ModelForm):
+    barcode = forms.CharField(
+        required=False,
+        max_length=128,
+        strip=True,
+        widget=forms.TextInput(attrs={
+            "class": "form-control",
+            "autocomplete": "off",
+            "data-sellerhelper-product-barcode": "true",
+            "placeholder": "Scan or enter product barcode",
+        }),
+        label="Product barcode",
+        help_text="Optional barcode used to add this product during a counter sale.",
+    )
+
     unit_value = forms.DecimalField(
         required=False,
         min_value=Decimal("0.001"),
@@ -1430,6 +1444,7 @@ class StorefrontProductEditForm(forms.ModelForm):
     class Meta:
         model = Product
         fields = [
+            "barcode",
             "product_alias_name",
             "product_title",
             "product_color",
@@ -1437,6 +1452,11 @@ class StorefrontProductEditForm(forms.ModelForm):
             "product_description",
         ]
         widgets = {
+            "barcode": forms.TextInput(attrs={
+                "class": "form-control",
+                "autocomplete": "off",
+                "placeholder": "Scan or enter product barcode",
+            }),
             "product_alias_name": forms.TextInput(attrs={
                 "class": "form-control",
                 "maxlength": 200,
@@ -2324,6 +2344,20 @@ class AdminProductCatalogForm(forms.ModelForm):
 
 class ProductForm(forms.ModelForm):
 
+    barcode = forms.CharField(
+        required=False,
+        max_length=128,
+        strip=True,
+        widget=forms.TextInput(attrs={
+            "class": "form-control",
+            "autocomplete": "off",
+            "data-sellerhelper-product-barcode": "true",
+            "placeholder": "Scan or enter product barcode",
+        }),
+        label="Product barcode",
+        help_text="Optional barcode used to add this product during a counter sale.",
+    )
+
     unit_value = forms.DecimalField(
         required=False,
         min_value=Decimal("0.001"),
@@ -2720,6 +2754,7 @@ class ProductForm(forms.ModelForm):
 
         fields = [
             "sku",
+            "barcode",
             "product_category",
             "product_name",
             "product_alias_name",

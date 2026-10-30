@@ -25,10 +25,21 @@
                 <h2 class="h5 fw-bold mb-3" id="product-details-heading">Product details</h2>
                 <div class="row g-3">
                     {% for field in form %}
-                        {% if field.name == "product_alias_name" or field.name == "product_title" or field.name == "product_color" or field.name == "product_size" or field.name == "product_description" or field.name == "search_keywords" or field.name == "unit_value" or field.name == "unit_text" %}
+                        {% if field.name == "barcode" or field.name == "product_alias_name" or field.name == "product_title" or field.name == "product_color" or field.name == "product_size" or field.name == "product_description" or field.name == "search_keywords" or field.name == "unit_value" or field.name == "unit_text" %}
                             <div class="{% if field.name == 'product_description' or field.name == 'search_keywords' %}col-12{% else %}col-md-6{% endif %}">
                                 <label class="form-label fw-semibold" for="{{ field.id_for_label }}">{{ field.label }}</label>
-                                {{ field }}
+                                {% if field.name == "barcode" %}
+                                    <div class="input-group">
+                                        {{ field }}
+                                        <button class="btn btn-outline-primary" type="button"
+                                                data-sellerhelper-scan-order="product-barcode">
+                                            <i class="bi bi-camera me-1"></i>Scan barcode
+                                        </button>
+                                    </div>
+                                    <div id="productBarcodeScanStatus" class="form-text" aria-live="polite"></div>
+                                {% else %}
+                                    {{ field }}
+                                {% endif %}
                                 {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
                                 {% for error in field.errors %}<div class="invalid-feedback d-block">{{ error }}</div>{% endfor %}
                             </div>

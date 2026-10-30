@@ -7104,26 +7104,54 @@ def shop_point_of_sale(request, shop_id):
                 scanned_shop_id, assignment_id_from_scan = scanned_product_path.groups()
             else:
                 scanned_shop_id, assignment_id_from_scan = None, None
-            if not assignment_id_from_scan or int(scanned_shop_id) != shop.pk:
+            if assignment_id_from_scan:
+                if int(scanned_shop_id) != shop.pk:
+                    return redirect_after_scan(
+                        "That QR code does not belong to this shop.",
+                        is_error=True,
+                    )
+                assignment = (
+                    ProductShop.objects.select_related("product")
+                    .filter(
+                        pk=assignment_id_from_scan,
+                        shop=shop,
+                        is_active=True,
+                        product__is_active=True,
+                    )
+                    .first()
+                )
+                if assignment is None:
+                    return redirect_after_scan(
+                        "This product is no longer active in this shop.",
+                        is_error=True,
+                    )
+            elif scanned_code.startswith("sellerhelper-pos:") or scanned_product_path:
                 return redirect_after_scan(
                     "That QR code does not belong to this shop.",
                     is_error=True,
                 )
-            assignment = (
-                ProductShop.objects.select_related("product")
-                .filter(
-                    pk=assignment_id_from_scan,
-                    shop=shop,
-                    is_active=True,
-                    product__is_active=True,
+            else:
+                barcode_matches = list(
+                    ProductShop.objects.select_related("product")
+                    .filter(
+                        shop=shop,
+                        is_active=True,
+                        product__is_active=True,
+                        product__barcode=scanned_code,
+                    )
+                    .order_by("pk")[:2]
                 )
-                .first()
-            )
-            if assignment is None:
-                return redirect_after_scan(
-                    "This product is no longer active in this shop.",
-                    is_error=True,
-                )
+                if not barcode_matches:
+                    return redirect_after_scan(
+                        "No active product in this shop matches that barcode.",
+                        is_error=True,
+                    )
+                if len(barcode_matches) > 1:
+                    return redirect_after_scan(
+                        "This barcode matches more than one product in this shop. Use a unique barcode.",
+                        is_error=True,
+                    )
+                assignment = barcode_matches[0]
 
             key = str(assignment.pk)
             try:
@@ -12187,7 +12215,18 @@ def rider_dashboard(request):
             if current_rider_membership
             else "----"
         )
-        order_obj.verify_need = order_obj.shop.require_customer_otp_verification
+        order_obj.is_public_rider_delivery = bool(
+            public_rider
+            or (
+                order_obj.assigned_rider_id
+                and order_obj.assigned_rider.is_public_rider
+            )
+        )
+        order_obj.requires_customer_otp = bool(
+            order_obj.shop.require_customer_otp_verification
+            or order_obj.is_public_rider_delivery
+        )
+        order_obj.verify_need = order_obj.requires_customer_otp
 
         order_obj.payment_status = (
             order_obj.order.payment_status
@@ -12277,6 +12316,32 @@ def rider_dashboard(request):
             if child.id == order_obj.id:
                 order_obj.customer_payment_share = payment_share
                 order_obj.platform_charge_share = platform_share
+        if order_obj.order.payment_type.upper() == "COD":
+            order_obj.cod_due_amount = max(
+                Decimal("0.00"),
+                getattr(
+                    order_obj,
+                    "customer_payment_share",
+                    order_obj.order.payment_amount,
+                ),
+            )
+            assigned_rider = order_obj.assigned_rider
+            if (
+                order_obj.is_assigned_to_current_rider
+                and order_obj.status == "OUT_FOR_DELIVERY"
+                and assigned_rider
+                and assigned_rider.upi_id
+            ):
+                order_reference = (
+                    order_obj.shop_order_number or order_obj.order.order_id
+                )
+                order_obj.staff_cod_upi_qr = _upi_payment_qr_data_uri(
+                    assigned_rider.upi_id,
+                    assigned_rider.user.get_full_name()
+                    or assigned_rider.user.username,
+                    order_obj.cod_due_amount,
+                    order_reference,
+                )
 
     route_targets = (
         {}
@@ -16308,8 +16373,12 @@ def complete_delivery(request, shop_order_id):
             f"{reverse('rider_dashboard')}?view=completed#order-{shop_order.id}"
         )
 
-    # Allow completion only if OTP has been verified when shop requires it
-    if shop_order.shop.require_customer_otp_verification and not shop_order.customer_otp_verified:
+    # Allow completion only after required customer OTP verification.
+    requires_customer_otp = bool(
+        shop_order.shop.require_customer_otp_verification
+        or rider.is_public_rider
+    )
+    if requires_customer_otp and not shop_order.customer_otp_verified:
         messages.error(request, "Customer OTP has not been verified.")
         return redirect(
             f"{reverse('rider_dashboard')}?view=active#order-{shop_order.id}"
@@ -18688,7 +18757,10 @@ def verify_customer_otp(request, shop_order_id):
         if user and hasattr(user, "client_profile"):
             customer = user.client_profile
     otp = (request.POST.get("otp") or "").strip()
-    if not shop_order.shop.require_customer_otp_verification:
+    if not (
+        shop_order.shop.require_customer_otp_verification
+        or rider.is_public_rider
+    ):
         valid = True
     else:
         valid = bool(customer and otp and otp == customer.verification_otp)
@@ -23444,6 +23516,8 @@ def checkout(request):
                 "coupon_discount": str(coupon_discount),
                 "wallet_amount_used": str(wallet_amount_used),
                 "platform_charge": str(charges["platform_charge"]),
+                "platform_charge_fixed": str(settings.PLATFORM_CHARGE_FIXED),
+                "platform_charge_percent": str(settings.PLATFORM_CHARGE_PERCENT),
                 "razorpay_fee": str(charges["razorpay_fee"]),
                 "gst_amount": str(gst_breakdown["total_gst"]),
                 "delivery_amount": str(gst_breakdown["delivery_total"]),
@@ -23472,7 +23546,7 @@ def checkout(request):
                     "subtotal": subtotal,
                     "addresses": addresses,
                     "selected_address": address,
-                    "delivery_issues": [],
+                    "delivery_issues": [],     
                     "razorpay_key_id": settings.RAZORPAY_KEY_ID,
                     "razorpay_order_id": razorpay_order_id,
                     "razorpay_amount": amount_paise,
@@ -23488,6 +23562,8 @@ def checkout(request):
                     ),
                     "razorpay_fee_percent": settings.RAZORPAY_CUSTOMER_FEE_PERCENT,
                     "platform_charge": charges["platform_charge"],
+                    "platform_charge_fixed": str(settings.PLATFORM_CHARGE_FIXED),
+                    "platform_charge_percent": str(settings.PLATFORM_CHARGE_PERCENT),
                     "razorpay_fee": charges["razorpay_fee"],
                     "checkout_total": charges["amount_due"],
                     "cod_due": charges["amount_due"] - charges["razorpay_fee"],
@@ -23593,6 +23669,8 @@ def checkout(request):
                 settings.RAZORPAY_KEY_ID and settings.RAZORPAY_KEY_SECRET
             ),
             "platform_charge": checkout_charges["platform_charge"],
+            "platform_charge_fixed": str(settings.PLATFORM_CHARGE_FIXED),
+            "platform_charge_percent": str(settings.PLATFORM_CHARGE_PERCENT),
             "razorpay_fee": razorpay_estimate["razorpay_fee"],
             "cod_due": checkout_charges["amount_due"],
             "razorpay_due": razorpay_estimate["amount_due"],

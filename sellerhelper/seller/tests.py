@@ -4966,7 +4966,11 @@ class SellerProjectConfigTests(TestCase):
             username="rider_customer_phone",
             password="test-password",
         )
-        shop = Shop.objects.create(name="Customer Phone Shop", owner=owner)
+        shop = Shop.objects.create(
+            name="Customer Phone Shop",
+            owner=owner,
+            contact_no="+919900112233",
+        )
         rider = ShopStaff.objects.create(
             shop=shop,
             user=rider_user,
@@ -4975,6 +4979,7 @@ class SellerProjectConfigTests(TestCase):
         )
         order = Order.objects.create(
             order_id="ORD-RIDER-CUSTOMER-PHONE",
+            customer_name="Riya",
             delivery_address="Phone Street",
             delivery_contact_no="+919988776655",
             shop=shop,
@@ -4994,10 +4999,23 @@ class SellerProjectConfigTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Call customer")
+        self.assertContains(response, "+919988776655")
+        self.assertContains(response, "Customer:</strong> Riya")
+        self.assertContains(response, "Shop:</strong> Customer Phone Shop")
+        self.assertContains(response, "+919900112233")
+        self.assertContains(response, 'data-long-press-copy')
+        self.assertContains(
+            response,
+            "Tap to call or touch and hold to copy.",
+        )
         self.assertContains(response, 'href="tel:+919988776655"')
-        self.assertContains(response, 'class="btn btn-sm btn-outline-secondary ms-1 rider-copy-phone"')
+        self.assertContains(response, 'href="tel:+919900112233"')
+        self.assertContains(response, 'class="rider-copy-phone"')
         self.assertContains(response, 'data-phone="+919988776655"')
+        self.assertContains(response, 'data-phone="+919900112233"')
+        self.assertNotContains(response, "Copy number")
+        self.assertNotContains(response, "Call customer")
+        self.assertNotContains(response, "Call shop")
 
     def test_rider_capacity_allows_order_at_exact_limit(self):
         owner = User.objects.create_user(username="owner_capacity_exact", password="test-pass")
@@ -9525,6 +9543,169 @@ class SellerProjectConfigTests(TestCase):
         self.assertContains(response, "Verify OTP")
         self.assertContains(response, 'name="otp"')
         self.assertContains(response, reverse("verify_customer_otp", kwargs={"shop_order_id": shop_order.id}))
+
+    def test_public_rider_requires_customer_otp_and_sees_shop_contact(self):
+        owner = User.objects.create_user(username="owner_public_otp")
+        rider_user = User.objects.create_user(username="rider_public_otp")
+        customer_user = User.objects.create_user(username="customer_public_otp")
+        ClientProfile.objects.create(
+            user=customer_user,
+            name="Public OTP Customer",
+            verification_otp="5678",
+        )
+        shop = Shop.objects.create(
+            name="Public OTP Shop",
+            owner=owner,
+            contact_no="+919876543210",
+            require_customer_otp_verification=False,
+        )
+        application = PublicRiderApplication.objects.create(
+            user=rider_user,
+            full_name="Public OTP Rider",
+            phone="9000000001",
+            address="Rider address",
+            vehicle_type="MOTORCYCLE",
+            driving_license_number="DL-PUBLIC-OTP",
+            status=PublicRiderApplication.STATUS_APPROVED,
+        )
+        from .public_riders import sync_public_rider_shop_memberships
+
+        sync_public_rider_shop_memberships(application)
+        rider = ShopStaff.objects.get(shop=shop, user=rider_user)
+        order = Order.objects.create(
+            order_id="ORD-PUBLIC-OTP-1",
+            user=customer_user.username,
+            delivery_address="Public delivery street",
+            delivery_contact_no="9000000002",
+            status="OUT_FOR_DELIVERY",
+            payment_type="ONLINE",
+            payment_status="PAID",
+            shop=shop,
+        )
+        shop_order = ShopOrder.objects.create(
+            order=order,
+            shop=shop,
+            total_amount=Decimal("100.00"),
+            status="OUT_FOR_DELIVERY",
+            assigned_rider=rider,
+        )
+        self.client.force_login(rider_user)
+        session = self.client.session
+        session["active_portal"] = "RIDER"
+        session.save()
+
+        dashboard = self.client.get(
+            reverse("rider_dashboard"),
+            {"view": "active"},
+        )
+
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertContains(dashboard, "Enter the 4-digit code provided by the customer.")
+        self.assertNotContains(dashboard, "5678")
+        self.assertContains(dashboard, 'href="tel:+919876543210"')
+
+        completion = self.client.post(
+            reverse("complete_delivery", kwargs={"shop_order_id": shop_order.pk}),
+            {},
+        )
+        self.assertEqual(completion.status_code, 302)
+        shop_order.refresh_from_db()
+        self.assertEqual(shop_order.status, "OUT_FOR_DELIVERY")
+        self.assertIsNone(shop_order.delivery_completed_at)
+
+        verification_url = reverse(
+            "verify_customer_otp",
+            kwargs={"shop_order_id": shop_order.pk},
+        )
+        self.client.post(verification_url, {"otp": "0000"})
+        shop_order.refresh_from_db()
+        self.assertFalse(shop_order.customer_otp_verified)
+
+        self.client.post(verification_url, {"otp": "5678"})
+        shop_order.refresh_from_db()
+        self.assertTrue(shop_order.customer_otp_verified)
+
+        self.client.post(
+            reverse("complete_delivery", kwargs={"shop_order_id": shop_order.pk}),
+            {},
+        )
+        shop_order.refresh_from_db()
+        self.assertEqual(shop_order.status, "DELIVERED")
+        self.assertIsNotNone(shop_order.delivery_completed_at)
+
+    def test_public_rider_cod_fill_amount_uses_this_shops_payment_share(self):
+        owner = User.objects.create_user(username="owner_public_cod_share")
+        rider_user = User.objects.create_user(username="rider_public_cod_share")
+        customer_user = User.objects.create_user(username="customer_public_cod_share")
+        ClientProfile.objects.create(
+            user=customer_user,
+            name="COD Share Customer",
+            verification_otp="4321",
+        )
+        shop = Shop.objects.create(
+            name="COD Share Shop",
+            owner=owner,
+            require_customer_otp_verification=False,
+        )
+        other_shop = Shop.objects.create(name="Other COD Share Shop", owner=owner)
+        application = PublicRiderApplication.objects.create(
+            user=rider_user,
+            full_name="Public COD Rider",
+            phone="9000000003",
+            address="Rider address",
+            vehicle_type="MOTORCYCLE",
+            driving_license_number="DL-PUBLIC-COD-SHARE",
+            status=PublicRiderApplication.STATUS_APPROVED,
+        )
+        from .public_riders import sync_public_rider_shop_memberships
+
+        sync_public_rider_shop_memberships(application)
+        rider = ShopStaff.objects.get(shop=shop, user=rider_user)
+        order = Order.objects.create(
+            order_id="ORD-PUBLIC-COD-SHARE",
+            user=customer_user.username,
+            delivery_address="COD share street",
+            status="OUT_FOR_DELIVERY",
+            payment_type="COD",
+            payment_status="COD",
+            payment_amount=Decimal("100.00"),
+            shop=shop,
+        )
+        ShopOrder.objects.create(
+            order=order,
+            shop=shop,
+            total_amount=Decimal("25.00"),
+            status="OUT_FOR_DELIVERY",
+            assigned_rider=rider,
+            customer_otp_verified=True,
+        )
+        ShopOrder.objects.create(
+            order=order,
+            shop=other_shop,
+            total_amount=Decimal("75.00"),
+            status="PLACED",
+        )
+        self.client.force_login(rider_user)
+        session = self.client.session
+        session["active_portal"] = "RIDER"
+        session.save()
+
+        response = self.client.get(
+            reverse("rider_dashboard"),
+            {"view": "active"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.context["orders"][0].cod_due_amount,
+            Decimal("25.00"),
+        )
+        self.assertContains(response, 'data-fill-full-cod="25.00"')
+        self.assertContains(
+            response,
+            f'onclick="document.getElementById(\'received-{response.context["orders"][0].id}\').value = this.dataset.fillFullCod;"',
+        )
+        self.assertContains(response, "Fill full payment received for this shop")
 
     def test_shop_cancellation_records_source_and_restocks_inventory(self):
         owner = User.objects.create_user(username="shop_cancel_owner", password="test-password")
@@ -16980,6 +17161,7 @@ class StorefrontProductEditingTests(TestCase):
             ),
             {
                 "product_name": "Changed outside catalog",
+                "barcode": " 0001234567890 ",
                 "product_alias_name": "Local Sweet Apples",
                 "product_title": "Premium Red Apples",
                 "product_color": "Deep red",
@@ -17012,6 +17194,7 @@ class StorefrontProductEditingTests(TestCase):
         self.product.refresh_from_db()
         self.assignment.refresh_from_db()
         self.assertEqual(self.product.product_name, "Fresh Apples")
+        self.assertEqual(self.product.barcode, "0001234567890")
         self.assertEqual(self.product.product_alias_name, "Local Sweet Apples")
         self.assertEqual(self.product.image_url, "")
         self.assertEqual(self.assignment.image_url_override, "")
@@ -17046,6 +17229,8 @@ class StorefrontProductEditingTests(TestCase):
         self.assertContains(edit_response, 'name="bulk_unit_text" value="packs"')
         self.assertContains(edit_response, 'name="b2b_bulk_unit_value" value="24"')
         self.assertContains(edit_response, 'name="b2b_bulk_unit_text" value="cartons"')
+        self.assertContains(edit_response, 'data-sellerhelper-scan-order="product-barcode"')
+        self.assertContains(edit_response, "Scan barcode")
         movement = StockMovement.objects.get(
             product_shop=self.assignment,
             reference__startswith="Storefront stock edit",
@@ -17164,6 +17349,8 @@ class StorefrontProductEditingTests(TestCase):
         )
         edit_page = self.client.get(edit_url)
         self.assertEqual(edit_page.status_code, 200)
+        self.assertContains(edit_page, 'data-sellerhelper-scan-order="product-barcode"')
+        self.assertContains(edit_page, "Scan barcode")
         for field_name in (
             "shop_image_url",
             "shop_image_url_2",
@@ -17326,7 +17513,42 @@ class StorefrontProductEditingTests(TestCase):
         )
 
         self.client.force_login(self.manager)
-        self.assertEqual(self.client.get(edit_url).status_code, 200)
+        edit_page = self.client.get(edit_url)
+        self.assertEqual(edit_page.status_code, 200)
+        self.assertContains(edit_page, 'name="barcode"')
+        saved = self.client.post(
+            edit_url,
+            {
+                "barcode": "0098765432100",
+                "product_alias_name": "",
+                "product_title": self.product.product_title,
+                "product_color": "",
+                "product_size": "",
+                "product_description": self.product.product_description,
+                "unit_value": "1",
+                "unit_text": "kg",
+                "shop_price": "15.00",
+                "stock": "3",
+                "b2b_stock": "0",
+                "b2b_price": "",
+                "b2b_unit_value": "",
+                "b2b_unit_text": "",
+                "bulk_price": "",
+                "bulk_unit_value": "",
+                "bulk_unit_text": "",
+                "b2b_bulk_price": "",
+                "b2b_bulk_unit_value": "",
+                "b2b_bulk_unit_text": "",
+                "bulk_min_quantity": "1",
+                "search_keywords": "",
+            },
+        )
+        self.assertRedirects(
+            saved,
+            reverse("shop_storefront", kwargs={"shop_id": self.shop.pk}),
+        )
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.barcode, "0098765432100")
 
         self.client.force_login(self.outsider)
         self.assertEqual(self.client.get(edit_url).status_code, 403)
@@ -23847,7 +24069,6 @@ class ShopPointOfSaleTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'data-sellerhelper-scan-order="customer-product"')
-        self.assertContains(response, "Scan product QR")
         self.assertContains(response, 'sellerhelper:open-qr-scanner')
         self.assertContains(response, '"customer-product"')
         self.assertContains(response, "legacyProductCode")
@@ -23898,6 +24119,9 @@ class ShopPointOfSaleTests(TestCase):
         self.assertContains(page, "Opening camera…")
         self.assertContains(page, "Remove one per scan")
         self.assertContains(page, "Print QR")
+        self.assertContains(page, "Scan product QR or barcode")
+        self.assertContains(page, '"ean_13"')
+        self.assertContains(page, "Scan QR code or barcode")
         sale_id = page.context["sale_id"]
 
         added = self.client.post(
@@ -24103,6 +24327,64 @@ class ShopPointOfSaleTests(TestCase):
             {str(self.assignment.pk): 2},
         )
 
+    def test_scanning_product_barcode_adds_item_and_supports_scan_to_remove(self):
+        self.product.barcode = "0001234567890"
+        self.product.save(update_fields=["barcode"])
+        self.client.force_login(self.staff_user)
+        sale_id = self.client.get(self.pos_url).context["sale_id"]
+
+        added = self.client.post(
+            self.pos_url,
+            {
+                "sale_id": sale_id,
+                "action": "scan_item",
+                "scan_code": "0001234567890",
+            },
+        )
+        self.assertRedirects(added, f"{self.pos_url}?sale_id={sale_id}")
+        self.assertEqual(
+            self.client.session[f"shop_pos_cart_{self.shop.pk}"],
+            {str(self.assignment.pk): 1},
+        )
+
+        removed = self.client.post(
+            self.pos_url,
+            {
+                "sale_id": sale_id,
+                "action": "scan_item",
+                "scan_code": "0001234567890",
+                "scan_mode": "remove",
+            },
+        )
+        self.assertRedirects(
+            removed,
+            f"{self.pos_url}?scan_mode=remove&sale_id={sale_id}",
+        )
+        self.assertEqual(
+            self.client.session[f"shop_pos_cart_{self.shop.pk}"],
+            {},
+        )
+
+        unknown = self.client.post(
+            self.pos_url,
+            {
+                "sale_id": sale_id,
+                "action": "scan_item",
+                "scan_code": "9999999999999",
+            },
+        )
+        self.assertRedirects(
+            unknown,
+            f"{self.pos_url}?sale_id={sale_id}",
+            fetch_redirect_response=False,
+        )
+        error_page = self.client.get(unknown.url)
+        self.assertContains(error_page, "No active product in this shop matches that barcode.")
+        self.assertEqual(
+            error_page.context["scan_feedback"],
+            "No active product in this shop matches that barcode.",
+        )
+
     def test_continuous_product_scanning_reopens_scanner_and_keeps_adding_to_sale(self):
         self.client.force_login(self.staff_user)
         sale_id = self.client.get(self.pos_url).context["sale_id"]
@@ -24213,7 +24495,7 @@ class ShopPointOfSaleTests(TestCase):
         )
 
         page = self.client.get(response.url)
-        self.assertContains(page, "That QR code does not belong to this shop.")
+        self.assertContains(page, "No active product in this shop matches that barcode.")
         self.assertContains(
             page,
             'data-scan-feedback-error="true"',

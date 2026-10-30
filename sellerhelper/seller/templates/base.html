@@ -2204,7 +2204,9 @@
                     ? "rider-pickup-order"
                     : button.dataset.sellerhelperScanOrder === "customer-product"
                         ? "customer-product"
-                    : "general";
+                        : button.dataset.sellerhelperScanOrder === "product-barcode"
+                            ? "product-barcode"
+                            : "general";
             window.__sellerHelperQrScanPurpose = purpose;
             document.dispatchEvent(new CustomEvent("sellerhelper:open-qr-scanner", {
                 detail: { purpose: purpose }
@@ -2250,7 +2252,9 @@
                 }
             } catch (error) {
                 console.error("SellerHelper could not read a QR code from the camera.", error);
-                scanner.status.textContent = "Could not read that QR. Keep the code in view and try again.";
+                scanner.status.textContent = scanner.purpose === "counter-sale-product"
+                    ? "Could not read that product code. Keep it in view and try again."
+                    : "Could not read that QR. Keep the code in view and try again.";
                 scanner.status.hidden = false;
             }
         }
@@ -2277,7 +2281,13 @@
         header.className = "d-flex align-items-center justify-content-between mb-2";
         const title = document.createElement("h2");
         title.className = "h5 mb-0";
-        title.textContent = "Scan QR code";
+        const supportsProductBarcodes = (
+            purpose === "counter-sale-product"
+            || purpose === "product-barcode"
+        );
+        title.textContent = supportsProductBarcodes
+            ? "Scan QR code or barcode"
+            : "Scan QR code";
         const closeButton = document.createElement("button");
         closeButton.type = "button";
         closeButton.className = "btn btn-outline-secondary";
@@ -2296,7 +2306,9 @@
         video.style.cssText = "max-height:72vh;object-fit:contain";
         const hint = document.createElement("p");
         hint.className = "small text-muted mt-2 mb-0";
-        hint.textContent = "Allow camera access and hold the QR code steady in front of the camera.";
+        hint.textContent = supportsProductBarcodes
+            ? "Allow camera access and hold a product barcode or QR label steady in front of the camera."
+            : "Allow camera access and hold the QR code steady in front of the camera.";
         panel.append(header, status, video, hint);
         overlay.appendChild(panel);
         document.body.appendChild(overlay);
@@ -2322,7 +2334,7 @@
             || typeof window.BarcodeDetector !== "function"
         ) {
             status.textContent = window.isSecureContext
-                ? "Camera QR scanning is not supported by this browser. Try the SellerHelper mobile app or use the OTP field."
+                ? "Camera scanning is not supported by this browser. Try the SellerHelper mobile app or a connected scanner."
                 : "Camera access requires a secure HTTPS connection or localhost. Use the OTP field or open the secure site.";
             status.hidden = false;
             scanner.scanning = false;
@@ -2330,7 +2342,29 @@
         }
 
         try {
-            scanner.detector = new window.BarcodeDetector({ formats: ["qr_code"] });
+            const requestedFormats = supportsProductBarcodes
+                ? [
+                    "qr_code",
+                    "ean_13",
+                    "ean_8",
+                    "upc_a",
+                    "upc_e",
+                    "code_128",
+                    "code_39",
+                    "code_93",
+                    "itf",
+                    "codabar"
+                ]
+                : ["qr_code"];
+            const supportedFormats = await window.BarcodeDetector.getSupportedFormats();
+            const formats = requestedFormats.filter((format) => supportedFormats.includes(format));
+            if (!formats.length) {
+                status.textContent = "This browser cannot scan the supported product codes. Try the SellerHelper mobile app or a connected scanner.";
+                status.hidden = false;
+                scanner.scanning = false;
+                return;
+            }
+            scanner.detector = new window.BarcodeDetector({ formats: formats });
             scanner.stream = await navigator.mediaDevices.getUserMedia({
                 audio: false,
                 video: { facingMode: { ideal: "environment" } }
@@ -2447,6 +2481,23 @@
             : window.__sellerHelperQrScanPurpose || "";
         window.__sellerHelperQrScanPurpose = "";
         if (scanPurpose === "counter-sale-product") return;
+        if (scanPurpose === "product-barcode") {
+            const barcodeInput = document.querySelector(
+                '[data-sellerhelper-product-barcode="true"]'
+            );
+            if (!barcodeInput) {
+                showRiderQrScanError("The product barcode field is not available.");
+                return;
+            }
+            barcodeInput.value = value;
+            barcodeInput.dispatchEvent(new Event("input", { bubbles: true }));
+            barcodeInput.dispatchEvent(new Event("change", { bubbles: true }));
+            barcodeInput.focus();
+            document.dispatchEvent(new CustomEvent("sellerhelper:qr-scan-close"));
+            const status = document.getElementById("productBarcodeScanStatus");
+            if (status) status.textContent = "Barcode scanned. Save the product to keep this barcode.";
+            return;
+        }
         if (scanPurpose === "customer-product") {
             let productPath = "";
             const legacyProductCode = /^sellerhelper-pos:([0-9]+):([0-9]+)$/.exec(value);

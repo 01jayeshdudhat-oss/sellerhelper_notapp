@@ -17,7 +17,19 @@
             {{ field.label }}
             {% if field.field.required %}<span class="text-danger">*</span>{% endif %}
         </label>
-        {{ field }}
+        {% if field.name == "barcode" %}
+            <div class="input-group">
+                {{ field }}
+                <button class="btn btn-outline-primary" type="button"
+                        data-sellerhelper-scan-order="product-barcode">
+                    <i class="bi bi-camera me-1"></i>Scan barcode
+                </button>
+            </div>
+            <div id="productBarcodeScanStatus" class="form-text" aria-live="polite"></div>
+            <div class="form-text">{{ field.help_text }}</div>
+        {% else %}
+            {{ field }}
+        {% endif %}
     {% endif %}
 
     {% for error in field.errors %}

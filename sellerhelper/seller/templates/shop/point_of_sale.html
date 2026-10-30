@@ -36,16 +36,16 @@
         <section class="col-12 col-xl-7" aria-labelledby="products-heading">
             <div class="card border-0 shadow-sm mb-4">
                 <div class="card-body">
-                    <h2 class="h5 fw-bold">Scan product QR</h2>
-                    <p class="small text-muted">Scan a shop product label to add one unit to this sale.</p>
+                    <h2 class="h5 fw-bold">Scan product QR or barcode</h2>
+                    <p class="small text-muted">Use a connected barcode scanner or scan a shop product QR label to add one unit to this sale.</p>
                     <form method="post" id="scanQrForm" class="d-flex flex-wrap gap-2">
                         {% csrf_token %}
                         <input type="hidden" name="action" value="scan_item">
                         <input type="hidden" name="sale_id" value="{{ sale_id }}">
                         {% if search %}<input type="hidden" name="q" value="{{ search }}">{% endif %}
-                        <label class="visually-hidden" for="scanCode">Scanned product QR code</label>
+                        <label class="visually-hidden" for="scanCode">Scanned product QR code or barcode</label>
                         <input class="form-control flex-grow-1" id="scanCode" name="scan_code"
-                               placeholder="Scan QR with a connected scanner" autocomplete="off" required>
+                               placeholder="Scan QR or barcode with a connected scanner" autocomplete="off" required>
                         <button class="btn btn-outline-success" type="submit">
                             <i class="bi bi-qr-code-scan me-1"></i>Add scanned product
                         </button>

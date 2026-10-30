@@ -662,12 +662,12 @@
                         </div>
                         {% endif %}
                         <div class="d-flex justify-content-between mb-2">
-                            <span>Platform charge</span>
+                            <span>Platform charge (non refundable)</span>
                             <span>₹{{ platform_charge|default:"0.00" }}</span>
                         </div>
                         <div class="d-flex justify-content-between mb-2" id="razorpayFeeRow"
                              {% if not razorpay_checkout %}hidden{% endif %}>
-                            <span>Razorpay fee ({{ razorpay_fee_percent|default:"2.00" }}%)</span>
+                            <span>Razorpay fee ({{ razorpay_fee_percent|default:"2.00" }}%) (non refundable)</span>
                             <span id="razorpayFeeAmount">₹{{ razorpay_fee|default:"0.00" }}</span>
                         </div>
                         <div class="d-flex justify-content-between mb-2" id="walletAppliedRow"
@@ -683,7 +683,8 @@
                             </strong>
                         </div>
                         <div class="small text-white-50 mt-2">
-                            Platform charge: ₹10 + 0.1% of item total.
+                            <!-- Platform charge: ₹10 + 0.1% of item total. -->
+                            Platform charge: ₹{{ platform_charge_fixed|default:"0.00" }} + {{ platform_charge_percent|default:"0.00" }}% of item total.
                             <span id="razorpayFeeNotice"{% if razorpay_checkout %} hidden{% endif %}>
                                 Razorpay fees apply only to online payments.
                             </span>
