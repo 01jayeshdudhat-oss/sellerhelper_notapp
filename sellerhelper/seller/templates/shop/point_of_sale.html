@@ -3,8 +3,222 @@
 {% block title %}Counter sale · {{ shop.name }}{% endblock %}
 
 {% block content %}
-<main class="container-fluid px-3 px-lg-4 py-4">
-    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+    .pos-page {
+        --pos-border: #e4e9f0;
+        --pos-surface: #fff;
+        --pos-muted: #64748b;
+        padding-bottom: 5.5rem !important;
+    }
+    .pos-page .pos-header {
+        margin-bottom: 1rem !important;
+        padding: 1rem 1.15rem;
+        border: 1px solid var(--pos-border);
+        border-radius: 1rem;
+        background: linear-gradient(120deg, #fff 55%, #f1f7ff);
+    }
+    .pos-page .pos-header h1 {
+        font-size: clamp(1.35rem, 2vw, 1.8rem);
+    }
+    .pos-page .pos-grid {
+        --bs-gutter-x: 1rem;
+        --bs-gutter-y: 1rem;
+    }
+    .pos-page .card {
+        border-radius: .9rem;
+        border: 1px solid var(--pos-border) !important;
+    }
+    .pos-page .card-header,
+    .pos-page .card-footer {
+        padding: .8rem 1rem !important;
+    }
+    .pos-page .card-body {
+        padding: 1rem;
+    }
+    .pos-page .pos-product-card {
+        overflow: hidden;
+    }
+    .pos-page .pos-product-summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: .75rem;
+        cursor: pointer;
+        list-style: none;
+    }
+    .pos-page .pos-product-summary::-webkit-details-marker {
+        display: none;
+    }
+    .pos-page .pos-product-summary::after {
+        content: "+";
+        color: var(--pos-muted);
+        font-size: 1.25rem;
+        line-height: 1;
+    }
+    .pos-page .pos-product-card[open] > .pos-product-summary::after {
+        content: "-";
+    }
+    .pos-page .pos-product-item {
+        padding: .7rem 1rem !important;
+        transition: background-color .15s ease;
+    }
+    .pos-page .pos-product-item:hover {
+        background: #f8fbff;
+    }
+    .pos-page .pos-product-item .btn,
+    .pos-page .pos-product-item .form-control {
+        min-height: 40px;
+    }
+    .pos-page .pos-scan-tools > summary {
+        cursor: pointer;
+        list-style: none;
+        padding: .8rem 1rem;
+        font-weight: 600;
+    }
+    .pos-page .pos-scan-tools > summary::-webkit-details-marker {
+        display: none;
+    }
+    .pos-page .pos-scan-tools > summary::after {
+        content: "+";
+        float: right;
+        color: var(--pos-muted);
+    }
+    .pos-page .pos-scan-tools[open] > summary::after {
+        content: "-";
+    }
+    .pos-page .pos-sale-column {
+        min-width: 0;
+    }
+    .pos-page .pos-sale-card {
+        position: sticky;
+        top: 1rem;
+        max-height: calc(100vh - 2rem);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+    }
+    .pos-page .pos-sale-line {
+        padding-block: .6rem !important;
+    }
+    .pos-page .form-label,
+    .pos-page legend {
+        margin-bottom: .35rem;
+        font-size: .9rem;
+    }
+    .pos-page .form-text {
+        font-size: .78rem;
+    }
+    .pos-page :is(input, select, textarea, button, .btn) {
+        border-radius: .6rem;
+    }
+    .pos-page :is(input, select, textarea):focus {
+        box-shadow: 0 0 0 .2rem rgba(13, 110, 253, .13);
+    }
+    .pos-mobile-review {
+        display: none;
+    }
+    @media (max-width: 1199.98px) {
+        .pos-page .pos-sale-card {
+            position: static;
+            max-height: none;
+            overflow: visible;
+        }
+    }
+    @media (max-width: 767.98px) {
+        .pos-page {
+            padding: .65rem .65rem 6rem !important;
+        }
+        .pos-page .pos-header {
+            align-items: flex-start !important;
+            padding: .8rem;
+            gap: .65rem !important;
+        }
+        .pos-page .pos-header .pos-header-actions {
+            width: 100%;
+            justify-content: space-between;
+        }
+        .pos-page .pos-header .pos-header-actions .btn {
+            padding: .4rem .55rem;
+            font-size: .82rem;
+        }
+        .pos-page .pos-grid {
+            --bs-gutter-x: .65rem;
+            --bs-gutter-y: .75rem;
+        }
+        .pos-page .pos-product-card .card-header {
+            padding: .75rem !important;
+        }
+        .pos-page #posProductSearchForm {
+            display: grid !important;
+            grid-template-columns: minmax(0, 1fr) auto auto;
+            width: 100%;
+        }
+        .pos-page #posProductSearchForm input {
+            min-width: 0;
+        }
+        .pos-page #posProductSearchForm button {
+            padding-inline: .65rem;
+        }
+        .pos-page .pos-product-item {
+            padding: .65rem .75rem !important;
+        }
+        .pos-page .pos-product-item > div > div:first-child {
+            flex: 1 1 100%;
+        }
+        .pos-page .pos-product-item > div {
+            flex-wrap: wrap;
+            gap: .55rem !important;
+        }
+        .pos-page .pos-product-item > div > div:last-child {
+            width: 100%;
+            justify-content: space-between;
+        }
+        .pos-page .pos-sale-card {
+            max-height: none;
+        }
+        .pos-page .pos-sale-line {
+            align-items: flex-start !important;
+            flex-wrap: wrap;
+            gap: .45rem !important;
+        }
+        .pos-page .pos-sale-line > div:first-child {
+            flex: 1 1 100%;
+        }
+        .pos-page .pos-sale-line > div:last-child {
+            width: 100%;
+            justify-content: flex-start !important;
+        }
+        .pos-page .pos-sale-line .btn {
+            min-width: 40px;
+            min-height: 40px;
+        }
+        .pos-page .pos-sale-line > div:last-child > strong {
+            margin-left: auto !important;
+        }
+        .pos-mobile-review {
+            position: fixed;
+            z-index: 1020;
+            right: 0;
+            bottom: 0;
+            left: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: .75rem;
+            padding: .65rem .8rem calc(.65rem + env(safe-area-inset-bottom));
+            border-top: 1px solid var(--pos-border);
+            background: rgba(255, 255, 255, .97);
+            box-shadow: 0 -4px 18px rgba(15, 23, 42, .1);
+            backdrop-filter: blur(12px);
+        }
+        .pos-mobile-review .btn {
+            min-height: 44px;
+            padding-inline: 1rem;
+        }
+    }
+</style>
+<main class="container-fluid px-3 px-lg-4 py-4 pos-page">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4 pos-header">
         <div>
             <a href="{% url 'shop_order_list' %}?shop={{ shop.id }}" class="btn btn-sm btn-outline-secondary mb-2">
                 <i class="bi bi-arrow-left me-1"></i>Shop orders
@@ -12,7 +226,7 @@
             <h1 class="h2 fw-bold mb-1">{{ shop.name }} · Counter sale</h1>
             <p class="text-muted mb-0">Record an in-store purchase or create a home-delivery order for a walk-in customer.</p>
         </div>
-        <div class="d-flex flex-wrap align-items-center gap-2">
+        <div class="d-flex flex-wrap align-items-center gap-2 pos-header-actions">
             <a class="btn btn-outline-secondary"
                href="{% url 'shop_product_qr_labels' shop.id %}"
                target="_blank" rel="noopener">
@@ -22,22 +236,222 @@
         </div>
     </div>
 
-    <section class="card border-0 shadow-sm mb-4" id="incompleteSalesSection" hidden>
-        <div class="card-header bg-white py-3">
-            <h2 class="h5 fw-bold mb-0">Recent incomplete counter sales</h2>
-        </div>
-        <div class="list-group list-group-flush" id="incompleteSalesList"></div>
-        <div class="card-footer small text-muted">
-            Up to two recent incomplete sales are saved on this device.
-        </div>
-    </section>
+    {% if payment_request %}
+        <section class="card border-0 shadow-sm mb-4" aria-labelledby="pos-upi-status">
+            <div class="card-body">
+                <h2 id="pos-upi-status" class="h5 fw-bold">
+                    {{ payment_request.get_payment_method_display }} · {{ payment_request.shop_order.shop_order_number|default:payment_request.shop_order.order.order_id }}
+                </h2>
+                {% if payment_request.payment_method == "RAZORPAY" %}
+                    {% if payment_request.status == "PENDING" %}
+                        <p class="mb-3">Complete the secure Razorpay payment. The order will be placed only after the server verifies the payment as captured.</p>
+                        <button class="btn btn-primary" type="button" id="openPosRazorpay">
+                            Pay ₹{{ payment_request.amount|floatformat:2 }} with Razorpay
+                        </button>
+                        <form method="post" id="posRazorpayVerifyForm"
+                              action="{% url 'verify_shop_pos_razorpay_payment' payment_request.pk %}" hidden>
+                            {% csrf_token %}
+                            <input type="hidden" name="razorpay_order_id">
+                            <input type="hidden" name="razorpay_payment_id">
+                            <input type="hidden" name="razorpay_signature">
+                        </form>
+                    {% elif payment_request.status == "APPROVED" %}
+                        <p class="text-success mb-0">Razorpay payment was verified and the order was placed.</p>
+                    {% else %}
+                        <p class="text-muted mb-0">This Razorpay payment is no longer pending.</p>
+                    {% endif %}
+                {% elif payment_request.payment_method == "UPI" %}
+                    {% if payment_request.status == "PENDING" %}
+                        <p class="mb-3">
+                            Ask the customer to pay ₹{{ payment_request.amount|floatformat:2 }} using this shop QR.
+                            Once you verify payment was received, request Payment Manager confirmation below.
+                            Confirmation automatically completes this counter sale.
+                        </p>
+                    {% elif payment_request.status == "REPORTED" %}
+                        <p class="text-info mb-3">Customer reported payment. The order remains pending until a Payment Manager confirms receipt.</p>
+                    {% elif payment_request.status == "REJECTED" %}
+                        <p class="text-danger">The Payment Manager rejected this payment confirmation. Verify the payment, retry, or cancel the sale.</p>
+                    {% elif payment_request.status == "APPROVED" %}
+                        <p class="text-success mb-0">Payment was confirmed by {{ payment_request.reviewed_by.get_full_name|default:payment_request.reviewed_by.username }}.</p>
+                    {% else %}
+                        <p class="text-muted mb-0">This sale was cancelled.</p>
+                    {% endif %}
+                    {% if payment_request.qr_code_data_uri %}
+                        <div class="d-flex flex-wrap align-items-center gap-3 mt-3">
+                            <img src="{{ payment_request.qr_code_data_uri }}" alt="Shop UPI QR for ₹{{ payment_request.amount|floatformat:2 }}" width="220" height="220">
+                            <div>
+                                <strong class="d-block fs-4">₹{{ payment_request.amount|floatformat:2 }}</strong>
+                                <span class="text-muted">Pay to {{ payment_request.upi_id }}</span>
+                            </div>
+                        </div>
+                    {% endif %}
+                    {% if payment_request.status == "PENDING" %}
+                        <form method="post" action="{% url 'report_shop_pos_payment' payment_request.pk %}" class="d-inline-block mt-3">
+                            {% csrf_token %}
+                            <button class="btn btn-success" type="submit">
+                                <i class="bi bi-check-circle me-1"></i>Request UPI payment confirmation
+                            </button>
+                        </form>
+                    {% endif %}
+                    {% if payment_request.status == "REJECTED" %}
+                        <form method="post" action="{% url 'retry_shop_pos_payment' payment_request.pk %}" class="d-inline-block mt-3">
+                            {% csrf_token %}
+                            <button class="btn btn-success" type="submit">Retry payment</button>
+                        </form>
+                    {% endif %}
+                {% else %}
+                    {% if payment_request.status == "APPROVED" %}
+                        <p class="text-success mb-0">Payment was recorded as {{ payment_request.get_payment_method_display }} by {{ payment_request.reviewed_by.get_full_name|default:payment_request.reviewed_by.username }}; the order was placed.</p>
+                    {% else %}
+                        <p class="text-muted mb-0">This payment request is no longer pending.</p>
+                    {% endif %}
+                {% endif %}
+                {% if payment_request.status == "PENDING" %}
+                    <form method="post" action="{% url 'change_shop_pos_payment_method' payment_request.pk %}" class="row g-2 align-items-end mt-2">
+                        {% csrf_token %}
+                        <div class="col-12 col-sm-auto">
+                            <label class="form-label fw-semibold mb-1" for="changePosPaymentMethod">Change payment method</label>
+                            <select class="form-select" name="payment_method" id="changePosPaymentMethod" required>
+                                {% for method, label in payment_change_methods %}
+                                    <option value="{{ method }}" {% if method == payment_request.payment_method %}selected{% endif %}>{{ label }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-12 col-sm-auto">
+                            <button class="btn btn-outline-primary" type="submit">Change method</button>
+                        </div>
+                    </form>
+                {% endif %}
+                {% if payment_request.status == "PENDING" or payment_request.status == "REPORTED" or payment_request.status == "REJECTED" %}
+                    <form method="post" action="{% url 'cancel_shop_pos_payment' payment_request.pk %}" class="d-inline-block mt-3">
+                        {% csrf_token %}
+                        <button class="btn btn-outline-danger" type="submit">Cancel sale and release stock</button>
+                    </form>
+                {% endif %}
+                <a class="btn btn-outline-secondary mt-3" href="{% url 'shop_order_detail' payment_request.shop_order_id %}">View sale</a>
+            </div>
+        </section>
+    {% endif %}
 
-    <div class="row g-4 align-items-start">
+        <details class="card border-0 shadow-sm mb-4"
+                 id="recentSalesDetails"
+                 data-has-server-sales="{{ recent_unplaced_pos_sales|yesno:'true,false' }}"
+                 aria-labelledby="recentUnplacedSalesHeading"
+                 {% if not recent_unplaced_pos_sales %}hidden{% endif %}>
+            <summary class="card-header bg-white py-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
+                <span class="h5 fw-bold mb-0" id="recentUnplacedSalesHeading">Recent unplaced or incomplete sales</span>
+                <span class="small text-muted">Click to view saved sales</span>
+            </summary>
+            {% if recent_unplaced_pos_sales %}
+                <div class="list-group list-group-flush">
+                    {% for sale in recent_unplaced_pos_sales %}
+                        <div class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-3">
+                            <div class="flex-grow-1">
+                                <details>
+                                    <summary class="fw-semibold">
+                                        {{ sale.shop_order.shop_order_number|default:sale.shop_order.order.order_id }}
+                                    </summary>
+                                    <div class="border rounded p-3 mt-2">
+                                        <h3 class="h6 fw-bold">Sale items</h3>
+                                        <ul class="list-unstyled mb-3">
+                                            {% for item in sale.shop_order.order_items.all %}
+                                                <li class="d-flex justify-content-between gap-3 py-1">
+                                                    <span>
+                                                        {{ item.product_name }} × {{ item.quantity }}
+                                                        {% if item.is_approximate_weight and item.final_weight %}
+                                                            · {{ item.final_weight|floatformat:3 }} {{ item.unit }}
+                                                        {% endif %}
+                                                    </span>
+                                                    <strong>₹{{ item.total|floatformat:2 }}</strong>
+                                                </li>
+                                            {% empty %}
+                                                <li class="text-muted">No item details available.</li>
+                                            {% endfor %}
+                                        </ul>
+                                        {% if sale.shop_order.order.customer_name or sale.shop_order.order.delivery_contact_no %}
+                                            <h3 class="h6 fw-bold">Customer</h3>
+                                            <p class="mb-2">
+                                                {{ sale.shop_order.order.customer_name|default:"Customer" }}
+                                                {% if sale.shop_order.order.delivery_contact_no %}
+                                                    · {{ sale.shop_order.order.delivery_contact_no }}
+                                                {% endif %}
+                                            </p>
+                                        {% endif %}
+                                        {% if sale.shop_order.fulfillment_type == "DELIVERY" %}
+                                            <h3 class="h6 fw-bold">Delivery address</h3>
+                                            <p class="mb-0">
+                                                {{ sale.shop_order.order.delivery_address|default:"No address saved" }}
+                                                {% if sale.shop_order.order.delivery_pincode %}
+                                                    · {{ sale.shop_order.order.delivery_pincode }}
+                                                {% endif %}
+                                            </p>
+                                        {% endif %}
+                                    </div>
+                                </details>
+                                <span class="badge text-bg-warning ms-1">{{ sale.get_status_display }}</span>
+                                <div class="small text-muted mt-1">
+                                    {{ sale.get_payment_method_display }} ·
+                                    {{ sale.shop_order.get_fulfillment_type_display }} ·
+                                    {{ sale.created_at|date:"M j, Y, g:i a" }}
+                                </div>
+                                <div class="small fw-semibold mt-1">₹{{ sale.amount|floatformat:2 }}</div>
+                            </div>
+                            <div class="d-flex flex-wrap align-items-end gap-2">
+                                {% if sale.status == "PENDING" %}
+                                    <form method="post" action="{% url 'change_shop_pos_payment_method' sale.pk %}" class="d-flex flex-wrap align-items-end gap-2">
+                                        {% csrf_token %}
+                                        <div>
+                                            <label class="form-label small fw-semibold mb-1" for="recentPaymentMethod{{ sale.pk }}">Change payment method</label>
+                                            <select class="form-select form-select-sm" name="payment_method" id="recentPaymentMethod{{ sale.pk }}" required>
+                                                {% for method, label in payment_change_methods %}
+                                                    <option value="{{ method }}" {% if method == sale.payment_method %}selected{% endif %}>{{ label }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                        <button class="btn btn-sm btn-outline-primary" type="submit">Update method</button>
+                                    </form>
+                                {% endif %}
+                                <a class="btn btn-sm btn-outline-secondary"
+                                   href="{% url 'shop_point_of_sale' shop.id %}?payment_request={{ sale.pk }}">
+                                    Manage sale
+                                </a>
+                                <form method="post"
+                                      action="{% url 'load_shop_pos_payment_into_sale' sale.pk %}"
+                                      data-load-pos-sale>
+                                    {% csrf_token %}
+                                    <input type="hidden" name="sale_id" value="{{ sale_id }}">
+                                    <button class="btn btn-sm btn-primary" type="submit">Load in current sale</button>
+                                </form>
+                                <form method="post" action="{% url 'cancel_shop_pos_payment' sale.pk %}"
+                                      onsubmit="return confirm('Remove this unpaid sale and release its stock?');">
+                                    {% csrf_token %}
+                                    <button class="btn btn-sm btn-outline-danger" type="submit">Remove sale</button>
+                                </form>
+                            </div>
+                        </div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+            <section class="border-top" id="incompleteSalesSection" hidden>
+                <div class="card-header bg-white py-3">
+                    <h3 class="h6 fw-bold mb-0">Saved incomplete sales on this device</h3>
+                </div>
+                <div class="list-group list-group-flush" id="incompleteSalesList"></div>
+                <div class="card-footer small text-muted">
+                    Up to two recent incomplete sales are saved on this device.
+                </div>
+            </section>
+            <div class="card-footer small text-muted">
+                Unpaid sales remain unplaced until payment is completed. Removing an unpaid sale cancels it and releases its stock.
+            </div>
+        </details>
+
+    <div class="row g-4 align-items-start pos-grid">
         <section class="col-12 col-xl-7" aria-labelledby="products-heading">
-            <div class="card border-0 shadow-sm mb-4">
+            <details class="card shadow-sm mb-3 pos-scan-tools">
+                <summary>Scan product QR or barcode</summary>
                 <div class="card-body">
-                    <h2 class="h5 fw-bold">Scan product QR or barcode</h2>
-                    <p class="small text-muted">Use a connected barcode scanner or scan a shop product QR label to add one unit to this sale.</p>
+                    <p class="small text-muted mb-2">Use a connected scanner or camera to add products to this sale.</p>
                     <form method="post" id="scanQrForm" class="d-flex flex-wrap gap-2">
                         {% csrf_token %}
                         <input type="hidden" name="action" value="scan_item">
@@ -77,23 +491,30 @@
                               aria-live="assertive">{{ scan_feedback }}</span>
                     </div>
                 </div>
-            </div>
-            <div class="card border-0 shadow-sm">
+            </details>
+            <details class="card shadow-sm pos-product-card" {% if search %}open{% endif %}>
+                <summary class="card-header bg-white py-3 pos-product-summary">
+                    <span>
+                        <span id="products-heading" class="h5 fw-bold mb-0">Shop products</span>
+                        <span class="small text-muted d-block">Browse or search to manually add products</span>
+                    </span>
+                </summary>
                 <div class="card-header bg-white py-3">
                     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
-                        <h2 id="products-heading" class="h5 fw-bold mb-0">Shop products</h2>
-                        <form method="get" class="d-flex gap-2" role="search">
+                        <form method="get" id="posProductSearchForm" class="d-flex gap-2" role="search">
                             <input type="hidden" name="sale_id" value="{{ sale_id }}">
                             <label class="visually-hidden" for="productSearch">Search products</label>
                             <input class="form-control" id="productSearch" name="q" value="{{ search }}"
-                                   placeholder="Product name or SKU" type="search">
+                                   placeholder="Product name, SKU, or barcode" type="search" autocomplete="off">
                             <button class="btn btn-outline-primary" type="submit">Search</button>
+                            <button class="btn btn-outline-secondary" id="resetProductSearch" type="button">Reset</button>
                         </form>
                     </div>
+                    <div class="small text-muted mt-2" id="productSearchStatus" aria-live="polite"></div>
                 </div>
-                <div class="list-group list-group-flush">
+                <div class="list-group list-group-flush" id="posProductList">
                     {% for assignment in product_page %}
-                        <article class="list-group-item py-3">
+                        <article class="list-group-item py-3 pos-product-item">
                             <div class="d-flex justify-content-between align-items-center gap-3">
                                 <div class="min-w-0">
                                     <h3 class="h6 fw-semibold mb-1">{{ assignment.product.product_name }}</h3>
@@ -133,7 +554,7 @@
                     {% endfor %}
                 </div>
                 {% if product_page.has_other_pages %}
-                    <div class="card-footer bg-white d-flex justify-content-between align-items-center">
+                    <div class="card-footer bg-white d-flex justify-content-between align-items-center" id="posProductPagination">
                         <span class="small text-muted">Page {{ product_page.number }} of {{ product_page.paginator.num_pages }}</span>
                         <div class="d-flex gap-2">
                             {% if product_page.has_previous %}
@@ -145,11 +566,11 @@
                         </div>
                     </div>
                 {% endif %}
-            </div>
+            </details>
         </section>
 
-        <aside class="col-12 col-xl-5" aria-labelledby="sale-heading">
-            <div class="card border-0 shadow-sm">
+        <aside class="col-12 col-xl-5 pos-sale-column" aria-labelledby="sale-heading">
+            <div class="card shadow-sm pos-sale-card" id="posSaleCard">
                 <div class="card-header bg-white py-3">
                     <div class="d-flex justify-content-between align-items-center">
                         <h2 id="sale-heading" class="h5 fw-bold mb-0">Current sale</h2>
@@ -158,7 +579,7 @@
                 </div>
                 <div class="card-body">
                     {% for line in cart_lines %}
-                        <div class="d-flex justify-content-between align-items-center gap-2 border-bottom py-3">
+                        <div class="d-flex justify-content-between align-items-center gap-2 border-bottom py-3 pos-sale-line">
                             <div class="min-w-0">
                                 <strong class="d-block">{{ line.assignment.product.product_name }}</strong>
                                 <span class="small text-muted">
@@ -226,11 +647,11 @@
                         <span class="fw-semibold">Items subtotal</span>
                         <strong class="fs-5">₹{{ cart_subtotal|floatformat:2 }}</strong>
                     </div>
-                    <div id="counterTotalSummary" class="d-flex justify-content-between align-items-center border-top pt-3">
+                    <div id="counterTotalSummary" data-total="{{ counter_total|floatformat:2 }}" class="d-flex justify-content-between align-items-center border-top pt-3">
                         <span class="fw-bold">Total to collect</span>
                         <strong class="fs-4 text-success">₹{{ counter_total|floatformat:2 }}</strong>
                     </div>
-                    <div id="deliveryTotalSummary" class="d-flex justify-content-between align-items-center border-top pt-3" hidden>
+                    <div id="deliveryTotalSummary" data-total="{{ delivery_total|floatformat:2 }}" class="d-flex justify-content-between align-items-center border-top pt-3" hidden>
                         <span class="fw-bold">Total to collect, including delivery</span>
                         <strong class="fs-4 text-success">₹{{ delivery_total|floatformat:2 }}</strong>
                     </div>
@@ -242,13 +663,35 @@
                         <input type="hidden" name="sale_id" value="{{ sale_id }}">
                         <input type="hidden" name="action" value="place_sale">
                         <div class="mb-3">
+                            <label class="form-label fw-semibold" for="savedCustomer">Reuse a saved customer</label>
+                            <select class="form-select" id="savedCustomer" name="saved_customer_id">
+                                <option value="">Enter a new customer</option>
+                                {% for customer in pos_customers %}
+                                    <option value="{{ customer.pk }}"
+                                            data-name="{{ customer.name }}"
+                                            data-phone="{{ customer.phone }}"
+                                            data-address="{{ customer.delivery_address }}"
+                                            data-pincode="{{ customer.delivery_pincode }}"
+                                            data-latitude="{{ customer.latitude|default_if_none:'' }}"
+                                            data-longitude="{{ customer.longitude|default_if_none:'' }}">
+                                        {{ customer.name }} · {{ customer.phone }}{% if customer.shop_id != shop.id %} · {{ customer.shop.name }}{% endif %}
+                                    </option>
+                                {% endfor %}
+                            </select>
+                            {% if not pos_customers %}
+                                <div class="form-text">Saved counter-sale customers will be available here for reuse.</div>
+                            {% endif %}
+                        </div>
+                        <div class="mb-3">
                             <label class="form-label fw-semibold" for="customerName">Customer name <span class="text-muted fw-normal">(optional for carry-out)</span></label>
-                            <input class="form-control" id="customerName" name="customer_name" maxlength="200" autocomplete="name">
+                            <input class="form-control" id="customerName" name="customer_name" maxlength="200"
+                                   autocomplete="name" value="{{ current_sale_details.customer_name|default:'' }}">
                         </div>
                         <div class="mb-3">
                             <label class="form-label fw-semibold" for="customerPhone">Customer phone <span class="text-muted fw-normal">(optional for carry-out)</span></label>
                             <input class="form-control" id="customerPhone" name="customer_phone" maxlength="40"
-                                   type="tel" inputmode="tel" autocomplete="tel">
+                                   type="tel" inputmode="tel" autocomplete="tel"
+                                   value="{{ current_sale_details.customer_phone|default:'' }}">
                         </div>
 
                         <fieldset class="mb-3">
@@ -256,7 +699,10 @@
                             {% for value, label in fulfillment_choices %}
                                 <label class="form-check border rounded p-3 mb-2">
                                     <input class="form-check-input ms-0 me-2" type="radio" name="fulfillment_type"
-                                           value="{{ value }}" {% if value == "COUNTER" %}checked{% endif %}>
+                                           value="{{ value }}"
+                                           {% if current_sale_details.fulfillment_type %}
+                                               {% if value == current_sale_details.fulfillment_type %}checked{% endif %}
+                                           {% elif value == "COUNTER" %}checked{% endif %}>
                                     <span class="form-check-label fw-semibold">{{ label }}</span>
                                     <span class="d-block small text-muted ms-4">
                                         {% if value == "COUNTER" %}Customer takes the purchase now; no rider is assigned.{% else %}Create a shop order for delivery to the customer's location.{% endif %}
@@ -267,42 +713,92 @@
 
                         <div id="deliveryFields" class="border rounded p-3 mb-3" hidden>
                             <h3 class="h6 fw-bold">Home-delivery details</h3>
-                            <p class="small text-muted">Enter the customer's address and the map-pin coordinates they provide. The order will enter the shop's normal rider assignment flow.</p>
+                            <p class="small text-muted">Enter the customer's address, then select the delivery point by dropping a pin on the map. The order will enter the shop's normal rider assignment flow after payment confirmation.</p>
                             <div class="mb-3">
                                 <label class="form-label" for="deliveryAddress">Delivery address</label>
-                                <textarea class="form-control" id="deliveryAddress" name="delivery_address" rows="2" maxlength="2000"></textarea>
+                                <textarea class="form-control" id="deliveryAddress" name="delivery_address" rows="2" maxlength="2000">{{ current_sale_details.delivery_address|default:'' }}</textarea>
                             </div>
                             <div class="mb-3">
                                 <label class="form-label" for="deliveryPincode">Delivery PIN <span class="text-muted">(if available)</span></label>
                                 <input class="form-control" id="deliveryPincode" name="delivery_pincode" maxlength="20"
-                                       inputmode="numeric" autocomplete="postal-code">
+                                       inputmode="numeric" autocomplete="postal-code"
+                                       value="{{ current_sale_details.delivery_pincode|default:'' }}">
                             </div>
+                            <div class="d-flex justify-content-between align-items-center gap-2 mb-2">
+                                <label class="form-label mb-0" for="deliveryMap">Select delivery point · street or satellite</label>
+                                <button class="btn btn-sm btn-outline-primary" id="useCurrentLocation" type="button">Use my location</button>
+                            </div>
+                            <div id="deliveryMap" class="rounded border mb-3" style="height: 320px" role="application" aria-label="Select home delivery location"></div>
+                            <div class="form-text mb-3">Tap or click the map to place or move the delivery pin.</div>
                             <div class="row g-2">
                                 <div class="col-6">
                                     <label class="form-label" for="deliveryLatitude">Map latitude</label>
                                     <input class="form-control" id="deliveryLatitude" name="delivery_latitude" type="number"
-                                           min="-90" max="90" step="any" inputmode="decimal">
+                                           min="-90" max="90" step="any" inputmode="decimal"
+                                           value="{{ current_sale_details.delivery_latitude|default:'' }}">
                                 </div>
                                 <div class="col-6">
                                     <label class="form-label" for="deliveryLongitude">Map longitude</label>
                                     <input class="form-control" id="deliveryLongitude" name="delivery_longitude" type="number"
-                                           min="-180" max="180" step="any" inputmode="decimal">
+                                           min="-180" max="180" step="any" inputmode="decimal"
+                                           value="{{ current_sale_details.delivery_longitude|default:'' }}">
                                 </div>
                             </div>
                         </div>
 
                         <div class="mb-3">
-                            <label class="form-label fw-semibold" for="paymentType">Payment received by</label>
+                            <label class="form-label fw-semibold" for="paymentType">Payment method</label>
                             <select class="form-select" id="paymentType" name="payment_type" required>
-                                <option value="CASH">Cash</option>
-                                <option value="UPI">UPI</option>
-                                <option value="CARD">Card</option>
-                                <option value="OTHER">Other</option>
+                                <option value="CASH" {% if current_sale_details.payment_type == "CASH" %}selected{% endif %}>Cash</option>
+                                <option value="UPI" {% if not shop_has_upi or not shop_has_payment_manager %}disabled{% endif %} {% if current_sale_details.payment_type == "UPI" %}selected{% endif %}>Shop UPI QR (Payment Manager approval)</option>
+                                <option value="CARD" {% if current_sale_details.payment_type == "CARD" %}selected{% endif %}>Card</option>
+                                <option value="OTHER" {% if current_sale_details.payment_type == "OTHER" %}selected{% endif %}>Other</option>
+                                <option value="RAZORPAY" {% if not razorpay_configured %}disabled{% endif %} {% if current_sale_details.payment_type == "RAZORPAY" %}selected{% endif %}>Razorpay (online payment)</option>
                             </select>
-                            <div class="form-text">Payment will be recorded as received.</div>
+                            <div class="form-text">
+                                {% if not shop_has_upi %}Set the shop UPI ID in shop settings to accept shop-QR payments.{% elif not shop_has_payment_manager %}Assign an active Payment Manager and grant payment-confirmation permission to accept UPI payments.{% else %}For UPI, report customer payment for manager confirmation.{% endif %}
+                                {% if razorpay_configured %}Razorpay orders are placed only after payment is verified as captured.{% else %}Razorpay is unavailable until the site administrator configures gateway credentials.{% endif %}
+                            </div>
+                        </div>
+                        {% if upi_preview_counter_qr or upi_preview_delivery_qr %}
+                            <section id="upiPaymentPreview" class="border rounded p-3 mb-3" hidden aria-live="polite">
+                                <h3 class="h6 fw-bold">Shop UPI payment QR</h3>
+                                <p class="small text-muted mb-2">
+                                    Preview only: home-delivery route fees and the exact amount are finalized after you place the sale. Use its order-specific QR, then report customer payment for Payment Manager confirmation.
+                                </p>
+                                <div class="d-flex align-items-center gap-3">
+                                    <img id="upiPaymentPreviewQr"
+                                         src="{{ upi_preview_counter_qr }}"
+                                         data-counter-qr="{{ upi_preview_counter_qr }}"
+                                         data-delivery-qr="{{ upi_preview_delivery_qr }}"
+                                         alt="Shop UPI payment QR preview"
+                                         width="180" height="180">
+                                    <div>
+                                        <strong id="upiPaymentPreviewAmount" class="fs-4">₹{{ counter_total|floatformat:2 }}</strong>
+                                        <span class="d-block small text-muted">The order-specific QR and manager-confirmation action appear after placing the sale.</span>
+                                    </div>
+                                </div>
+                            </section>
+                        {% endif %}
+                        {% if razorpay_configured %}
+                            <section id="razorpayPaymentPreview" class="alert alert-primary mb-3" hidden aria-live="polite">
+                                <h3 class="h6 fw-bold">Pay online with Razorpay</h3>
+                                <p class="small mb-2">This amount is a preview; home-delivery route fees are finalized after you place the sale. Secure Razorpay Checkout then opens with the exact amount, and the order is placed only after payment is verified as captured.</p>
+                                <strong id="razorpayPaymentPreviewAmount">₹{{ counter_total|floatformat:2 }}</strong>
+                            </section>
+                        {% endif %}
+                        <div class="form-check mb-3">
+                            <input class="form-check-input" id="saveCustomerForReuse"
+                                   name="save_customer_for_reuse" type="checkbox" checked>
+                            <label class="form-check-label" for="saveCustomerForReuse">
+                                Save customer details for reuse
+                            </label>
+                            <div class="form-text">
+                                Uncheck this to use the customer details for this sale only.
+                            </div>
                         </div>
 
-                        <button class="btn btn-primary btn-lg w-100" type="submit" {% if not cart_lines %}disabled{% endif %}>
+                        <button id="placeSaleButton" class="btn btn-primary btn-lg w-100" type="submit" {% if not cart_lines %}disabled{% endif %}>
                             <i class="bi bi-check2-circle me-1"></i>Place sale
                         </button>
                     </form>
@@ -310,15 +806,31 @@
             </div>
         </aside>
     </div>
+    <div class="pos-mobile-review" aria-label="Current sale summary">
+        <div>
+            <span class="d-block small text-muted">
+                <span id="mobileSaleItemCount">{{ cart_lines|length }}</span>
+                product{{ cart_lines|length|pluralize }}
+            </span>
+            <strong id="mobileSaleTotal">₹{{ counter_total|floatformat:2 }}</strong>
+        </div>
+        <button class="btn btn-primary" id="reviewCurrentSale" type="button"
+                {% if not cart_lines %}disabled{% endif %}>
+            Review sale <i class="bi bi-arrow-down-short ms-1"></i>
+        </button>
+    </div>
 </main>
 {{ draft_snapshot|json_script:"pos-draft-snapshot" }}
 {{ current_sale_snapshot|json_script:"pos-current-sale-snapshot" }}
+{{ map_default_location|json_script:"pos-map-default-location" }}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 (() => {
     const shopId = "{{ shop.id }}";
     const storageKey = `sellerhelper-pos-incomplete-sales-${shopId}`;
     const draftsSection = document.getElementById("incompleteSalesSection");
     const draftsList = document.getElementById("incompleteSalesList");
+    const recentSalesDetails = document.getElementById("recentSalesDetails");
     const currentSaleSnapshot = JSON.parse(
         document.getElementById("pos-current-sale-snapshot").textContent
     );
@@ -357,6 +869,176 @@
         saveDrafts();
     };
 
+    const productSearchForm = document.getElementById("posProductSearchForm");
+    const productSearchInput = document.getElementById("productSearch");
+    const productSearchReset = document.getElementById("resetProductSearch");
+    const productSearchStatus = document.getElementById("productSearchStatus");
+    const productList = document.getElementById("posProductList");
+    const productPagination = document.getElementById("posProductPagination");
+    const scrollRestoreKey = `sellerhelper-pos-scroll-${shopId}`;
+    try {
+        const savedScrollPosition = window.sessionStorage.getItem(scrollRestoreKey);
+        window.sessionStorage.removeItem(scrollRestoreKey);
+        if (savedScrollPosition !== null) {
+            window.requestAnimationFrame(() => {
+                window.scrollTo(0, Number(savedScrollPosition) || 0);
+            });
+        }
+    } catch (error) {
+        console.warn("Could not restore the POS scroll position.", error);
+    }
+    document.addEventListener("submit", (event) => {
+        const form = event.target;
+        if (
+            !(form instanceof HTMLFormElement)
+            || form.id === "placeSaleForm"
+            || !form.closest("#posSaleCard, #posProductList, #scanQrForm")
+        ) return;
+        try {
+            window.sessionStorage.setItem(
+                scrollRestoreKey,
+                String(window.scrollY)
+            );
+        } catch (error) {
+            console.warn("Could not save the POS scroll position.", error);
+        }
+    });
+    document.getElementById("reviewCurrentSale").addEventListener("click", () => {
+        document.getElementById("posSaleCard").scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+        });
+    });
+    let productSearchTimer = null;
+    let productSearchController = null;
+    const renderProductSearchResults = (result) => {
+        productList.replaceChildren();
+        result.products.forEach((product) => {
+            const article = document.createElement("article");
+            article.className = "list-group-item py-3 pos-product-item";
+            const row = document.createElement("div");
+            row.className = "d-flex justify-content-between align-items-center gap-3";
+            const details = document.createElement("div");
+            details.className = "min-w-0";
+            const name = document.createElement("h3");
+            name.className = "h6 fw-semibold mb-1";
+            name.textContent = product.name;
+            details.appendChild(name);
+            const metadata = document.createElement("div");
+            metadata.className = "small text-muted";
+            metadata.textContent = `${product.sku ? `SKU ${product.sku} · ` : ""}${product.unit} · ${product.stock} available`;
+            details.appendChild(metadata);
+            const price = document.createElement("strong");
+            price.className = "d-block mt-1";
+            price.textContent = `₹${Number(product.price).toFixed(2)}`;
+            details.appendChild(price);
+
+            const actions = document.createElement("div");
+            actions.className = "d-flex flex-wrap align-items-center gap-2 flex-shrink-0";
+            const addForm = document.createElement("form");
+            addForm.method = "post";
+            addForm.action = window.location.pathname;
+            addForm.className = "d-flex align-items-center gap-2";
+            const csrfToken = document.querySelector(
+                '#scanQrForm [name="csrfmiddlewaretoken"]'
+            )?.value || "";
+            createHiddenInput(addForm, "csrfmiddlewaretoken", csrfToken);
+            createHiddenInput(addForm, "sale_id", currentSaleSnapshot.id);
+            createHiddenInput(addForm, "action", "add_item");
+            createHiddenInput(addForm, "product_shop_id", product.id);
+            const quantityLabel = document.createElement("label");
+            quantityLabel.className = "visually-hidden";
+            quantityLabel.htmlFor = `live-add-quantity-${product.id}`;
+            quantityLabel.textContent = `Quantity to add for ${product.name}`;
+            const quantity = document.createElement("input");
+            quantity.className = "form-control form-control-sm";
+            quantity.id = `live-add-quantity-${product.id}`;
+            quantity.name = "quantity";
+            quantity.type = "number";
+            quantity.min = "1";
+            quantity.max = String(Math.max(1, Math.floor(Number(product.stock))));
+            quantity.value = "1";
+            quantity.inputMode = "numeric";
+            quantity.style.width = "5.25rem";
+            const addButton = document.createElement("button");
+            addButton.className = "btn btn-sm btn-success";
+            addButton.type = "submit";
+            addButton.setAttribute("aria-label", `Add ${product.name}`);
+            addButton.textContent = "Add";
+            if (Number(product.stock) < 1) addButton.disabled = true;
+            addForm.append(quantityLabel, quantity, addButton);
+            actions.appendChild(addForm);
+
+            const labelLink = document.createElement("a");
+            labelLink.className = "btn btn-sm btn-outline-secondary";
+            labelLink.href = product.label_url;
+            labelLink.target = "_blank";
+            labelLink.rel = "noopener";
+            labelLink.textContent = "Print QR";
+            actions.appendChild(labelLink);
+            row.append(details, actions);
+            article.appendChild(row);
+            productList.appendChild(article);
+        });
+        if (!result.products.length) {
+            const empty = document.createElement("div");
+            empty.className = "list-group-item py-5 text-center text-muted";
+            empty.textContent = "No in-stock products match your search.";
+            productList.appendChild(empty);
+        }
+        productSearchStatus.classList.remove("text-danger");
+        productSearchStatus.textContent = result.truncated
+            ? `Showing ${result.products.length} of ${result.total} matches. Refine your search to see other products.`
+            : `${result.total} matching product${result.total === 1 ? "" : "s"}.`;
+    };
+    const searchProducts = async () => {
+        if (productSearchController) productSearchController.abort();
+        productSearchController = new AbortController();
+        const url = new URL(window.location.href);
+        url.searchParams.set("pos_product_search", "1");
+        url.searchParams.set("q", productSearchInput.value.trim());
+        url.searchParams.set("sale_id", currentSaleSnapshot.id);
+        productSearchStatus.classList.remove("text-danger");
+        productSearchStatus.textContent = "Searching products…";
+        if (productPagination) productPagination.hidden = Boolean(productSearchInput.value.trim());
+        try {
+            const response = await fetch(url, {
+                headers: { "X-Requested-With": "XMLHttpRequest" },
+                signal: productSearchController.signal,
+            });
+            if (!response.ok) {
+                throw new Error(`Product search failed (${response.status}).`);
+            }
+            renderProductSearchResults(await response.json());
+        } catch (error) {
+            if (error.name === "AbortError") return;
+            productSearchStatus.classList.add("text-danger");
+            productSearchStatus.textContent = "Could not search products. Check your connection and try again.";
+            console.error("Could not search POS products.", error);
+        }
+    };
+    productSearchForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        window.clearTimeout(productSearchTimer);
+        void searchProducts();
+    });
+    productSearchInput.addEventListener("input", () => {
+        window.clearTimeout(productSearchTimer);
+        productSearchTimer = window.setTimeout(searchProducts, 250);
+    });
+    productSearchReset.addEventListener("click", () => {
+        productSearchInput.value = "";
+        window.clearTimeout(productSearchTimer);
+        void searchProducts();
+        productSearchInput.focus();
+    });
+
+    document.querySelectorAll("[data-load-pos-sale]").forEach((form) => {
+        form.addEventListener("submit", () => {
+            if (currentSaleSnapshot.items.length) addDraft(currentSaleSnapshot);
+        });
+    });
+
     const draftToSave = JSON.parse(
         document.getElementById("pos-draft-snapshot").textContent
     );
@@ -381,6 +1063,8 @@
     const renderDrafts = () => {
         draftsList.replaceChildren();
         draftsSection.hidden = incompleteSales.length === 0;
+        recentSalesDetails.hidden = incompleteSales.length === 0
+            && recentSalesDetails.dataset.hasServerSales !== "true";
         incompleteSales.forEach((draft) => {
             const row = document.createElement("div");
             row.className = "list-group-item d-flex flex-wrap justify-content-between align-items-center gap-3";
@@ -428,7 +1112,24 @@
                 if (currentSaleSnapshot.items.length) addDraft(currentSaleSnapshot);
             });
             form.appendChild(resumeButton);
-            row.append(details, form);
+
+            const actions = document.createElement("div");
+            actions.className = "d-flex gap-2";
+            actions.appendChild(form);
+            const removeButton = document.createElement("button");
+            removeButton.type = "button";
+            removeButton.className = "btn btn-sm btn-outline-danger";
+            removeButton.textContent = "Remove";
+            removeButton.setAttribute("aria-label", "Remove saved incomplete sale");
+            removeButton.addEventListener("click", () => {
+                incompleteSales = incompleteSales.filter(
+                    (saved) => saved.id !== draft.id
+                );
+                saveDrafts();
+                renderDrafts();
+            });
+            actions.appendChild(removeButton);
+            row.append(details, actions);
             draftsList.appendChild(row);
         });
     };
@@ -548,8 +1249,163 @@
     const deliveryInputs = deliveryFields.querySelectorAll("input, textarea");
     const counterTotalSummary = document.getElementById("counterTotalSummary");
     const deliveryTotalSummary = document.getElementById("deliveryTotalSummary");
+    const paymentType = document.getElementById("paymentType");
+    const upiPaymentPreview = document.getElementById("upiPaymentPreview");
+    const upiPaymentPreviewQr = document.getElementById("upiPaymentPreviewQr");
+    const upiPaymentPreviewAmount = document.getElementById("upiPaymentPreviewAmount");
+    const razorpayPaymentPreview = document.getElementById("razorpayPaymentPreview");
+    const razorpayPaymentPreviewAmount = document.getElementById("razorpayPaymentPreviewAmount");
+    const placeSaleButton = document.getElementById("placeSaleButton");
+    const mobileSaleTotal = document.getElementById("mobileSaleTotal");
     const customerName = document.getElementById("customerName");
     const customerPhone = document.getElementById("customerPhone");
+    const savedCustomer = document.getElementById("savedCustomer");
+    const deliveryAddress = document.getElementById("deliveryAddress");
+    const deliveryPincode = document.getElementById("deliveryPincode");
+    const deliveryLatitude = document.getElementById("deliveryLatitude");
+    const deliveryLongitude = document.getElementById("deliveryLongitude");
+    const updatePaymentPreview = () => {
+        const selectedPayment = paymentType.value;
+        const deliverySelected = document.querySelector('input[name="fulfillment_type"]:checked')?.value === "DELIVERY";
+        const totalSummary = deliverySelected ? deliveryTotalSummary : counterTotalSummary;
+        const total = totalSummary.dataset.total || "0.00";
+        mobileSaleTotal.textContent = `₹${total}`;
+        if (upiPaymentPreview) {
+            upiPaymentPreview.hidden = selectedPayment !== "UPI";
+            if (selectedPayment === "UPI") {
+                upiPaymentPreviewQr.src = deliverySelected
+                    ? upiPaymentPreviewQr.dataset.deliveryQr
+                    : upiPaymentPreviewQr.dataset.counterQr;
+                upiPaymentPreviewAmount.textContent = `₹${total}`;
+            }
+        }
+        if (razorpayPaymentPreview) {
+            razorpayPaymentPreview.hidden = selectedPayment !== "RAZORPAY";
+            razorpayPaymentPreviewAmount.textContent = `₹${total}`;
+        }
+        if (selectedPayment === "UPI") {
+            placeSaleButton.innerHTML = '<i class="bi bi-check2-circle me-1"></i>Place sale and request UPI confirmation';
+        } else if (selectedPayment === "RAZORPAY") {
+            placeSaleButton.innerHTML = '<i class="bi bi-shield-lock me-1"></i>Place sale and continue to Razorpay';
+        } else {
+            placeSaleButton.innerHTML = '<i class="bi bi-check2-circle me-1"></i>Place sale';
+        }
+    };
+    const mapDefaultLocation = JSON.parse(
+        document.getElementById("pos-map-default-location").textContent
+    );
+    let deliveryMap = null;
+    let deliveryMarker = null;
+    if (window.L) {
+        const streetLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+            maxZoom: 19,
+            attribution: "&copy; OpenStreetMap contributors",
+        });
+        const satelliteLayer = L.tileLayer(
+            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+            {
+                maxZoom: 19,
+                attribution: "Tiles &copy; Esri",
+            },
+        );
+        deliveryMap = L.map("deliveryMap").setView(
+            [mapDefaultLocation.lat, mapDefaultLocation.lng],
+            13
+        );
+        streetLayer.addTo(deliveryMap);
+        L.control.layers(
+            {"Street map": streetLayer, "Satellite view": satelliteLayer},
+            null,
+            {collapsed: false},
+        ).addTo(deliveryMap);
+        const setDeliveryPin = (latitude, longitude) => {
+            const point = [Number(latitude), Number(longitude)];
+            if (!point.every(Number.isFinite)) return;
+            deliveryLatitude.value = point[0].toFixed(7);
+            deliveryLongitude.value = point[1].toFixed(7);
+            if (!deliveryMarker) {
+                deliveryMarker = L.marker(point, { draggable: true }).addTo(deliveryMap);
+                deliveryMarker.on("dragend", () => {
+                    const position = deliveryMarker.getLatLng();
+                    deliveryLatitude.value = position.lat.toFixed(7);
+                    deliveryLongitude.value = position.lng.toFixed(7);
+                });
+            } else {
+                deliveryMarker.setLatLng(point);
+            }
+        };
+        deliveryMap.on("click", (event) => {
+            setDeliveryPin(event.latlng.lat, event.latlng.lng);
+        });
+        if (deliveryLatitude.value && deliveryLongitude.value) {
+            setDeliveryPin(deliveryLatitude.value, deliveryLongitude.value);
+            deliveryMap.setView(
+                [Number(deliveryLatitude.value), Number(deliveryLongitude.value)],
+                16
+            );
+        }
+        document.getElementById("useCurrentLocation").addEventListener("click", () => {
+            if (!navigator.geolocation) {
+                window.alert("Location access is not available in this browser.");
+                return;
+            }
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const { latitude, longitude } = position.coords;
+                    setDeliveryPin(latitude, longitude);
+                    deliveryMap.setView([latitude, longitude], 16);
+                },
+                () => window.alert("Could not read your location. You can place the pin on the map instead."),
+                { enableHighAccuracy: true, timeout: 10000 }
+            );
+        });
+    }
+
+    savedCustomer.addEventListener("change", () => {
+        const option = savedCustomer.selectedOptions[0];
+        if (!option.value) {
+            customerName.value = "";
+            customerPhone.value = "";
+            deliveryAddress.value = "";
+            deliveryPincode.value = "";
+            deliveryLatitude.value = "";
+            deliveryLongitude.value = "";
+            if (deliveryMarker) deliveryMap.removeLayer(deliveryMarker);
+            deliveryMarker = null;
+            return;
+        }
+        customerName.value = option.dataset.name || "";
+        customerPhone.value = option.dataset.phone || "";
+        deliveryAddress.value = option.dataset.address || "";
+        deliveryPincode.value = option.dataset.pincode || "";
+        deliveryLatitude.value = option.dataset.latitude || "";
+        deliveryLongitude.value = option.dataset.longitude || "";
+        if (deliveryMap && deliveryLatitude.value && deliveryLongitude.value) {
+            deliveryMap.setView(
+                [Number(deliveryLatitude.value), Number(deliveryLongitude.value)],
+                16
+            );
+            const event = {
+                latlng: {
+                    lat: Number(deliveryLatitude.value),
+                    lng: Number(deliveryLongitude.value),
+                },
+            };
+            if (deliveryMarker) {
+                deliveryMarker.setLatLng([event.latlng.lat, event.latlng.lng]);
+            } else {
+                deliveryMarker = L.marker(
+                    [event.latlng.lat, event.latlng.lng],
+                    { draggable: true },
+                ).addTo(deliveryMap);
+                deliveryMarker.on("dragend", () => {
+                    const position = deliveryMarker.getLatLng();
+                    deliveryLatitude.value = position.lat.toFixed(7);
+                    deliveryLongitude.value = position.lng.toFixed(7);
+                });
+            }
+        }
+    });
     const updateDeliveryFields = () => {
         const deliverySelected = document.querySelector('input[name="fulfillment_type"]:checked')?.value === "DELIVERY";
         deliveryFields.hidden = !deliverySelected;
@@ -560,9 +1416,50 @@
         });
         customerName.required = deliverySelected;
         customerPhone.required = deliverySelected;
+        if (deliverySelected && deliveryMap) {
+            window.setTimeout(() => deliveryMap.invalidateSize(), 100);
+        }
+        updatePaymentPreview();
     };
     fulfillmentOptions.forEach((option) => option.addEventListener("change", updateDeliveryFields));
+    paymentType.addEventListener("change", updatePaymentPreview);
     updateDeliveryFields();
 })();
 </script>
+{% if razorpay_checkout %}
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<script>
+(() => {
+    const button = document.getElementById("openPosRazorpay");
+    const verifyForm = document.getElementById("posRazorpayVerifyForm");
+    if (!button || !verifyForm) return;
+    button.addEventListener("click", () => {
+        if (!window.Razorpay) {
+            window.alert("Razorpay checkout could not be loaded. Please try again.");
+            return;
+        }
+        const checkout = new window.Razorpay({
+            key: "{{ razorpay_key_id|escapejs }}",
+            amount: "{{ razorpay_amount_paise }}",
+            currency: "INR",
+            name: "{{ shop.name|escapejs }}",
+            description: "POS sale {{ payment_request.shop_order.shop_order_number|escapejs }}",
+            order_id: "{{ payment_request.gateway_order_id|escapejs }}",
+            prefill: {
+                name: "{{ payment_request.shop_order.order.customer_name|escapejs }}",
+                contact: "{{ payment_request.shop_order.order.delivery_contact_no|escapejs }}",
+            },
+            theme: {color: "#2563eb"},
+            handler: (result) => {
+                verifyForm.elements.razorpay_order_id.value = result.razorpay_order_id;
+                verifyForm.elements.razorpay_payment_id.value = result.razorpay_payment_id;
+                verifyForm.elements.razorpay_signature.value = result.razorpay_signature;
+                verifyForm.submit();
+            },
+        });
+        checkout.open();
+    });
+})();
+</script>
+{% endif %}
 {% endblock %}

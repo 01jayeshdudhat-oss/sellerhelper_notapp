@@ -57,7 +57,60 @@
                     <div class="card-body p-4">
                         <h2 class="h5 fw-bold">Withdraw to bank</h2>
                         {% if bank_account_registered %}
-                            <p class="small text-muted">Your bank beneficiary is registered securely with RazorpayX.</p>
+                            <p class="small text-muted">
+                                Your withdrawal bank account is linked with RazorpayX. The account number is masked for your security.
+                            </p>
+                            {% if bank_account_details %}
+                                <div class="border rounded p-3 mb-3" aria-label="Linked bank account">
+                                    {% if bank_account_details.holder_name %}
+                                        <div><strong>Account holder:</strong> {{ bank_account_details.holder_name }}</div>
+                                    {% endif %}
+                                    {% if bank_account_details.bank_name %}
+                                        <div><strong>Bank:</strong> {{ bank_account_details.bank_name }}</div>
+                                    {% endif %}
+                                    {% if bank_account_details.masked_account_number %}
+                                        <div><strong>Account number:</strong> {{ bank_account_details.masked_account_number }}</div>
+                                    {% endif %}
+                                    {% if bank_account_details.ifsc %}
+                                        <div><strong>IFSC:</strong> {{ bank_account_details.ifsc }}</div>
+                                    {% endif %}
+                                </div>
+                            {% elif bank_account_details_error %}
+                                <div class="alert alert-warning py-2">
+                                    Could not retrieve bank details from RazorpayX right now. The linked account is unchanged.
+                                </div>
+                            {% endif %}
+                            <details class="mb-3">
+                                <summary class="btn btn-outline-secondary">Edit linked bank account</summary>
+                                <form method="post" class="border rounded p-3 mt-2">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="action" value="update_bank_account">
+                                    <p class="small text-muted">
+                                        Enter the new beneficiary details. New payouts will use the updated account; existing payouts are not changed.
+                                    </p>
+                                    <div class="mb-3">
+                                        <label class="form-label" for="editAccountHolder">Account holder name</label>
+                                        <input class="form-control" id="editAccountHolder" name="account_holder" maxlength="100" autocomplete="name" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label" for="editAccountNumber">New bank account number</label>
+                                        <input class="form-control" id="editAccountNumber" name="account_number" inputmode="numeric" minlength="8" maxlength="34" autocomplete="off" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label" for="editIfsc">IFSC</label>
+                                        <input class="form-control text-uppercase" id="editIfsc" name="ifsc" minlength="11" maxlength="11" autocomplete="off" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label" for="editContactPhone">Beneficiary phone</label>
+                                        <input class="form-control" id="editContactPhone" name="contact_phone" type="tel" inputmode="tel" minlength="10" maxlength="15" autocomplete="tel" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label" for="editContactEmail">Beneficiary email</label>
+                                        <input class="form-control" id="editContactEmail" name="contact_email" type="email" maxlength="100" autocomplete="email" required>
+                                    </div>
+                                    <button class="btn btn-primary" type="submit">Update linked bank account</button>
+                                </form>
+                            </details>
                         {% else %}
                             <p class="small text-muted">Register the receiving bank account for your first payout. Bank details are sent to RazorpayX and are not stored by this app.</p>
                         {% endif %}

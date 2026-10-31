@@ -442,6 +442,46 @@ urlpatterns = [
         name="reject_cod_payment",
     ),
     path(
+        "shop/pos-upi/<int:payment_approval_id>/approve/",
+        views.approve_shop_pos_payment,
+        name="approve_shop_pos_payment",
+    ),
+    path(
+        "shop/pos-upi/<int:payment_approval_id>/report-paid/",
+        views.report_shop_pos_payment,
+        name="report_shop_pos_payment",
+    ),
+    path(
+        "shop/pos-payment/<int:payment_approval_id>/change-method/",
+        views.change_shop_pos_payment_method,
+        name="change_shop_pos_payment_method",
+    ),
+    path(
+        "shop/pos-razorpay/<int:payment_approval_id>/verify/",
+        views.verify_shop_pos_razorpay_payment,
+        name="verify_shop_pos_razorpay_payment",
+    ),
+    path(
+        "shop/pos-upi/<int:payment_approval_id>/reject/",
+        views.reject_shop_pos_payment,
+        name="reject_shop_pos_payment",
+    ),
+    path(
+        "shop/pos-upi/<int:payment_approval_id>/retry/",
+        views.retry_shop_pos_payment,
+        name="retry_shop_pos_payment",
+    ),
+    path(
+        "shop/pos-upi/<int:payment_approval_id>/cancel/",
+        views.cancel_shop_pos_payment,
+        name="cancel_shop_pos_payment",
+    ),
+    path(
+        "shop/pos-payment/<int:payment_approval_id>/load-into-sale/",
+        views.load_shop_pos_payment_into_sale,
+        name="load_shop_pos_payment_into_sale",
+    ),
+    path(
         "shop/<int:shop_id>/riders/<int:rider_id>/confirm-cod-handover/",
         views.confirm_rider_cod_handover_total,
         name="confirm_rider_cod_handover_total",

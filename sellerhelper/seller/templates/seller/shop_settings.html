@@ -158,13 +158,41 @@
                 </div>
                 <div class="row g-3 mb-3">
                     <div class="col-md-6">
+                        <label class="form-label" for="delivery_fee_mode">
+                            Delivery fee calculation
+                        </label>
+                        <select class="form-select" id="delivery_fee_mode" name="delivery_fee_mode">
+                            {% for value, label in shop.DELIVERY_FEE_MODE_CHOICES %}
+                                <option value="{{ value }}" {% if shop.delivery_fee_mode == value %}selected{% endif %}>{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-6">
                         <label class="form-label" for="delivery_fee">
-                            Delivery fee per order (₹)
+                            Fixed delivery fee (₹)
                         </label>
                         <input class="form-control" type="number" id="delivery_fee"
                                name="delivery_fee" min="0" max="999999.99" step="0.01"
                                value="{{ shop.delivery_fee|default:'0.00' }}" required>
-                        <div class="form-text">Customers are charged this amount once for this shop's part of an order. Set 0.00 for free delivery.</div>
+                        <div class="form-text">Used for fixed-fee and fixed-plus-per-kilometer pricing.</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label" for="delivery_fee_per_km">
+                            Delivery fee per road-route kilometer (₹)
+                        </label>
+                        <input class="form-control" type="number" id="delivery_fee_per_km"
+                               name="delivery_fee_per_km" min="0" max="999999.99" step="0.01"
+                               value="{{ shop.delivery_fee_per_km|default:'0.00' }}" required>
+                        <div class="form-text">Used for distance-based modes. Checkout uses the locally configured road map and requires a route to the customer's map pin.</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label" for="free_delivery_minimum">
+                            Minimum order for free delivery (₹)
+                        </label>
+                        <input class="form-control" type="number" id="free_delivery_minimum"
+                               name="free_delivery_minimum" min="0" max="999999.99" step="0.01"
+                               value="{{ shop.free_delivery_minimum|default:'0.00' }}" required>
+                        <div class="form-text">Set 0.00 to disable. Above this discounted order value, the delivery fee decreases proportionally and becomes free at double this amount.</div>
                     </div>
                     {% if shop.gstin %}
                     <div class="col-12">

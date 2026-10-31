@@ -454,7 +454,32 @@ class Shop(models.Model):
         decimal_places=2,
         default=Decimal("0.00"),
         validators=[MinValueValidator(Decimal("0.00"))],
-        help_text="Per-order delivery fee. Leave at 0 for free delivery.",
+        help_text="Fixed delivery fee. Used in fixed and fixed-plus-per-kilometer modes.",
+    )
+    DELIVERY_FEE_MODE_CHOICES = [
+        ("FIXED", "Fixed fee"),
+        ("PER_KM", "Per kilometer"),
+        ("FIXED_AND_PER_KM", "Fixed fee plus per kilometer"),
+    ]
+    delivery_fee_mode = models.CharField(
+        max_length=20,
+        choices=DELIVERY_FEE_MODE_CHOICES,
+        default="FIXED",
+        help_text="Choose how this shop calculates its customer delivery fee.",
+    )
+    delivery_fee_per_km = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+        help_text="Delivery fee per road-route kilometer for distance-based modes.",
+    )
+    free_delivery_minimum = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+        help_text="Minimum discounted product subtotal for free delivery. Set 0 to disable.",
     )
     delivery_hsn_code = models.CharField(
         max_length=8,
@@ -1494,7 +1519,7 @@ class ShopStaff(models.Model):
     can_cancel_orders = models.BooleanField(default=False)
     can_confirm_rider_payments = models.BooleanField(
         default=False,
-        help_text="Allows a payment manager to review rider COD payment requests for this shop.",
+        help_text="Allows this payment manager to confirm rider COD payments and shop counter-sale UPI payments.",
     )
 
     created_at = models.DateTimeField(
@@ -2914,6 +2939,45 @@ class Order(models.Model):
     def __str__(self):
         return self.order_id
 
+
+class ShopPOSCustomer(models.Model):
+    shop = models.ForeignKey(
+        Shop,
+        on_delete=models.CASCADE,
+        related_name="pos_customers",
+    )
+    name = models.CharField(max_length=200)
+    phone = models.CharField(max_length=40)
+    delivery_address = models.TextField(blank=True, default="")
+    delivery_pincode = models.CharField(max_length=20, blank=True, default="")
+    latitude = models.DecimalField(
+        max_digits=10,
+        decimal_places=7,
+        null=True,
+        blank=True,
+    )
+    longitude = models.DecimalField(
+        max_digits=10,
+        decimal_places=7,
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name", "phone", "pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["shop", "phone"],
+                name="uniq_pos_customer_phone_per_shop",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.phone}) · {self.shop.name}"
+
+
 class ShopOrder(models.Model):
 
     FULFILLMENT_DELIVERY = "DELIVERY"
@@ -2939,6 +3003,13 @@ class ShopOrder(models.Model):
         choices=FULFILLMENT_CHOICES,
         default=FULFILLMENT_DELIVERY,
         db_index=True,
+    )
+    pos_customer = models.ForeignKey(
+        ShopPOSCustomer,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="shop_orders",
     )
     pickup_location = models.JSONField(
         default=dict,
@@ -3822,6 +3893,86 @@ class CODPaymentApprovalRequest(models.Model):
             f"COD UPI approval · {self.shop_order} · "
             f"₹{self.qr_amount} · {self.status}"
         )
+
+
+class ShopPOSPaymentApproval(models.Model):
+    STATUS_PENDING = "PENDING"
+    STATUS_REPORTED = "REPORTED"
+    STATUS_APPROVED = "APPROVED"
+    STATUS_REJECTED = "REJECTED"
+    STATUS_CANCELLED = "CANCELLED"
+    PAYMENT_METHOD_CASH = "CASH"
+    PAYMENT_METHOD_UPI = "UPI"
+    PAYMENT_METHOD_CARD = "CARD"
+    PAYMENT_METHOD_OTHER = "OTHER"
+    PAYMENT_METHOD_RAZORPAY = "RAZORPAY"
+    PAYMENT_METHOD_CHOICES = [
+        (PAYMENT_METHOD_CASH, "Cash"),
+        (PAYMENT_METHOD_UPI, "Shop UPI QR"),
+        (PAYMENT_METHOD_CARD, "Card"),
+        (PAYMENT_METHOD_OTHER, "Other"),
+        (PAYMENT_METHOD_RAZORPAY, "Razorpay"),
+    ]
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Awaiting customer payment"),
+        (STATUS_REPORTED, "Customer reported payment"),
+        (STATUS_APPROVED, "Payment approved"),
+        (STATUS_REJECTED, "Payment rejected"),
+        (STATUS_CANCELLED, "Sale cancelled"),
+    ]
+
+    shop = models.ForeignKey(
+        Shop,
+        on_delete=models.PROTECT,
+        related_name="pos_payment_approvals",
+    )
+    shop_order = models.OneToOneField(
+        ShopOrder,
+        on_delete=models.PROTECT,
+        related_name="pos_payment_approval",
+    )
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    payment_method = models.CharField(
+        max_length=12,
+        choices=PAYMENT_METHOD_CHOICES,
+        default=PAYMENT_METHOD_UPI,
+        db_index=True,
+    )
+    upi_id = models.CharField(max_length=255, blank=True, default="")
+    gateway_order_id = models.CharField(max_length=120, blank=True, default="")
+    status = models.CharField(
+        max_length=12,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+        db_index=True,
+    )
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="pos_payment_approvals_requested",
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="pos_payment_approvals_reviewed",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at", "pk"]
+        indexes = [
+            models.Index(
+                fields=["shop", "status", "created_at"],
+                name="pos_pay_shop_status_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return f"POS payment · {self.shop_order} · ₹{self.amount}"
 
 
 class OrderItem(models.Model):

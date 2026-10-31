@@ -148,6 +148,8 @@ from .models import (
     RiderCashLedgerEntry,
     CODBalancePayment,
     CODPaymentApprovalRequest,
+    ShopPOSCustomer,
+    ShopPOSPaymentApproval,
     SiteWallet,
     SiteWalletTransaction,
     ShopPayout,
@@ -746,6 +748,136 @@ def _converted_purchase_quantity(quantity, purchase_value, purchase_unit, invent
     return converted.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
 
 
+class DeliveryRouteUnavailable(ValueError):
+    pass
+
+
+def _address_delivery_coordinates(address, fallback=None):
+    location = dict(fallback) if isinstance(fallback, dict) else {}
+    address_location = getattr(address, "location", None) if address else None
+    if isinstance(address_location, dict):
+        location.update(address_location)
+    latitude = (
+        getattr(address, "latitude", None)
+        if address and getattr(address, "latitude", None) is not None
+        else location.get("lat")
+    )
+    longitude = (
+        getattr(address, "longitude", None)
+        if address and getattr(address, "longitude", None) is not None
+        else location.get("lng")
+    )
+    try:
+        latitude = float(latitude)
+        longitude = float(longitude)
+    except (TypeError, ValueError):
+        return None
+    if (
+        not math.isfinite(latitude)
+        or not math.isfinite(longitude)
+        or not -90 <= latitude <= 90
+        or not -180 <= longitude <= 180
+    ):
+        return None
+    return {"lat": latitude, "lng": longitude}
+
+
+def _shop_delivery_route_distance_km(shop, destination):
+    pay_settings = _delivery_sharing_settings()
+    legacy_network_name = getattr(pay_settings.road_network_geojson, "name", "")
+    road_network_names = tuple(
+        name
+        for name in (
+            legacy_network_name,
+            *pay_settings.road_network_files.values_list(
+                "geojson_file",
+                flat=True,
+            ),
+        )
+        if name
+    )
+    if not road_network_names:
+        raise DeliveryRouteUnavailable(
+            f"Delivery distance for {shop.name} is unavailable because no local road map is configured."
+        )
+    if not destination:
+        raise DeliveryRouteUnavailable(
+            f"Add valid delivery map coordinates to calculate {shop.name}'s delivery fee."
+        )
+    pickups = _shop_pickup_locations(shop)
+    if not pickups:
+        raise DeliveryRouteUnavailable(
+            f"Add valid pickup coordinates for {shop.name} to calculate its delivery fee."
+        )
+
+    def pickup_straight_distance(pickup):
+        distance = distance_km_between_points(
+            pickup["lat"],
+            pickup["lng"],
+            destination["lat"],
+            destination["lng"],
+        )
+        return distance if distance is not None else float("inf")
+
+    selected_pickup = min(
+        pickups,
+        key=pickup_straight_distance,
+    )
+    try:
+        route_distance = local_road_route_distance_km(
+            road_network_names,
+            selected_pickup,
+            destination,
+        )
+    except (OSError, ValueError) as error:
+        raise DeliveryRouteUnavailable(
+            "The local road map could not calculate this delivery route. Please contact the shop."
+        ) from error
+    if route_distance is None:
+        raise DeliveryRouteUnavailable(
+            f"No local road route covers {shop.name}'s pickup and the delivery address. Update the road-map coverage or address coordinates."
+        )
+    return Decimal(str(route_distance))
+
+
+def _shop_delivery_fee(shop, item_subtotal, delivery_location=None):
+    free_delivery_minimum = Decimal(
+        str(getattr(shop, "free_delivery_minimum", Decimal("0.00")) or "0.00")
+    )
+    if free_delivery_minimum > 0 and item_subtotal >= free_delivery_minimum * 2:
+        return Decimal("0.00")
+    mode = getattr(shop, "delivery_fee_mode", "FIXED")
+    fixed_fee = Decimal(
+        str(getattr(shop, "delivery_fee", settings.DELIVERY_SERVICE_FEE))
+    )
+    per_km_rate = Decimal(str(getattr(shop, "delivery_fee_per_km", "0.00")))
+    if mode == "FIXED":
+        fee = fixed_fee
+    elif mode == "PER_KM":
+        fee = (
+            _shop_delivery_route_distance_km(shop, delivery_location)
+            * per_km_rate
+            if per_km_rate
+            else Decimal("0.00")
+        )
+    elif mode == "FIXED_AND_PER_KM":
+        fee = fixed_fee
+        if per_km_rate:
+            fee += (
+                _shop_delivery_route_distance_km(shop, delivery_location)
+                * per_km_rate
+            )
+    else:
+        raise ValueError(f"{shop.name} has an invalid delivery fee mode.")
+    if free_delivery_minimum > 0 and item_subtotal > free_delivery_minimum:
+        remaining_fee_fraction = (
+            (free_delivery_minimum * 2 - item_subtotal)
+            / free_delivery_minimum
+        )
+        fee *= remaining_fee_fraction
+    return fee.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
 def _build_gst_breakdown(
     items,
     address,
@@ -754,6 +886,7 @@ def _build_gst_breakdown(
     require_state=False,
     delivery_fees=None,
     buyer_gstin_override=None,
+    delivery_location=None,
 ):
     cent = Decimal("0.01")
     coupon_discount = Decimal(coupon_discount).quantize(cent, rounding=ROUND_HALF_UP)
@@ -777,6 +910,7 @@ def _build_gst_breakdown(
             "shop": shop,
             "items": [],
             "taxable_amount": Decimal("0.00"),
+            "item_subtotal": Decimal("0.00"),
             "cgst_amount": Decimal("0.00"),
             "sgst_amount": Decimal("0.00"),
             "igst_amount": Decimal("0.00"),
@@ -846,11 +980,18 @@ def _build_gst_breakdown(
         }
         row["items"].append(line)
         row["taxable_amount"] += taxable_amount
+        row["item_subtotal"] += taxable_amount
         row["cgst_amount"] += cgst
         row["sgst_amount"] += sgst
         row["igst_amount"] += igst
 
     for row in rows_by_shop.values():
+        if delivery_fees is None or row["shop"].pk not in delivery_fees:
+            row["delivery_fee"] = _shop_delivery_fee(
+                row["shop"],
+                row["item_subtotal"],
+                delivery_location or _address_delivery_coordinates(address),
+            ).quantize(cent, rounding=ROUND_HALF_UP)
         fee = row["delivery_fee"]
         delivery_total += fee
         delivery_rate = row["delivery_gst_rate"]
@@ -922,6 +1063,14 @@ def _checkout_shop_summary(items, gst_breakdown):
             "product_total": str(product_total),
             "delivery_fee": str(delivery_fee),
             "delivery_free": delivery_fee == Decimal("0.00"),
+            "free_delivery_minimum": str(
+                getattr(shop, "free_delivery_minimum", Decimal("0.00"))
+            ),
+            "free_delivery_at": str(
+                Decimal(
+                    str(getattr(shop, "free_delivery_minimum", "0.00") or "0.00")
+                ) * 2
+            ),
             "delivery_label": "Free" if not delivery_fee else f"₹{delivery_fee:.2f}",
             "gst_total": str(tax_total),
             "shop_total": str(product_total + delivery_fee + tax_total),
@@ -6649,7 +6798,10 @@ def staff_dashboard(request):
             "shop": shop,
             "can_manage_stock": staff.can_manage_stock,
             "can_manage_staff": staff.can_manage_staff,
-            "can_manage_orders": staff.can_view_orders,
+            "can_manage_orders": (
+                staff.can_view_orders
+                or (staff.role == "PACKER" and staff.can_pack_orders)
+            ),
             "can_review_rider_payments": ShopStaff.objects.filter(
                 user=request.user,
                 is_active=True,
@@ -6676,10 +6828,11 @@ def _require_shop_pos_access(request, shop):
         user=request.user,
         is_active=True,
         is_public_rider=False,
-    ).first()
-    if not is_owner and (
-        not staff_membership or not staff_membership.can_view_orders
-    ):
+    ).filter(
+        Q(can_view_orders=True)
+        | Q(role="PACKER", can_pack_orders=True),
+    ).exists()
+    if not is_owner and not staff_membership:
         raise PermissionDenied
 
 
@@ -6895,6 +7048,65 @@ def shop_product_qr_label(request, shop_id, product_shop_id=None):
     )
 
 
+def _create_pos_razorpay_order(amount, receipt):
+    if not settings.RAZORPAY_KEY_ID or not settings.RAZORPAY_KEY_SECRET:
+        raise ValueError("Razorpay credentials are not configured.")
+    amount_paise = int(
+        (amount * Decimal("100")).quantize(
+            Decimal("1"),
+            rounding=ROUND_HALF_UP,
+        )
+    )
+    response = requests.post(
+        "https://api.razorpay.com/v1/orders",
+        auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET),
+        json={
+            "amount": amount_paise,
+            "currency": "INR",
+            "receipt": receipt[:40],
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+    gateway_order = response.json()
+    if (
+        not isinstance(gateway_order, dict)
+        or not isinstance(gateway_order.get("id"), str)
+        or not gateway_order["id"].startswith("order_")
+        or gateway_order.get("amount") != amount_paise
+        or gateway_order.get("currency") != "INR"
+    ):
+        raise ValueError("Razorpay returned an order with unexpected details.")
+    return gateway_order["id"]
+
+
+def _razorpay_order_has_uncleared_payment(gateway_order_id):
+    if (
+        not gateway_order_id
+        or not settings.RAZORPAY_KEY_ID
+        or not settings.RAZORPAY_KEY_SECRET
+    ):
+        raise ValueError("Razorpay order or credentials are unavailable.")
+    response = requests.get(
+        f"https://api.razorpay.com/v1/orders/{gateway_order_id}/payments",
+        auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET),
+        timeout=15,
+    )
+    response.raise_for_status()
+    gateway_payments = response.json()
+    if not isinstance(gateway_payments, dict) or not isinstance(
+        gateway_payments.get("items"),
+        list,
+    ):
+        raise ValueError("Razorpay returned an invalid order payment response.")
+    return any(
+        isinstance(payment, dict)
+        and payment.get("order_id") == gateway_order_id
+        and payment.get("status") in {"authorized", "captured"}
+        for payment in gateway_payments["items"]
+    )
+
+
 @login_required
 def shop_point_of_sale(request, shop_id):
     shop = get_object_or_404(Shop, pk=shop_id)
@@ -6903,6 +7115,7 @@ def shop_point_of_sale(request, shop_id):
     cart_session_key = f"shop_pos_cart_{shop.pk}"
     cart_weights_session_key = f"shop_pos_cart_weights_{shop.pk}"
     sale_session_key = f"shop_pos_sale_id_{shop.pk}"
+    sale_details_session_key = f"shop_pos_sale_details_{shop.pk}"
     scan_feedback_session_key = f"shop_pos_scan_feedback_{shop.pk}"
     cart = request.session.get(cart_session_key, {})
     if not isinstance(cart, dict):
@@ -6924,6 +7137,7 @@ def shop_point_of_sale(request, shop_id):
             cart_weights = {}
             request.session[cart_session_key] = cart
             request.session[cart_weights_session_key] = cart_weights
+            request.session.pop(sale_details_session_key, None)
             active_sale_id = uuid.uuid4().hex
             request.session[sale_session_key] = active_sale_id
         sale_id = active_sale_id
@@ -7037,6 +7251,7 @@ def shop_point_of_sale(request, shop_id):
                     }
                     request.session[cart_session_key] = cart
                     request.session[cart_weights_session_key] = cart_weights
+                    request.session.pop(sale_details_session_key, None)
                     redirect_url = reverse(
                         "shop_point_of_sale",
                         kwargs={"shop_id": shop.pk},
@@ -7298,13 +7513,73 @@ def shop_point_of_sale(request, shop_id):
             delivery_pincode = request.POST.get("delivery_pincode", "").strip()[:20]
             delivery_latitude_raw = request.POST.get("delivery_latitude", "").strip()
             delivery_longitude_raw = request.POST.get("delivery_longitude", "").strip()
+            customer_scope_shop_ids = {shop.pk}
+            if shop.owner_id == request.user.pk:
+                customer_scope_shop_ids.update(
+                    Shop.objects.filter(owner=request.user).values_list("pk", flat=True)
+                )
+            saved_customer = None
+            saved_customer_id = request.POST.get("saved_customer_id", "").strip()
+            if saved_customer_id:
+                try:
+                    saved_customer = ShopPOSCustomer.objects.filter(
+                        pk=int(saved_customer_id),
+                        shop_id__in=customer_scope_shop_ids,
+                    ).first()
+                except (TypeError, ValueError):
+                    saved_customer = None
+                if saved_customer is None:
+                    messages.error(request, "Choose a saved customer from this shop.")
+                    return redirect(
+                        "shop_point_of_sale",
+                        shop_id=shop.pk,
+                    )
+                customer_name = customer_name or saved_customer.name
+                customer_phone = customer_phone or saved_customer.phone
+                delivery_address = delivery_address or saved_customer.delivery_address
+                delivery_pincode = delivery_pincode or saved_customer.delivery_pincode
+                delivery_latitude_raw = (
+                    delivery_latitude_raw
+                    or str(saved_customer.latitude or "")
+                )
+                delivery_longitude_raw = (
+                    delivery_longitude_raw
+                    or str(saved_customer.longitude or "")
+                )
+            save_customer = (
+                bool(customer_name and customer_phone)
+                and request.POST.get("save_customer_for_reuse") == "on"
+            )
             if fulfillment_type not in {
                 ShopOrder.FULFILLMENT_COUNTER,
                 ShopOrder.FULFILLMENT_DELIVERY,
             }:
                 messages.error(request, "Choose customer carry-out or home delivery.")
-            elif payment_type not in {"CASH", "UPI", "CARD", "OTHER"}:
+            elif payment_type not in {"CASH", "UPI", "CARD", "OTHER", "RAZORPAY"}:
                 messages.error(request, "Choose a valid payment method.")
+            elif payment_type == "RAZORPAY" and (
+                not settings.RAZORPAY_KEY_ID or not settings.RAZORPAY_KEY_SECRET
+            ):
+                messages.error(
+                    request,
+                    "Razorpay is not configured. Contact the site administrator or choose another payment method.",
+                )
+            elif payment_type == "UPI" and not shop.upi_id:
+                messages.error(
+                    request,
+                    "Add the shop UPI ID in shop settings before accepting a UPI counter payment.",
+                )
+            elif payment_type == "UPI" and not ShopStaff.objects.filter(
+                shop=shop,
+                is_active=True,
+                is_public_rider=False,
+                role="PAYMENT_MANAGER",
+                can_confirm_rider_payments=True,
+            ).exists():
+                messages.error(
+                    request,
+                    "Assign an active Payment Manager with payment-confirmation permission before accepting UPI counter payments.",
+                )
             elif not cart:
                 messages.error(request, "Add at least one in-stock product before placing the sale.")
             elif fulfillment_type == ShopOrder.FULFILLMENT_DELIVERY and (
@@ -7472,11 +7747,77 @@ def shop_point_of_sale(request, shop_id):
                                             (item["total"] for item in items),
                                             Decimal("0.00"),
                                         )
-                                        delivery_fee = (
-                                            shop.delivery_fee
-                                            if fulfillment_type == ShopOrder.FULFILLMENT_DELIVERY
-                                            else Decimal("0.00")
-                                        )
+                                        try:
+                                            delivery_fee = (
+                                                _shop_delivery_fee(
+                                                    shop,
+                                                    subtotal,
+                                                    delivery_location,
+                                                )
+                                                if fulfillment_type == ShopOrder.FULFILLMENT_DELIVERY
+                                                else Decimal("0.00")
+                                            )
+                                        except DeliveryRouteUnavailable as error:
+                                            messages.error(request, str(error))
+                                            return redirect(
+                                                "shop_point_of_sale",
+                                                shop_id=shop.pk,
+                                            )
+                                        pos_customer = saved_customer
+                                        if save_customer:
+                                            customer_record_shop = (
+                                                saved_customer.shop
+                                                if saved_customer
+                                                else shop
+                                            )
+                                            existing_customer = ShopPOSCustomer.objects.filter(
+                                                shop=customer_record_shop,
+                                                phone=customer_phone,
+                                            ).first()
+                                            customer_defaults = {
+                                                "name": customer_name,
+                                                "delivery_address": (
+                                                    delivery_address
+                                                    or (
+                                                        existing_customer.delivery_address
+                                                        if existing_customer
+                                                        else ""
+                                                    )
+                                                ),
+                                                "delivery_pincode": (
+                                                    delivery_pincode
+                                                    or (
+                                                        existing_customer.delivery_pincode
+                                                        if existing_customer
+                                                        else ""
+                                                    )
+                                                ),
+                                                "latitude": (
+                                                    delivery_latitude
+                                                    if delivery_latitude is not None
+                                                    else (
+                                                        existing_customer.latitude
+                                                        if existing_customer
+                                                        else None
+                                                    )
+                                                ),
+                                                "longitude": (
+                                                    delivery_longitude
+                                                    if delivery_longitude is not None
+                                                    else (
+                                                        existing_customer.longitude
+                                                        if existing_customer
+                                                        else None
+                                                    )
+                                                ),
+                                            }
+                                            pos_customer, _created = (
+                                                ShopPOSCustomer.objects.update_or_create(
+                                                    shop=customer_record_shop,
+                                                    phone=customer_phone,
+                                                    defaults=customer_defaults,
+                                                )
+                                            )
                                         gst_breakdown = _build_gst_breakdown(
                                             items,
                                             SimpleNamespace(
@@ -7497,6 +7838,41 @@ def shop_point_of_sale(request, shop_id):
                                         counter_sale = (
                                             fulfillment_type == ShopOrder.FULFILLMENT_COUNTER
                                         )
+                                        payment_pending = payment_type in {"UPI", "RAZORPAY"}
+                                        initial_status = (
+                                            "PAYMENT_PENDING"
+                                            if payment_pending
+                                            else "DELIVERED"
+                                            if counter_sale
+                                            else "PLACED"
+                                        )
+                                        gateway_order_id = ""
+                                        if payment_type == "RAZORPAY":
+                                            try:
+                                                gateway_order_id = (
+                                                    _create_pos_razorpay_order(
+                                                        total_amount,
+                                                        order_id,
+                                                    )
+                                                )
+                                            except (
+                                                requests.RequestException,
+                                                ValueError,
+                                                TypeError,
+                                            ):
+                                                transaction.set_rollback(True)
+                                                logger.exception(
+                                                    "Could not create Razorpay order for POS sale at shop %s.",
+                                                    shop.pk,
+                                                )
+                                                messages.error(
+                                                    request,
+                                                    "Razorpay could not create the payment. No sale was placed; please retry or choose another payment method.",
+                                                )
+                                                return redirect(
+                                                    "shop_point_of_sale",
+                                                    shop_id=shop.pk,
+                                                )
                                         order = Order.objects.create(
                                             order_id=order_id,
                                             order_source=Order.SOURCE_POS,
@@ -7515,14 +7891,20 @@ def shop_point_of_sale(request, shop_id):
                                             ),
                                             delivery_contact_no=customer_phone,
                                             payment_type=payment_type,
-                                            payment_status="PAID",
-                                            is_payment_done=True,
+                                            payment_status=(
+                                                "PENDING" if payment_pending else "PAID"
+                                            ),
+                                            is_payment_done=not payment_pending,
                                             payment_amount=total_amount,
-                                            finally_received_amount=total_amount,
+                                            finally_received_amount=(
+                                                Decimal("0.00")
+                                                if payment_pending
+                                                else total_amount
+                                            ),
                                             final_billing_amount=total_amount,
                                             gst_amount=gst_breakdown["total_gst"],
                                             is_valid_order=True,
-                                            status="DELIVERED" if counter_sale else "PLACED",
+                                            status=initial_status,
                                             shop=shop,
                                             shop_location=str(shop.location or ""),
                                             shop_delivery_area=str(shop.delivery_area or ""),
@@ -7534,6 +7916,7 @@ def shop_point_of_sale(request, shop_id):
                                             order=order,
                                             shop=shop,
                                             fulfillment_type=fulfillment_type,
+                                            pos_customer=pos_customer,
                                             pickup_location=_select_shop_pickup_location(shop, order),
                                             shop_order_number=shop_order_number,
                                             total_amount=subtotal,
@@ -7559,11 +7942,13 @@ def shop_point_of_sale(request, shop_id):
                                             sgst_amount=tax_row["sgst_amount"],
                                             igst_amount=tax_row["igst_amount"],
                                             delivery_gst_amount=tax_row["delivery_gst_amount"],
-                                            status="DELIVERED" if counter_sale else "PLACED",
-                                            delivery_completed_at=now if counter_sale else None,
+                                            status=initial_status,
+                                            delivery_completed_at=(
+                                                now if counter_sale and not payment_pending else None
+                                            ),
                                             delivery_remark=(
                                                 "Customer carried the purchase from the shop."
-                                                if counter_sale
+                                                if counter_sale and not payment_pending
                                                 else ""
                                             ),
                                         )
@@ -7634,16 +8019,34 @@ def shop_point_of_sale(request, shop_id):
                                             rounding=ROUND_HALF_UP,
                                         )
                                         shop_order.save(update_fields=["items", "total_weight_kg"])
+                                        if payment_pending:
+                                            payment_approval = ShopPOSPaymentApproval.objects.create(
+                                                shop=shop,
+                                                shop_order=shop_order,
+                                                amount=total_amount,
+                                                payment_method=payment_type,
+                                                upi_id=(
+                                                    shop.upi_id
+                                                    if payment_type == "UPI"
+                                                    else ""
+                                                ),
+                                                gateway_order_id=gateway_order_id,
+                                                requested_by=request.user,
+                                            )
+                                        else:
+                                            payment_approval = None
                                         OrderStatusHistory.objects.create(
                                             shop_order=shop_order,
                                             status=shop_order.status,
                                             remark=(
-                                                f"Counter sale completed by {request.user.username}."
+                                                f"{payment_type} payment is awaiting customer payment for {request.user.username}."
+                                                if payment_pending
+                                                else f"Counter sale completed by {request.user.username}."
                                                 if counter_sale
                                                 else f"Home delivery order placed at the shop counter by {request.user.username}."
                                             ),
                                         )
-                                        if not counter_sale:
+                                        if not counter_sale and not payment_pending:
                                             reviewer_ids = set(
                                                 ShopStaff.objects.filter(
                                                     shop=shop,
@@ -7670,7 +8073,23 @@ def shop_point_of_sale(request, shop_id):
                                             ])
                                         request.session.pop(cart_session_key, None)
                                         request.session.pop(cart_weights_session_key, None)
+                                        request.session.pop(sale_details_session_key, None)
                                         request.session.pop(sale_session_key, None)
+                                        if payment_pending:
+                                            if payment_type == "UPI":
+                                                messages.info(
+                                                    request,
+                                                    f"UPI payment of ₹{total_amount:.2f} is awaiting customer payment.",
+                                                )
+                                            else:
+                                                messages.info(
+                                                    request,
+                                                    f"Razorpay payment of ₹{total_amount:.2f} is ready.",
+                                                )
+                                            return redirect(
+                                                f"{reverse('shop_point_of_sale', kwargs={'shop_id': shop.pk})}"
+                                                f"?payment_request={payment_approval.pk}"
+                                            )
                                         messages.success(
                                             request,
                                             f"{'Counter sale' if counter_sale else 'Home delivery order'} "
@@ -7710,7 +8129,38 @@ def shop_point_of_sale(request, shop_id):
             Q(product__product_name__icontains=search)
             | Q(product__product_title__icontains=search)
             | Q(product__sku__icontains=search)
+            | Q(product__barcode__icontains=search)
         )
+    if request.GET.get("pos_product_search") == "1":
+        total_matches = assignments.count()
+        matching_assignments = assignments.order_by(
+            "product__product_name",
+            "pk",
+        )[:100]
+        return JsonResponse({
+            "products": [
+                {
+                    "id": assignment.pk,
+                    "name": assignment.product.product_name,
+                    "sku": assignment.product.sku,
+                    "unit": assignment.product.unit or "unit",
+                    "stock": str(assignment.stock_for_customer(is_b2b=False)),
+                    "price": str(
+                        assignment.effective_price_for_customer(is_b2b=False)
+                    ),
+                    "label_url": reverse(
+                        "shop_product_qr_label",
+                        kwargs={
+                            "shop_id": shop.pk,
+                            "product_shop_id": assignment.pk,
+                        },
+                    ),
+                }
+                for assignment in matching_assignments
+            ],
+            "total": total_matches,
+            "truncated": total_matches > 100,
+        })
     product_page = Paginator(assignments.order_by("product__product_name"), 30).get_page(
         request.GET.get("page")
     )
@@ -7890,6 +8340,120 @@ def shop_point_of_sale(request, shop_id):
     delivery_total = (
         cart_subtotal + delivery_tax["total_gst"] + delivery_tax["delivery_total"]
     ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    customer_shop_ids = {shop.pk}
+    if shop.owner_id == request.user.pk:
+        customer_shop_ids.update(
+            Shop.objects.filter(owner=request.user).values_list("pk", flat=True)
+        )
+    pos_customers = ShopPOSCustomer.objects.filter(
+        shop_id__in=customer_shop_ids,
+    ).select_related("shop")
+    shop_has_payment_manager = ShopStaff.objects.filter(
+        shop=shop,
+        is_active=True,
+        is_public_rider=False,
+        role="PAYMENT_MANAGER",
+        can_confirm_rider_payments=True,
+    ).exists()
+    payment_request = None
+    requested_payment_id = request.GET.get("payment_request", "")
+    if requested_payment_id.isdigit():
+        payment_request = ShopPOSPaymentApproval.objects.filter(
+            pk=int(requested_payment_id),
+            shop=shop,
+        ).select_related("shop_order__order").first()
+        if payment_request:
+            payment_request.qr_code_data_uri = (
+                _upi_payment_qr_data_uri(
+                    payment_request.upi_id,
+                    shop.name,
+                    payment_request.amount,
+                    payment_request.shop_order.shop_order_number
+                    or payment_request.shop_order.order.order_id,
+                )
+                if payment_request.payment_method
+                == ShopPOSPaymentApproval.PAYMENT_METHOD_UPI
+                and payment_request.status in {
+                    ShopPOSPaymentApproval.STATUS_PENDING,
+                    ShopPOSPaymentApproval.STATUS_REPORTED,
+                    ShopPOSPaymentApproval.STATUS_REJECTED,
+                }
+                else ""
+            )
+    recent_unplaced_pos_sales = (
+        ShopPOSPaymentApproval.objects.filter(
+            shop=shop,
+            status__in=[
+                ShopPOSPaymentApproval.STATUS_PENDING,
+                ShopPOSPaymentApproval.STATUS_REPORTED,
+                ShopPOSPaymentApproval.STATUS_REJECTED,
+            ],
+            shop_order__status="PAYMENT_PENDING",
+            shop_order__order__payment_status="PENDING",
+        )
+        .select_related("shop_order__order")
+        .prefetch_related("shop_order__order_items")
+        .order_by("-created_at", "-pk")[:5]
+    )
+    map_default_location = _get_shop_coordinates(shop) or {
+        "lat": 20.5937,
+        "lng": 78.9629,
+    }
+    razorpay_configured = bool(
+        settings.RAZORPAY_KEY_ID and settings.RAZORPAY_KEY_SECRET
+    )
+    upi_preview_available = bool(
+        shop.upi_id and shop_has_payment_manager and cart_lines
+    )
+    upi_preview_counter_qr = (
+        _upi_payment_qr_data_uri(
+            shop.upi_id,
+            shop.name,
+            counter_total,
+            "POS sale",
+        )
+        if upi_preview_available and counter_total > 0
+        else ""
+    )
+    upi_preview_delivery_qr = (
+        _upi_payment_qr_data_uri(
+            shop.upi_id,
+            shop.name,
+            delivery_total,
+            "POS delivery sale",
+        )
+        if upi_preview_available and delivery_total > 0
+        else ""
+    )
+    payment_change_methods = [
+        (method, label)
+        for method, label in ShopPOSPaymentApproval.PAYMENT_METHOD_CHOICES
+        if (
+            method != ShopPOSPaymentApproval.PAYMENT_METHOD_UPI
+            or shop.upi_id and shop_has_payment_manager
+        )
+        and (
+            method != ShopPOSPaymentApproval.PAYMENT_METHOD_RAZORPAY
+            or razorpay_configured
+        )
+    ]
+    razorpay_checkout = bool(
+        payment_request
+        and payment_request.payment_method
+        == ShopPOSPaymentApproval.PAYMENT_METHOD_RAZORPAY
+        and payment_request.status == ShopPOSPaymentApproval.STATUS_PENDING
+        and razorpay_configured
+    )
+    razorpay_amount_paise = (
+        int(
+            (payment_request.amount * Decimal("100")).quantize(
+                Decimal("1"),
+                rounding=ROUND_HALF_UP,
+            )
+        )
+        if razorpay_checkout
+        else 0
+    )
 
     return render(
         request,
@@ -7897,6 +8461,10 @@ def shop_point_of_sale(request, shop_id):
         {
             "shop": shop,
             "sale_id": sale_id,
+            "current_sale_details": request.session.get(
+                sale_details_session_key,
+                {},
+            ),
             "draft_snapshot": draft_snapshot,
             "resumed_draft_id": resumed_draft_id,
             "current_sale_snapshot": {
@@ -7927,6 +8495,19 @@ def shop_point_of_sale(request, shop_id):
             "cart_subtotal": cart_subtotal,
             "counter_total": counter_total,
             "delivery_total": delivery_total,
+            "pos_customers": pos_customers,
+            "payment_request": payment_request,
+            "recent_unplaced_pos_sales": recent_unplaced_pos_sales,
+            "razorpay_configured": razorpay_configured,
+            "razorpay_checkout": razorpay_checkout,
+            "razorpay_key_id": settings.RAZORPAY_KEY_ID,
+            "razorpay_amount_paise": razorpay_amount_paise,
+            "payment_change_methods": payment_change_methods,
+            "map_default_location": map_default_location,
+            "shop_has_upi": bool(shop.upi_id),
+            "shop_has_payment_manager": shop_has_payment_manager,
+            "upi_preview_counter_qr": upi_preview_counter_qr,
+            "upi_preview_delivery_qr": upi_preview_delivery_qr,
             "fulfillment_choices": ShopOrder.FULFILLMENT_CHOICES,
             "continuous_scan": request.GET.get("continuous_scan") == "1",
             "scan_mode": (
@@ -8556,6 +9137,20 @@ def staff_payment_manager_dashboard(request):
         )
         .order_by("created_at", "pk")
     )
+    pending_pos_payment_requests = (
+        ShopPOSPaymentApproval.objects.filter(
+            shop_id__in=shop_ids,
+            payment_method=ShopPOSPaymentApproval.PAYMENT_METHOD_UPI,
+            status=ShopPOSPaymentApproval.STATUS_REPORTED,
+        )
+        .select_related(
+            "shop",
+            "shop_order",
+            "shop_order__order",
+            "requested_by",
+        )
+        .order_by("created_at", "pk")
+    )
     cash_handover_requests = []
     for collection in (
         RiderCashLedgerEntry.objects.filter(
@@ -8591,9 +9186,1015 @@ def staff_payment_manager_dashboard(request):
         {
             "authorized_shops": authorized_memberships,
             "pending_payment_requests": pending_payment_requests,
+            "pending_pos_payment_requests": pending_pos_payment_requests,
             "cash_handover_requests": cash_handover_requests,
         },
     )
+
+
+def _notify_pos_payment_managers(payment_approval):
+    reviewer_ids = set(
+        ShopStaff.objects.filter(
+            shop=payment_approval.shop,
+            is_active=True,
+            is_public_rider=False,
+            role="PAYMENT_MANAGER",
+            can_confirm_rider_payments=True,
+        ).values_list("user_id", flat=True)
+    )
+    if reviewer_ids:
+        Notification.objects.bulk_create([
+            Notification(
+                user_id=user_id,
+                title="Counter-sale UPI payment needs confirmation",
+                message=(
+                    f"Confirm the ₹{payment_approval.amount:.2f} UPI payment for "
+                    f"order {payment_approval.shop_order.shop_order_number or payment_approval.shop_order.order.order_id}."
+                ),
+                notification_type="ORDER",
+                related_url=reverse("staff_payment_manager_dashboard"),
+            )
+            for user_id in reviewer_ids
+        ])
+
+
+@login_required
+@transaction.atomic
+def report_shop_pos_payment(request, payment_approval_id):
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
+    approval = get_object_or_404(
+        ShopPOSPaymentApproval.objects.select_for_update().select_related(
+            "shop",
+            "shop_order",
+            "shop_order__order",
+        ),
+        pk=payment_approval_id,
+    )
+    _require_shop_pos_access(request, approval.shop)
+    order = Order.objects.select_for_update().get(pk=approval.shop_order.order_id)
+    if (
+        approval.payment_method != ShopPOSPaymentApproval.PAYMENT_METHOD_UPI
+        or approval.status != ShopPOSPaymentApproval.STATUS_PENDING
+        or order.payment_status != "PENDING"
+        or order.status != "PAYMENT_PENDING"
+        or approval.shop_order.status != "PAYMENT_PENDING"
+        or order.payment_amount != approval.amount
+    ):
+        messages.error(request, "This UPI payment is no longer waiting for a customer payment report.")
+        return redirect(
+            f"{reverse('shop_point_of_sale', kwargs={'shop_id': approval.shop_id})}"
+            f"?payment_request={approval.pk}"
+        )
+
+    approval.status = ShopPOSPaymentApproval.STATUS_REPORTED
+    approval.save(update_fields=["status", "updated_at"])
+    OrderStatusHistory.objects.create(
+        shop_order=approval.shop_order,
+        status=approval.shop_order.status,
+        remark=f"Customer reported UPI payment received; awaiting Payment Manager verification. Reported by {request.user.username}.",
+    )
+    _notify_pos_payment_managers(approval)
+    queue_order_update(approval.shop_order)
+    messages.info(
+        request,
+        "Customer payment was reported. The order will be placed after a Payment Manager confirms receipt.",
+    )
+    return redirect(
+        f"{reverse('shop_point_of_sale', kwargs={'shop_id': approval.shop_id})}"
+        f"?payment_request={approval.pk}"
+    )
+
+
+def _can_review_pos_payment(user, shop):
+    return bool(
+        user.is_superuser
+        or ShopStaff.objects.filter(
+            shop=shop,
+            user=user,
+            is_active=True,
+            is_public_rider=False,
+            role="PAYMENT_MANAGER",
+            can_confirm_rider_payments=True,
+        ).exists()
+    )
+
+
+@login_required
+@transaction.atomic
+def review_shop_pos_payment(request, payment_approval_id, *, approve):
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
+
+    approval = get_object_or_404(
+        ShopPOSPaymentApproval.objects.select_for_update().select_related(
+            "shop",
+            "shop_order",
+            "shop_order__order",
+            "requested_by",
+        ),
+        pk=payment_approval_id,
+    )
+    if not _can_review_pos_payment(request.user, approval.shop):
+        raise PermissionDenied
+    shop_order = ShopOrder.objects.select_for_update().get(
+        pk=approval.shop_order_id,
+    )
+    order = Order.objects.select_for_update().get(pk=shop_order.order_id)
+    if (
+        approval.payment_method != ShopPOSPaymentApproval.PAYMENT_METHOD_UPI
+        or approval.status != ShopPOSPaymentApproval.STATUS_REPORTED
+        or order.payment_status != "PENDING"
+        or order.status != "PAYMENT_PENDING"
+        or shop_order.status != "PAYMENT_PENDING"
+        or order.payment_amount != approval.amount
+    ):
+        messages.error(request, "This counter-sale payment is no longer awaiting confirmation.")
+        return redirect("staff_payment_manager_dashboard")
+
+    now = timezone.now()
+    approval.reviewed_by = request.user
+    approval.reviewed_at = now
+    if not approve:
+        approval.status = ShopPOSPaymentApproval.STATUS_REJECTED
+        approval.save(update_fields=[
+            "status",
+            "reviewed_by",
+            "reviewed_at",
+            "updated_at",
+        ])
+        OrderStatusHistory.objects.create(
+            shop_order=shop_order,
+            status=shop_order.status,
+            remark=f"Counter-sale UPI payment was rejected by {request.user.username}.",
+        )
+        Notification.objects.create(
+            user=approval.requested_by,
+            title="Counter-sale UPI payment rejected",
+            message=(
+                f"The payment manager rejected the ₹{approval.amount:.2f} UPI payment "
+                f"for order {order.order_id}. Verify the payment, retry confirmation, or cancel the sale."
+            ),
+            notification_type="ORDER",
+            related_url=(
+                f"{reverse('shop_point_of_sale', kwargs={'shop_id': approval.shop_id})}"
+                f"?payment_request={approval.pk}"
+            ),
+        )
+        queue_order_update(shop_order)
+        messages.warning(request, "UPI payment confirmation rejected. The POS staff can retry or cancel the sale.")
+        return redirect("staff_payment_manager_dashboard")
+
+    shop_order.status = (
+        "DELIVERED"
+        if shop_order.fulfillment_type == ShopOrder.FULFILLMENT_COUNTER
+        else "PLACED"
+    )
+    order.status = shop_order.status
+    order.payment_status = "PAID"
+    order.is_payment_done = True
+    order.finally_received_amount = approval.amount
+    if shop_order.fulfillment_type == ShopOrder.FULFILLMENT_COUNTER:
+        shop_order.delivery_completed_at = now
+        shop_order.delivery_remark = "Customer carried the purchase from the shop."
+        order.order_delivered_time = now
+        shop_order.save(update_fields=[
+            "status",
+            "delivery_completed_at",
+            "delivery_remark",
+            "updated_at",
+        ])
+        order.save(update_fields=[
+            "status",
+            "payment_status",
+            "is_payment_done",
+            "finally_received_amount",
+            "order_delivered_time",
+            "updated_at",
+        ])
+    else:
+        shop_order.save(update_fields=["status", "updated_at"])
+        order.save(update_fields=[
+            "status",
+            "payment_status",
+            "is_payment_done",
+            "finally_received_amount",
+            "updated_at",
+        ])
+    approval.status = ShopPOSPaymentApproval.STATUS_APPROVED
+    approval.save(update_fields=[
+        "status",
+        "reviewed_by",
+        "reviewed_at",
+        "updated_at",
+    ])
+    OrderStatusHistory.objects.create(
+        shop_order=shop_order,
+        status=shop_order.status,
+        remark=f"UPI payment of ₹{approval.amount:.2f} confirmed by {request.user.username}.",
+    )
+    if shop_order.fulfillment_type == ShopOrder.FULFILLMENT_DELIVERY:
+        reviewer_ids = set(
+            ShopStaff.objects.filter(
+                shop=approval.shop,
+                is_active=True,
+            ).values_list("user_id", flat=True)
+        )
+        if approval.shop.owner_id:
+            reviewer_ids.add(approval.shop.owner_id)
+        Notification.objects.bulk_create([
+            Notification(
+                user_id=user_id,
+                title="Paid counter delivery order ready",
+                message=f"UPI payment is confirmed for home-delivery order {order.order_id}. Prepare the order.",
+                notification_type="ORDER",
+                related_url=reverse(
+                    "shop_order_detail",
+                    kwargs={"shop_order_id": shop_order.pk},
+                ),
+            )
+            for user_id in reviewer_ids
+        ])
+    Notification.objects.create(
+        user=approval.requested_by,
+        title="Counter-sale UPI payment confirmed",
+        message=f"The payment manager confirmed ₹{approval.amount:.2f} for order {order.order_id}.",
+        notification_type="ORDER",
+        related_url=reverse(
+            "shop_order_detail",
+            kwargs={"shop_order_id": shop_order.pk},
+        ),
+    )
+    queue_order_update(shop_order)
+    messages.success(request, f"UPI payment for {order.order_id} confirmed.")
+    return redirect("staff_payment_manager_dashboard")
+
+
+@login_required
+def approve_shop_pos_payment(request, payment_approval_id):
+    return review_shop_pos_payment(request, payment_approval_id, approve=True)
+
+
+@login_required
+def reject_shop_pos_payment(request, payment_approval_id):
+    return review_shop_pos_payment(request, payment_approval_id, approve=False)
+
+
+@login_required
+@transaction.atomic
+def change_shop_pos_payment_method(request, payment_approval_id):
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
+    approval = get_object_or_404(
+        ShopPOSPaymentApproval.objects.select_for_update().select_related(
+            "shop",
+            "shop_order",
+            "shop_order__order",
+        ),
+        pk=payment_approval_id,
+    )
+    _require_shop_pos_access(request, approval.shop)
+    shop_order = ShopOrder.objects.select_for_update().get(pk=approval.shop_order_id)
+    order = Order.objects.select_for_update().get(pk=shop_order.order_id)
+    pos_url = (
+        f"{reverse('shop_point_of_sale', kwargs={'shop_id': approval.shop_id})}"
+        f"?payment_request={approval.pk}"
+    )
+    if (
+        approval.status != ShopPOSPaymentApproval.STATUS_PENDING
+        or order.payment_status != "PENDING"
+        or order.status != "PAYMENT_PENDING"
+        or shop_order.status != "PAYMENT_PENDING"
+        or order.payment_amount != approval.amount
+    ):
+        messages.error(
+            request,
+            "The payment method can only be changed before payment is reported or confirmed.",
+        )
+        return redirect(pos_url)
+
+    new_method = request.POST.get("payment_method", "").strip().upper()
+    valid_methods = {
+        ShopPOSPaymentApproval.PAYMENT_METHOD_CASH,
+        ShopPOSPaymentApproval.PAYMENT_METHOD_UPI,
+        ShopPOSPaymentApproval.PAYMENT_METHOD_CARD,
+        ShopPOSPaymentApproval.PAYMENT_METHOD_OTHER,
+        ShopPOSPaymentApproval.PAYMENT_METHOD_RAZORPAY,
+    }
+    if new_method not in valid_methods:
+        messages.error(request, "Choose a valid payment method.")
+        return redirect(pos_url)
+    if new_method == approval.payment_method:
+        messages.info(request, "This is already the selected payment method.")
+        return redirect(pos_url)
+    if new_method == ShopPOSPaymentApproval.PAYMENT_METHOD_UPI:
+        if not approval.shop.upi_id:
+            messages.error(request, "Add the shop UPI ID before switching to UPI.")
+            return redirect(pos_url)
+        if not ShopStaff.objects.filter(
+            shop=approval.shop,
+            is_active=True,
+            is_public_rider=False,
+            role="PAYMENT_MANAGER",
+            can_confirm_rider_payments=True,
+        ).exists():
+            messages.error(
+                request,
+                "Assign an active Payment Manager with payment-confirmation permission before switching to UPI.",
+            )
+            return redirect(pos_url)
+    if new_method == ShopPOSPaymentApproval.PAYMENT_METHOD_RAZORPAY and (
+        not settings.RAZORPAY_KEY_ID or not settings.RAZORPAY_KEY_SECRET
+    ):
+        messages.error(request, "Razorpay is not configured.")
+        return redirect(pos_url)
+
+    if approval.payment_method == ShopPOSPaymentApproval.PAYMENT_METHOD_RAZORPAY:
+        try:
+            if _razorpay_order_has_uncleared_payment(approval.gateway_order_id):
+                messages.error(
+                    request,
+                    "Razorpay shows an authorized or captured payment. Verify its result before changing the method.",
+                )
+                return redirect(pos_url)
+        except (requests.RequestException, ValueError, TypeError):
+            logger.exception(
+                "Could not verify Razorpay state before changing POS payment method %s.",
+                approval.pk,
+            )
+            messages.error(
+                request,
+                "Could not confirm Razorpay payment status. The method was not changed; retry or contact support.",
+            )
+            return redirect(pos_url)
+
+    gateway_order_id = ""
+    if new_method == ShopPOSPaymentApproval.PAYMENT_METHOD_RAZORPAY:
+        try:
+            gateway_order_id = _create_pos_razorpay_order(
+                approval.amount,
+                order.order_id,
+            )
+        except (requests.RequestException, ValueError, TypeError):
+            logger.exception(
+                "Could not create Razorpay order while changing POS payment method %s.",
+                approval.pk,
+            )
+            messages.error(
+                request,
+                "Razorpay could not create the payment. The existing payment method was not changed.",
+            )
+            return redirect(pos_url)
+
+    now = timezone.now()
+    approval.payment_method = new_method
+    approval.upi_id = (
+        approval.shop.upi_id
+        if new_method == ShopPOSPaymentApproval.PAYMENT_METHOD_UPI
+        else ""
+    )
+    approval.gateway_order_id = gateway_order_id
+    approval.reviewed_by = None
+    approval.reviewed_at = None
+    order.payment_type = new_method
+
+    if new_method in {
+        ShopPOSPaymentApproval.PAYMENT_METHOD_UPI,
+        ShopPOSPaymentApproval.PAYMENT_METHOD_RAZORPAY,
+    }:
+        approval.status = ShopPOSPaymentApproval.STATUS_PENDING
+        approval.save(update_fields=[
+            "payment_method",
+            "upi_id",
+            "gateway_order_id",
+            "reviewed_by",
+            "reviewed_at",
+            "status",
+            "updated_at",
+        ])
+        order.save(update_fields=["payment_type", "updated_at"])
+        OrderStatusHistory.objects.create(
+            shop_order=shop_order,
+            status=shop_order.status,
+            remark=f"POS payment method changed to {new_method} by {request.user.username}; awaiting payment.",
+        )
+        queue_order_update(shop_order)
+        messages.success(request, f"Payment method changed to {new_method}.")
+        return redirect(pos_url)
+
+    next_status = (
+        "DELIVERED"
+        if shop_order.fulfillment_type == ShopOrder.FULFILLMENT_COUNTER
+        else "PLACED"
+    )
+    approval.status = ShopPOSPaymentApproval.STATUS_APPROVED
+    approval.reviewed_by = request.user
+    approval.reviewed_at = now
+    approval.save(update_fields=[
+        "payment_method",
+        "upi_id",
+        "gateway_order_id",
+        "reviewed_by",
+        "reviewed_at",
+        "status",
+        "updated_at",
+    ])
+    shop_order.status = next_status
+    if shop_order.fulfillment_type == ShopOrder.FULFILLMENT_COUNTER:
+        shop_order.delivery_completed_at = now
+        shop_order.delivery_remark = "Customer carried the purchase from the shop."
+    shop_order.save(update_fields=[
+        "status",
+        "delivery_completed_at",
+        "delivery_remark",
+        "updated_at",
+    ])
+    order.status = next_status
+    order.payment_status = "PAID"
+    order.payment_type = new_method
+    order.is_payment_done = True
+    order.finally_received_amount = approval.amount
+    if shop_order.fulfillment_type == ShopOrder.FULFILLMENT_COUNTER:
+        order.order_delivered_time = now
+    order.save(update_fields=[
+        "status",
+        "payment_status",
+        "payment_type",
+        "is_payment_done",
+        "finally_received_amount",
+        "order_delivered_time",
+        "updated_at",
+    ])
+    OrderStatusHistory.objects.create(
+        shop_order=shop_order,
+        status=next_status,
+        remark=f"POS payment method changed to {new_method} and payment recorded by {request.user.username}.",
+    )
+    if shop_order.fulfillment_type == ShopOrder.FULFILLMENT_DELIVERY:
+        reviewer_ids = set(
+            ShopStaff.objects.filter(
+                shop=approval.shop,
+                is_active=True,
+            ).values_list("user_id", flat=True)
+        )
+        if approval.shop.owner_id:
+            reviewer_ids.add(approval.shop.owner_id)
+        Notification.objects.bulk_create([
+            Notification(
+                user_id=user_id,
+                title="Paid counter delivery order ready",
+                message=f"Payment is recorded for home-delivery order {order.order_id}. Prepare the order.",
+                notification_type="ORDER",
+                related_url=reverse(
+                    "shop_order_detail",
+                    kwargs={"shop_order_id": shop_order.pk},
+                ),
+            )
+            for user_id in reviewer_ids
+        ])
+    queue_order_update(shop_order)
+    messages.success(
+        request,
+        f"Payment method changed to {new_method}; order {order.order_id} was placed.",
+    )
+    return redirect(
+        "shop_order_detail",
+        shop_order_id=shop_order.pk,
+    )
+
+
+@login_required
+@transaction.atomic
+def verify_shop_pos_razorpay_payment(request, payment_approval_id):
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
+    approval = get_object_or_404(
+        ShopPOSPaymentApproval.objects.select_for_update().select_related(
+            "shop",
+            "shop_order",
+            "shop_order__order",
+            "requested_by",
+        ),
+        pk=payment_approval_id,
+    )
+    _require_shop_pos_access(request, approval.shop)
+    order = Order.objects.select_for_update().get(pk=approval.shop_order.order_id)
+    razorpay_order_id = request.POST.get("razorpay_order_id", "")
+    payment_id = request.POST.get("razorpay_payment_id", "")
+    signature = request.POST.get("razorpay_signature", "")
+    if (
+        approval.payment_method != ShopPOSPaymentApproval.PAYMENT_METHOD_RAZORPAY
+        or approval.status != ShopPOSPaymentApproval.STATUS_PENDING
+        or order.payment_status != "PENDING"
+        or order.status != "PAYMENT_PENDING"
+        or approval.shop_order.status != "PAYMENT_PENDING"
+        or order.payment_amount != approval.amount
+        or razorpay_order_id != approval.gateway_order_id
+        or not payment_id.startswith("pay_")
+        or not payment_id[4:].isalnum()
+        or not signature
+        or not settings.RAZORPAY_KEY_ID
+        or not settings.RAZORPAY_KEY_SECRET
+    ):
+        messages.error(request, "Razorpay payment could not be matched to this pending sale.")
+        return redirect(
+            f"{reverse('shop_point_of_sale', kwargs={'shop_id': approval.shop_id})}"
+            f"?payment_request={approval.pk}"
+        )
+
+    signature_payload = f"{razorpay_order_id}|{payment_id}".encode()
+    expected_signature = hmac.new(
+        settings.RAZORPAY_KEY_SECRET.encode(),
+        signature_payload,
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected_signature, signature):
+        logger.warning(
+            "Invalid Razorpay signature for POS payment approval %s.",
+            approval.pk,
+        )
+        messages.error(request, "Razorpay payment verification failed. The sale is still pending.")
+        return redirect(
+            f"{reverse('shop_point_of_sale', kwargs={'shop_id': approval.shop_id})}"
+            f"?payment_request={approval.pk}"
+        )
+
+    try:
+        payment_response = requests.get(
+            f"https://api.razorpay.com/v1/payments/{payment_id}",
+            auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET),
+            timeout=15,
+        )
+        payment_response.raise_for_status()
+        payment = payment_response.json()
+        expected_amount = int(
+            (approval.amount * Decimal("100")).quantize(
+                Decimal("1"),
+                rounding=ROUND_HALF_UP,
+            )
+        )
+        if (
+            not isinstance(payment, dict)
+            or payment.get("order_id") != approval.gateway_order_id
+            or payment.get("amount") != expected_amount
+            or payment.get("currency") != "INR"
+            or payment.get("status") != "captured"
+        ):
+            messages.error(
+                request,
+                "Razorpay has not confirmed a captured payment for this sale. The order remains pending.",
+            )
+            return redirect(
+                f"{reverse('shop_point_of_sale', kwargs={'shop_id': approval.shop_id})}"
+                f"?payment_request={approval.pk}"
+            )
+    except (requests.RequestException, ValueError, TypeError):
+        logger.exception(
+            "Could not confirm Razorpay payment for POS approval %s.",
+            approval.pk,
+        )
+        messages.error(
+            request,
+            "Could not confirm the Razorpay payment. The order remains pending; retry verification or contact support.",
+        )
+        return redirect(
+            f"{reverse('shop_point_of_sale', kwargs={'shop_id': approval.shop_id})}"
+            f"?payment_request={approval.pk}"
+        )
+
+    now = timezone.now()
+    shop_order = approval.shop_order
+    next_status = (
+        "DELIVERED"
+        if shop_order.fulfillment_type == ShopOrder.FULFILLMENT_COUNTER
+        else "PLACED"
+    )
+    shop_order.status = next_status
+    shop_order.save(update_fields=["status", "updated_at"])
+    order.status = next_status
+    order.payment_status = "PAID"
+    order.is_payment_done = True
+    order.payment_id = payment_id
+    order.finally_received_amount = approval.amount
+    order.save(update_fields=[
+        "status",
+        "payment_status",
+        "is_payment_done",
+        "payment_id",
+        "finally_received_amount",
+        "updated_at",
+    ])
+    if shop_order.fulfillment_type == ShopOrder.FULFILLMENT_COUNTER:
+        shop_order.delivery_completed_at = now
+        shop_order.delivery_remark = "Customer carried the purchase from the shop."
+        shop_order.save(update_fields=[
+            "delivery_completed_at",
+            "delivery_remark",
+            "updated_at",
+        ])
+        order.order_delivered_time = now
+        order.save(update_fields=["order_delivered_time", "updated_at"])
+    approval.status = ShopPOSPaymentApproval.STATUS_APPROVED
+    approval.save(update_fields=["status", "updated_at"])
+    OrderStatusHistory.objects.create(
+        shop_order=shop_order,
+        status=next_status,
+        remark=f"Razorpay captured payment of ₹{approval.amount:.2f} verified for order {order.order_id}.",
+    )
+    if shop_order.fulfillment_type == ShopOrder.FULFILLMENT_DELIVERY:
+        reviewer_ids = set(
+            ShopStaff.objects.filter(
+                shop=approval.shop,
+                is_active=True,
+            ).values_list("user_id", flat=True)
+        )
+        if approval.shop.owner_id:
+            reviewer_ids.add(approval.shop.owner_id)
+        Notification.objects.bulk_create([
+            Notification(
+                user_id=user_id,
+                title="Paid counter delivery order ready",
+                message=f"Razorpay payment is confirmed for home-delivery order {order.order_id}. Prepare the order.",
+                notification_type="ORDER",
+                related_url=reverse(
+                    "shop_order_detail",
+                    kwargs={"shop_order_id": shop_order.pk},
+                ),
+            )
+            for user_id in reviewer_ids
+        ])
+    Notification.objects.create(
+        user=approval.requested_by,
+        title="Counter-sale Razorpay payment confirmed",
+        message=f"Razorpay confirmed ₹{approval.amount:.2f} for order {order.order_id}.",
+        notification_type="ORDER",
+        related_url=reverse(
+            "shop_order_detail",
+            kwargs={"shop_order_id": shop_order.pk},
+        ),
+    )
+    queue_order_update(shop_order)
+    messages.success(request, f"Razorpay payment verified and {order.order_id} placed.")
+    return redirect(
+        "shop_order_detail",
+        shop_order_id=shop_order.pk,
+    )
+
+
+@login_required
+@transaction.atomic
+def retry_shop_pos_payment(request, payment_approval_id):
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
+    approval = get_object_or_404(
+        ShopPOSPaymentApproval.objects.select_for_update().select_related(
+            "shop",
+            "shop_order",
+            "shop_order__order",
+        ),
+        pk=payment_approval_id,
+    )
+    _require_shop_pos_access(request, approval.shop)
+    order = Order.objects.select_for_update().get(pk=approval.shop_order.order_id)
+    if (
+        approval.status != ShopPOSPaymentApproval.STATUS_REJECTED
+        or order.status != "PAYMENT_PENDING"
+        or approval.shop_order.status != "PAYMENT_PENDING"
+    ):
+        messages.error(request, "This UPI payment cannot be retried.")
+        return redirect("shop_point_of_sale", shop_id=approval.shop_id)
+    approval.status = ShopPOSPaymentApproval.STATUS_PENDING
+    approval.reviewed_by = None
+    approval.reviewed_at = None
+    approval.save(update_fields=[
+        "status",
+        "reviewed_by",
+        "reviewed_at",
+        "updated_at",
+    ])
+    messages.info(
+        request,
+        "Ask the customer to pay, then report payment for Payment Manager verification.",
+    )
+    return redirect(
+        f"{reverse('shop_point_of_sale', kwargs={'shop_id': approval.shop_id})}"
+        f"?payment_request={approval.pk}"
+    )
+
+
+@login_required
+@transaction.atomic
+def load_shop_pos_payment_into_sale(request, payment_approval_id):
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
+    approval = get_object_or_404(
+        ShopPOSPaymentApproval.objects.select_for_update().select_related(
+            "shop",
+            "shop_order",
+            "shop_order__order",
+            "shop_order__pos_customer",
+        ),
+        pk=payment_approval_id,
+    )
+    shop = approval.shop
+    _require_shop_pos_access(request, shop)
+    shop_order = ShopOrder.objects.select_for_update().get(pk=approval.shop_order_id)
+    order = Order.objects.select_for_update().get(pk=shop_order.order_id)
+    pos_url = reverse("shop_point_of_sale", kwargs={"shop_id": shop.pk})
+    sale_id = request.session.get(f"shop_pos_sale_id_{shop.pk}", "")
+    if not sale_id:
+        sale_id = uuid.uuid4().hex
+        request.session[f"shop_pos_sale_id_{shop.pk}"] = sale_id
+    sale_url = f"{pos_url}?{urlencode({'sale_id': sale_id})}"
+
+    if (
+        approval.status not in {
+            ShopPOSPaymentApproval.STATUS_PENDING,
+            ShopPOSPaymentApproval.STATUS_REJECTED,
+        }
+        or order.status != "PAYMENT_PENDING"
+        or shop_order.status != "PAYMENT_PENDING"
+        or order.payment_status != "PENDING"
+        or order.is_payment_done
+    ):
+        messages.error(
+            request,
+            "Only unpaid, unreported sales can be loaded into the current sale.",
+        )
+        return redirect(sale_url)
+
+    if approval.payment_method == ShopPOSPaymentApproval.PAYMENT_METHOD_RAZORPAY:
+        try:
+            if _razorpay_order_has_uncleared_payment(approval.gateway_order_id):
+                messages.error(
+                    request,
+                    "Razorpay shows an authorized or captured payment. Verify its result before loading this sale.",
+                )
+                return redirect(sale_url)
+        except (requests.RequestException, ValueError, TypeError):
+            logger.exception(
+                "Could not verify Razorpay state before loading POS payment %s into a sale.",
+                approval.pk,
+            )
+            messages.error(
+                request,
+                "Could not confirm Razorpay payment status. The sale was not loaded; retry or contact support.",
+            )
+            return redirect(sale_url)
+
+    order_items = list(
+        OrderItem.objects.select_for_update()
+        .filter(shop_order=shop_order)
+        .order_by("pk")
+    )
+    if not order_items or any(
+        item.product_shop_id is None or item.quantity <= 0
+        for item in order_items
+    ):
+        messages.error(
+            request,
+            "This sale's product details are incomplete, so it cannot be loaded.",
+        )
+        return redirect(sale_url)
+
+    assignment_ids = {item.product_shop_id for item in order_items}
+    assignments = {
+        assignment.pk: assignment
+        for assignment in ProductShop.objects.select_for_update()
+        .select_related("product")
+        .filter(pk__in=assignment_ids, shop=shop)
+    }
+    if (
+        len(assignments) != len(assignment_ids)
+        or any(
+            not assignments[item.product_shop_id].is_active
+            or not assignments[item.product_shop_id].product.is_active
+            for item in order_items
+        )
+    ):
+        messages.error(
+            request,
+            "Some products in this sale are no longer available at this shop.",
+        )
+        return redirect(sale_url)
+
+    restored_quantities = {}
+    restored_weights = {}
+    for item in order_items:
+        assignment = assignments[item.product_shop_id]
+        assignment_key = str(assignment.pk)
+        restored_quantities[assignment_key] = (
+            restored_quantities.get(assignment_key, 0) + item.quantity
+        )
+        if assignment.product.is_approximate_weight:
+            weight = item.final_weight or item.estimated_weight
+            if weight is None or weight <= 0:
+                messages.error(
+                    request,
+                    f"{item.product_name} has no valid weight and cannot be loaded.",
+                )
+                return redirect(sale_url)
+            restored_weights[assignment_key] = str(
+                Decimal(restored_weights.get(assignment_key, "0")) + weight
+            )
+
+    now = timezone.now()
+    for item in order_items:
+        assignment = assignments[item.product_shop_id]
+        assignment.stock += Decimal(item.quantity)
+        assignment.save(update_fields=["stock"])
+        StockMovement.objects.create(
+            product_shop=assignment,
+            movement_type="ADJUSTMENT",
+            quantity=Decimal(item.quantity),
+            reference=f"{order.order_id} loaded into POS sale",
+            created_by=request.user,
+        )
+
+    approval.status = ShopPOSPaymentApproval.STATUS_CANCELLED
+    approval.reviewed_by = request.user
+    approval.reviewed_at = now
+    approval.save(update_fields=[
+        "status",
+        "reviewed_by",
+        "reviewed_at",
+        "updated_at",
+    ])
+    shop_order.status = "CANCELLED"
+    shop_order.cancellation_source = "SHOP"
+    shop_order.save(update_fields=["status", "cancellation_source", "updated_at"])
+    order.status = "CANCELLED"
+    order.payment_status = "FAILED"
+    order.is_payment_done = False
+    order.finally_received_amount = Decimal("0.00")
+    order.is_valid_order = False
+    order.cancellation_source = "SHOP"
+    order.save(update_fields=[
+        "status",
+        "payment_status",
+        "is_payment_done",
+        "finally_received_amount",
+        "is_valid_order",
+        "cancellation_source",
+        "updated_at",
+    ])
+    OrderStatusHistory.objects.create(
+        shop_order=shop_order,
+        status="CANCELLED",
+        remark=f"Unpaid POS sale loaded into the current sale by {request.user.username}; stock restored.",
+    )
+    queue_order_update(shop_order)
+
+    request.session[f"shop_pos_cart_{shop.pk}"] = restored_quantities
+    request.session[f"shop_pos_cart_weights_{shop.pk}"] = restored_weights
+    pos_customer = shop_order.pos_customer
+    latitude = (
+        pos_customer.latitude
+        if pos_customer and pos_customer.latitude is not None
+        else ""
+    )
+    longitude = (
+        pos_customer.longitude
+        if pos_customer and pos_customer.longitude is not None
+        else ""
+    )
+    if not latitude or not longitude:
+        coordinates = order.delivery_location.split(",", 1)
+        if len(coordinates) == 2:
+            latitude = latitude or coordinates[0]
+            longitude = longitude or coordinates[1]
+    request.session[f"shop_pos_sale_details_{shop.pk}"] = {
+        "fulfillment_type": shop_order.fulfillment_type,
+        "customer_name": order.customer_name or (
+            pos_customer.name if pos_customer else ""
+        ),
+        "customer_phone": order.delivery_contact_no or (
+            pos_customer.phone if pos_customer else ""
+        ),
+        "delivery_address": order.delivery_address or (
+            pos_customer.delivery_address if pos_customer else ""
+        ),
+        "delivery_pincode": order.delivery_pincode or (
+            pos_customer.delivery_pincode if pos_customer else ""
+        ),
+        "delivery_latitude": str(latitude),
+        "delivery_longitude": str(longitude),
+        "payment_type": approval.payment_method,
+    }
+    messages.success(request, "Sale items loaded into the current sale; the previous unpaid order was cancelled.")
+    return redirect(sale_url)
+
+
+@login_required
+@transaction.atomic
+def cancel_shop_pos_payment(request, payment_approval_id):
+    if request.method != "POST":
+        return HttpResponse("POST required.", status=405)
+    approval = get_object_or_404(
+        ShopPOSPaymentApproval.objects.select_for_update().select_related(
+            "shop",
+            "shop_order",
+            "shop_order__order",
+        ),
+        pk=payment_approval_id,
+    )
+    _require_shop_pos_access(request, approval.shop)
+    shop_order = ShopOrder.objects.select_for_update().get(pk=approval.shop_order_id)
+    order = Order.objects.select_for_update().get(pk=shop_order.order_id)
+    if (
+        approval.status not in {
+            ShopPOSPaymentApproval.STATUS_PENDING,
+            ShopPOSPaymentApproval.STATUS_REPORTED,
+            ShopPOSPaymentApproval.STATUS_REJECTED,
+        }
+        or order.status != "PAYMENT_PENDING"
+        or shop_order.status != "PAYMENT_PENDING"
+    ):
+        messages.error(request, "This counter sale can no longer be cancelled from the POS.")
+        return redirect("shop_point_of_sale", shop_id=approval.shop_id)
+    if approval.payment_method == ShopPOSPaymentApproval.PAYMENT_METHOD_RAZORPAY:
+        try:
+            has_uncleared_payment = _razorpay_order_has_uncleared_payment(
+                approval.gateway_order_id,
+            )
+            if has_uncleared_payment:
+                messages.error(
+                    request,
+                    "Razorpay has an authorized or captured payment for this sale. Verify payment before cancelling it.",
+                )
+                return redirect(
+                    f"{reverse('shop_point_of_sale', kwargs={'shop_id': approval.shop_id})}"
+                    f"?payment_request={approval.pk}"
+                )
+        except (requests.RequestException, ValueError, TypeError):
+            logger.exception(
+                "Could not check Razorpay payment state before cancelling POS payment %s.",
+                approval.pk,
+            )
+            messages.error(
+                request,
+                "Could not confirm Razorpay payment status. The sale was not cancelled; retry or contact support.",
+            )
+            return redirect(
+                f"{reverse('shop_point_of_sale', kwargs={'shop_id': approval.shop_id})}"
+                f"?payment_request={approval.pk}"
+            )
+    for order_item in OrderItem.objects.select_for_update().filter(
+        shop_order=shop_order,
+        product_shop__isnull=False,
+    ):
+        assignment = ProductShop.objects.select_for_update().get(
+            pk=order_item.product_shop_id,
+        )
+        assignment.stock += Decimal(order_item.quantity)
+        assignment.save(update_fields=["stock"])
+        StockMovement.objects.create(
+            product_shop=assignment,
+            movement_type="ADJUSTMENT",
+            quantity=Decimal(order_item.quantity),
+            reference=f"{order.order_id} payment-cancelled",
+            created_by=request.user,
+        )
+    now = timezone.now()
+    approval.status = ShopPOSPaymentApproval.STATUS_CANCELLED
+    approval.reviewed_by = request.user
+    approval.reviewed_at = now
+    approval.save(update_fields=[
+        "status",
+        "reviewed_by",
+        "reviewed_at",
+        "updated_at",
+    ])
+    shop_order.status = "CANCELLED"
+    shop_order.cancellation_source = "SHOP"
+    shop_order.save(update_fields=[
+        "status",
+        "cancellation_source",
+        "updated_at",
+    ])
+    order.status = "CANCELLED"
+    order.payment_status = "FAILED"
+    order.is_payment_done = False
+    order.finally_received_amount = Decimal("0.00")
+    order.is_valid_order = False
+    order.cancellation_source = "SHOP"
+    order.save(update_fields=[
+        "status",
+        "payment_status",
+        "is_payment_done",
+        "finally_received_amount",
+        "is_valid_order",
+        "cancellation_source",
+        "updated_at",
+    ])
+    OrderStatusHistory.objects.create(
+        shop_order=shop_order,
+        status="CANCELLED",
+        remark=f"Pending UPI counter sale cancelled by {request.user.username}; stock restored.",
+    )
+    queue_order_update(shop_order)
+    messages.success(request, "Counter sale cancelled and stock restored.")
+    return redirect("shop_point_of_sale", shop_id=approval.shop_id)
 
 
 @login_required
@@ -12648,6 +14249,7 @@ def shop_order_list(request):
         .select_related(
             "order",
             "shop",
+            "pos_payment_approval",
             "assigned_rider__user__client_profile",
             "assigned_packer__user",
         )
@@ -12669,6 +14271,9 @@ def shop_order_list(request):
         shop_orders = shop_orders.filter(
             shop_id=shop_id
         )
+    point_of_sale_shop_ids = set(
+        point_of_sale_shops.values_list("pk", flat=True)
+    )
 
     delivery_settings = DeliverySharingSettings.objects.first()
     abandoned_checkout_timeout_minutes = (
@@ -12804,6 +14409,9 @@ def shop_order_list(request):
                 "count": (
                     sum(status_counts.values())
                     if not status_value
+                    else status_counts.get("PENDING", 0)
+                    + status_counts.get("PAYMENT_PENDING", 0)
+                    if status_value == "pending"
                     else status_counts.get(status_value, 0)
                 ),
                 "url": (
@@ -12816,7 +14424,12 @@ def shop_order_list(request):
     if verified_view:
         shop_orders = verified_orders[:50]
     elif status:
-        shop_orders = shop_orders.filter(status=status)
+        if status == "pending":
+            shop_orders = shop_orders.filter(
+                status__in=["PENDING", "PAYMENT_PENDING"],
+            )
+        else:
+            shop_orders = shop_orders.filter(status=status)
 
     legacy_rider_source = verified_orders if verified_view else shop_orders
     legacy_rider_usernames = {
@@ -12883,6 +14496,21 @@ def shop_order_list(request):
 
     public_rider_enabled = public_rider_service_enabled()
     for shop_order in shop_orders:
+        pos_payment_approval = getattr(
+            shop_order,
+            "pos_payment_approval",
+            None,
+        )
+        shop_order.can_retry_pos_payment = (
+            shop_order.shop_id in point_of_sale_shop_ids
+            and shop_order.order.order_source == Order.SOURCE_POS
+            and shop_order.status == "PAYMENT_PENDING"
+            and pos_payment_approval is not None
+            and pos_payment_approval.status
+            == ShopPOSPaymentApproval.STATUS_REJECTED
+            and pos_payment_approval.payment_method
+            == ShopPOSPaymentApproval.PAYMENT_METHOD_UPI
+        )
         shop_order.can_manage_assignments = (
             shop_order.shop_id in assignable_shop_ids
         )
@@ -18629,17 +20257,46 @@ def shop_settings(request, shop_id):
             delivery_fee = Decimal(
                 request.POST.get("delivery_fee", str(shop.delivery_fee)).strip() or "0"
             )
+            delivery_fee_per_km = Decimal(
+                request.POST.get(
+                    "delivery_fee_per_km",
+                    str(shop.delivery_fee_per_km),
+                ).strip() or "0"
+            )
+            delivery_fee_mode = request.POST.get(
+                "delivery_fee_mode",
+                shop.delivery_fee_mode,
+            ).strip().upper()
+            free_delivery_minimum = Decimal(
+                request.POST.get(
+                    "free_delivery_minimum",
+                    str(shop.free_delivery_minimum),
+                ).strip() or "0"
+            )
         except (TypeError, ValueError, InvalidOperation):
-            messages.error(request, "Enter valid numbers for delivery fee, ETA lead time, and rider radius.")
+            messages.error(request, "Enter valid numbers for delivery fee, per-kilometer fee, free-delivery minimum, ETA lead time, and rider radius.")
             return redirect("shop_settings", shop_id=shop.id)
 
-        if (
-            not delivery_fee.is_finite()
-            or delivery_fee < 0
-            or delivery_fee > Decimal("999999.99")
-            or delivery_fee != delivery_fee.quantize(Decimal("0.01"))
+        for value, label in (
+            (delivery_fee, "Delivery fee"),
+            (delivery_fee_per_km, "Per-kilometer delivery fee"),
+            (free_delivery_minimum, "Free-delivery minimum"),
         ):
-            messages.error(request, "Delivery fee must be between ₹0.00 and ₹999999.99, with at most 2 decimal places.")
+            if (
+                not value.is_finite()
+                or value < 0
+                or value > Decimal("999999.99")
+                or value != value.quantize(Decimal("0.01"))
+            ):
+                messages.error(
+                    request,
+                    f"{label} must be between ₹0.00 and ₹999999.99, with at most 2 decimal places.",
+                )
+                return redirect("shop_settings", shop_id=shop.id)
+        if delivery_fee_mode not in {
+            choice[0] for choice in Shop.DELIVERY_FEE_MODE_CHOICES
+        }:
+            messages.error(request, "Choose a valid delivery fee mode.")
             return redirect("shop_settings", shop_id=shop.id)
         if not 0 <= eta_lead_minutes <= 60:
             messages.error(request, "ETA notification lead time must be between 0 and 60 minutes.")
@@ -18686,6 +20343,9 @@ def shop_settings(request, shop_id):
         shop.delivery_eta_reminder_minutes = eta_lead_minutes
         shop.rider_nearby_notification_meters = nearby_radius_meters
         shop.delivery_fee = delivery_fee
+        shop.delivery_fee_mode = delivery_fee_mode
+        shop.delivery_fee_per_km = delivery_fee_per_km
+        shop.free_delivery_minimum = free_delivery_minimum
         shop.public_rider_network_enabled = public_rider_network_enabled
         shop.rider_delivery_preference = rider_delivery_preference
         update_fields = [
@@ -18694,6 +20354,9 @@ def shop_settings(request, shop_id):
             "delivery_eta_reminder_minutes",
             "rider_nearby_notification_meters",
             "delivery_fee",
+            "delivery_fee_mode",
+            "delivery_fee_per_km",
+            "free_delivery_minimum",
             "public_rider_network_enabled",
             "rider_delivery_preference",
             "updated_at",
@@ -21536,6 +23199,76 @@ def _razorpayx_request(method, path, *, payload=None, headers=None):
     return data
 
 
+def _create_shop_bank_account(shop, post_data):
+    holder_name = post_data.get("account_holder", "").strip()
+    account_number = post_data.get("account_number", "").strip()
+    ifsc = post_data.get("ifsc", "").strip().upper()
+    contact_phone = re.sub(r"\D", "", post_data.get("contact_phone", ""))
+    contact_email = post_data.get("contact_email", "").strip()
+    if (
+        len(holder_name) < 2
+        or not re.fullmatch(r"\d{8,34}", account_number)
+        or not re.fullmatch(r"[A-Z]{4}0[A-Z0-9]{6}", ifsc)
+        or not re.fullmatch(r"\d{10,15}", contact_phone)
+        or "@" not in contact_email
+    ):
+        raise ValueError(
+            "Enter a valid account holder, bank account number, IFSC, phone number, and email."
+        )
+
+    contact = _razorpayx_request(
+        "POST",
+        "contacts",
+        payload={
+            "name": holder_name[:100],
+            "email": contact_email[:100],
+            "contact": contact_phone,
+            "type": "vendor",
+            "reference_id": f"SHOP{shop.pk}C{uuid.uuid4().hex[:16]}",
+        },
+    )
+    contact_id = contact.get("id")
+    if not isinstance(contact_id, str) or not contact_id.startswith("cont_"):
+        raise ValueError("RazorpayX did not return a valid contact.")
+    fund_account = _razorpayx_request(
+        "POST",
+        "fund_accounts",
+        payload={
+            "contact_id": contact_id,
+            "account_type": "bank_account",
+            "bank_account": {
+                "name": holder_name[:100],
+                "ifsc": ifsc,
+                "account_number": account_number,
+            },
+        },
+    )
+    fund_account_id = fund_account.get("id")
+    if not isinstance(fund_account_id, str) or not fund_account_id.startswith("fa_"):
+        raise ValueError("RazorpayX did not return a valid fund account.")
+    return contact_id, fund_account_id
+
+
+def _shop_bank_account_display(fund_account):
+    bank_account = fund_account.get("bank_account")
+    if not isinstance(bank_account, dict):
+        raise ValueError("RazorpayX did not return linked bank-account details.")
+    account_number = str(bank_account.get("account_number") or "")
+    digits = re.sub(r"\D", "", account_number)
+    if len(digits) >= 4:
+        masked_account_number = f"••••{digits[-4:]}"
+    elif account_number:
+        masked_account_number = "••••"
+    else:
+        masked_account_number = ""
+    return {
+        "holder_name": bank_account.get("name") or "",
+        "bank_name": bank_account.get("bank_name") or "",
+        "ifsc": bank_account.get("ifsc") or "",
+        "masked_account_number": masked_account_number,
+    }
+
+
 @transaction.atomic
 def _release_shop_payout(payout_id, *, status, failure_reason):
     payout = ShopPayout.objects.select_for_update().select_related("shop").get(pk=payout_id)
@@ -21613,6 +23346,32 @@ def shop_wallet(request, shop_id):
         if not payout_configured:
             messages.error(request, "Shop withdrawals are not configured. Contact the platform administrator.")
             return redirect("shop_wallet", shop_id=shop.pk)
+        if request.POST.get("action") == "update_bank_account":
+            try:
+                contact_id, fund_account_id = _create_shop_bank_account(
+                    shop,
+                    request.POST,
+                )
+                Shop.objects.filter(pk=shop.pk).update(
+                    razorpay_contact_id=contact_id,
+                    razorpay_fund_account_id=fund_account_id,
+                )
+                messages.success(
+                    request,
+                    "Linked bank account updated. Future withdrawals will use the new account.",
+                )
+            except ValueError as error:
+                messages.error(request, str(error))
+            except (requests.RequestException, RuntimeError):
+                logger.exception(
+                    "Could not update RazorpayX bank recipient for shop %s.",
+                    shop.pk,
+                )
+                messages.error(
+                    request,
+                    "Could not update the bank account with RazorpayX. The previously linked account remains unchanged.",
+                )
+            return redirect("shop_wallet", shop_id=shop.pk)
         try:
             amount = Decimal(request.POST.get("amount", "").strip())
             if not amount.is_finite() or amount.quantize(Decimal("0.01")) != amount:
@@ -21627,51 +23386,10 @@ def shop_wallet(request, shop_id):
         try:
             fund_account_id = shop.razorpay_fund_account_id
             if not fund_account_id:
-                holder_name = request.POST.get("account_holder", "").strip()
-                account_number = request.POST.get("account_number", "").strip()
-                ifsc = request.POST.get("ifsc", "").strip().upper()
-                contact_phone = re.sub(r"\D", "", request.POST.get("contact_phone", ""))
-                contact_email = request.POST.get("contact_email", "").strip()
-                if (
-                    len(holder_name) < 2
-                    or not re.fullmatch(r"\d{8,34}", account_number)
-                    or not re.fullmatch(r"[A-Z]{4}0[A-Z0-9]{6}", ifsc)
-                    or not re.fullmatch(r"\d{10,15}", contact_phone)
-                    or "@" not in contact_email
-                ):
-                    messages.error(request, "Enter a valid account holder, bank account number, IFSC, phone number, and email.")
-                    return redirect("shop_wallet", shop_id=shop.pk)
-
-                contact = _razorpayx_request(
-                    "POST",
-                    "contacts",
-                    payload={
-                        "name": holder_name[:100],
-                        "email": contact_email[:100],
-                        "contact": contact_phone,
-                        "type": "vendor",
-                        "reference_id": f"SHOP{shop.pk}C{uuid.uuid4().hex[:16]}",
-                    },
+                contact_id, fund_account_id = _create_shop_bank_account(
+                    shop,
+                    request.POST,
                 )
-                contact_id = contact.get("id")
-                if not isinstance(contact_id, str) or not contact_id.startswith("cont_"):
-                    raise ValueError("RazorpayX did not return a valid contact.")
-                fund_account = _razorpayx_request(
-                    "POST",
-                    "fund_accounts",
-                    payload={
-                        "contact_id": contact_id,
-                        "account_type": "bank_account",
-                        "bank_account": {
-                            "name": holder_name[:100],
-                            "ifsc": ifsc,
-                            "account_number": account_number,
-                        },
-                    },
-                )
-                fund_account_id = fund_account.get("id")
-                if not isinstance(fund_account_id, str) or not fund_account_id.startswith("fa_"):
-                    raise ValueError("RazorpayX did not return a valid fund account.")
                 Shop.objects.filter(pk=shop.pk).update(
                     razorpay_contact_id=contact_id,
                     razorpay_fund_account_id=fund_account_id,
@@ -21771,6 +23489,22 @@ def shop_wallet(request, shop_id):
         return redirect("shop_wallet", shop_id=shop.pk)
 
     wallet.refresh_from_db()
+    bank_account_registered = bool(shop.razorpay_fund_account_id)
+    bank_account_details = None
+    bank_account_details_error = False
+    if bank_account_registered and payout_configured:
+        try:
+            fund_account = _razorpayx_request(
+                "GET",
+                f"fund_accounts/{shop.razorpay_fund_account_id}",
+            )
+            bank_account_details = _shop_bank_account_display(fund_account)
+        except (requests.RequestException, RuntimeError, ValueError):
+            logger.exception(
+                "Could not retrieve linked RazorpayX bank details for shop %s.",
+                shop.pk,
+            )
+            bank_account_details_error = True
     transactions = wallet.transactions.select_related(
         "shop_order__order",
         "payout",
@@ -21785,7 +23519,9 @@ def shop_wallet(request, shop_id):
             "transactions": wallet.transactions.select_related("shop_order__order", "payout")[:50],
             "payouts": shop.payouts.all()[:20],
             "payout_configured": payout_configured,
-            "bank_account_registered": bool(shop.razorpay_fund_account_id),
+            "bank_account_registered": bank_account_registered,
+            "bank_account_details": bank_account_details,
+            "bank_account_details_error": bank_account_details_error,
             "can_withdraw": is_owner,
             "total_order_credits": transactions.filter(
                 transaction_type="CREDIT",
@@ -22342,23 +24078,48 @@ def cart(request):
         .prefetch_related("items")
     )
     cart_shop_delivery_fees = {}
+    cart_shop_subtotals = {}
     for item in items:
         if item["quantity"] <= 0:
             continue
         shop = item["assignment"].shop
+        cart_shop_subtotals[shop.pk] = (
+            cart_shop_subtotals.get(shop.pk, Decimal("0.00")) + item["total"]
+        )
         cart_shop_delivery_fees[shop.pk] = {
+            "shop": shop,
             "shop_name": shop.name,
-            "delivery_fee": shop.delivery_fee,
+            "delivery_fee": Decimal("0.00"),
+            "free_delivery_minimum": shop.free_delivery_minimum,
+            "free_delivery_at": shop.free_delivery_minimum * 2,
             "is_scheduled_delivery": (
                 shop.allow_scheduled_delivery
                 and not is_shop_currently_open(shop)
             ),
         }
+    for shop_id, row in cart_shop_delivery_fees.items():
+        try:
+            row["delivery_fee"] = _shop_delivery_fee(
+                row["shop"],
+                cart_shop_subtotals[shop_id],
+                _address_delivery_coordinates(
+                    active_delivery_address,
+                    current_location,
+                ),
+            )
+        except DeliveryRouteUnavailable as error:
+            row["delivery_fee"] = Decimal("0.00")
+            row["delivery_pricing_error"] = str(error)
     cart_shop_summary = list(cart_shop_delivery_fees.values())
     delivery_charge = sum(
         (row["delivery_fee"] for row in cart_shop_summary),
         Decimal("0.00"),
     )
+    delivery_pricing_errors = [
+        row["delivery_pricing_error"]
+        for row in cart_shop_summary
+        if row.get("delivery_pricing_error")
+    ]
 
     grand_total = (
         subtotal +
@@ -22374,6 +24135,7 @@ def cart(request):
             "delivery_charge": delivery_charge,
             "grand_total": grand_total,
             "cart_shop_summary": cart_shop_summary,
+            "delivery_pricing_errors": delivery_pricing_errors,
             "active_item_count": sum(item["quantity"] for item in items),
             "saved_baskets": saved_baskets,
             "is_b2b_customer": is_b2b,
@@ -22888,11 +24650,34 @@ def cart_update(request, product_shop_id):
                 continue
             subtotal += line_price * line_quantity
             active_item_count += line_quantity
-            delivery_shops[assignment.shop_id] = {
+            shop_summary = delivery_shops.setdefault(assignment.shop_id, {
                 "shop_name": assignment.shop.name,
-                "delivery_fee": assignment.shop.delivery_fee,
-            }
+                "delivery_fee": Decimal("0.00"),
+                "free_delivery_minimum": assignment.shop.free_delivery_minimum,
+                "free_delivery_at": assignment.shop.free_delivery_minimum * 2,
+                "item_subtotal": Decimal("0.00"),
+                "shop": assignment.shop,
+            })
+            shop_summary["item_subtotal"] += line_price * line_quantity
 
+        for shop in delivery_shops.values():
+            try:
+                shop["delivery_fee"] = _shop_delivery_fee(
+                    shop["shop"],
+                    shop["item_subtotal"],
+                    _address_delivery_coordinates(
+                        active_delivery_address,
+                        _cart_current_location(request),
+                    ),
+                )
+            except DeliveryRouteUnavailable as error:
+                shop["delivery_fee"] = Decimal("0.00")
+                shop["delivery_pricing_error"] = str(error)
+        delivery_pricing_errors = [
+            shop["delivery_pricing_error"]
+            for shop in delivery_shops.values()
+            if shop.get("delivery_pricing_error")
+        ]
         delivery_charge = sum(
             (shop["delivery_fee"] for shop in delivery_shops.values()),
             Decimal("0.00"),
@@ -22917,11 +24702,29 @@ def cart_update(request, product_shop_id):
             "active_item_count": active_item_count,
             "subtotal": format(subtotal, ".2f"),
             "delivery_charge": format(delivery_charge, ".2f"),
-            "grand_total": format(subtotal + delivery_charge, ".2f"),
+            "grand_total": (
+                ""
+                if delivery_pricing_errors
+                else format(subtotal + delivery_charge, ".2f")
+            ),
+            "delivery_pricing_error": " ".join(delivery_pricing_errors),
             "delivery_by_shop": [
                 {
                     "shop_name": shop["shop_name"],
                     "delivery_fee": format(shop["delivery_fee"], ".2f"),
+                    "free_delivery_minimum": format(
+                        shop["free_delivery_minimum"],
+                        ".2f",
+                    ),
+                    "free_delivery_at": format(
+                        shop["free_delivery_at"],
+                        ".2f",
+                    ),
+                    "item_subtotal": format(shop["item_subtotal"], ".2f"),
+                    "delivery_pricing_error": shop.get(
+                        "delivery_pricing_error",
+                        "",
+                    ),
                 }
                 for shop in delivery_shops.values()
             ],
@@ -23419,6 +25222,16 @@ def checkout(request):
                     coupon_discount,
                     require_state=True,
                     buyer_gstin_override=buyer_gstin,
+                    delivery_location=_address_delivery_coordinates(
+                        address,
+                        _cart_current_location(request),
+                    ),
+                )
+            except DeliveryRouteUnavailable as error:
+                return _checkout_failure_response(
+                    request,
+                    str(error),
+                    redirect_to="cart",
                 )
             except ValueError as error:
                 return _checkout_failure_response(request, str(error))
@@ -23609,11 +25422,22 @@ def checkout(request):
         if checkout_address and checkout_address.gstin
         else client.gstin if is_b2b else ""
     )
-    gst_preview = _build_gst_breakdown(
-        items,
-        checkout_address,
-        buyer_gstin_override=buyer_gstin,
-    )
+    try:
+        gst_preview = _build_gst_breakdown(
+            items,
+            checkout_address,
+            buyer_gstin_override=buyer_gstin,
+            delivery_location=_address_delivery_coordinates(
+                checkout_address,
+                _cart_current_location(request),
+            ),
+        )
+    except DeliveryRouteUnavailable as error:
+        return _checkout_failure_response(
+            request,
+            str(error),
+            redirect_to="cart",
+        )
     delivery_gst_amount = sum(
         (
             row["delivery_gst_amount"]
@@ -23804,6 +25628,16 @@ def create_order(
             coupon_discount,
             require_state=True,
             buyer_gstin_override=buyer_gstin_override,
+            delivery_location=_address_delivery_coordinates(
+                address,
+                _cart_current_location(request),
+            ),
+        )
+    except DeliveryRouteUnavailable as error:
+        return _checkout_failure_response(
+            request,
+            str(error),
+            redirect_to="cart",
         )
     except ValueError as error:
         return _checkout_failure_response(request, str(error))

@@ -87,6 +87,8 @@ from .models import (
     PublicRiderWalletTransaction,
     CODBalancePayment,
     CODPaymentApprovalRequest,
+    ShopPOSCustomer,
+    ShopPOSPaymentApproval,
     ShopStaffWallet,
     ShopStaffWalletTransaction,
     Coupon,
@@ -134,6 +136,84 @@ def install_test_road_network(test_case, coordinates):
 
 
 class SellerProjectConfigTests(TestCase):
+    def test_shop_delivery_fee_modes_calculate_fixed_route_and_combined_fees(self):
+        shop = Shop.objects.create(
+            name="Delivery Fee Modes Shop",
+            delivery_fee=Decimal("5.00"),
+            delivery_fee_per_km=Decimal("2.50"),
+        )
+        destination = {"lat": 23.0, "lng": 72.0}
+        with patch.object(
+            seller_views,
+            "_shop_delivery_route_distance_km",
+            return_value=Decimal("2"),
+        ):
+            self.assertEqual(
+                seller_views._shop_delivery_fee(shop, Decimal("10.00"), destination),
+                Decimal("5.00"),
+            )
+            shop.delivery_fee_mode = "PER_KM"
+            self.assertEqual(
+                seller_views._shop_delivery_fee(shop, Decimal("10.00"), destination),
+                Decimal("5.00"),
+            )
+            shop.delivery_fee_mode = "FIXED_AND_PER_KM"
+            self.assertEqual(
+                seller_views._shop_delivery_fee(shop, Decimal("10.00"), destination),
+                Decimal("10.00"),
+            )
+
+    def test_distance_delivery_fee_requires_local_route(self):
+        shop = Shop.objects.create(
+            name="Route Required Shop",
+            delivery_fee_mode="PER_KM",
+            delivery_fee_per_km=Decimal("3.00"),
+        )
+        with patch.object(
+            seller_views,
+            "_shop_delivery_route_distance_km",
+            side_effect=seller_views.DeliveryRouteUnavailable(
+                "No local route covers the delivery address."
+            ),
+        ):
+            with self.assertRaisesRegex(
+                seller_views.DeliveryRouteUnavailable,
+                "No local route covers",
+            ):
+                seller_views._shop_delivery_fee(
+                    shop,
+                    Decimal("10.00"),
+                    {"lat": 23.0, "lng": 72.0},
+                )
+
+    def test_free_delivery_minimum_uses_discounted_checkout_subtotal(self):
+        owner = User.objects.create_user(username="free_delivery_checkout_owner")
+        shop = Shop.objects.create(
+            name="Free Delivery Checkout Shop",
+            owner=owner,
+            delivery_fee=Decimal("5.00"),
+            free_delivery_minimum=Decimal("20.00"),
+        )
+        address = type("AddressSnapshot", (), {"state_code": "", "gstin": ""})()
+
+        def delivery_fee_for(total, coupon_discount=Decimal("0.00")):
+            breakdown = seller_views._build_gst_breakdown(
+                [{"total": Decimal(total), "shop": shop}],
+                address,
+                coupon_discount,
+            )
+            return breakdown["shops"][shop.pk]["delivery_fee"]
+
+        self.assertEqual(delivery_fee_for("19.99"), Decimal("5.00"))
+        self.assertEqual(delivery_fee_for("20.00"), Decimal("5.00"))
+        self.assertEqual(delivery_fee_for("30.00"), Decimal("2.50"))
+        self.assertEqual(delivery_fee_for("39.99"), Decimal("0.00"))
+        self.assertEqual(delivery_fee_for("40.00"), Decimal("0.00"))
+        self.assertEqual(
+            delivery_fee_for("20.00", Decimal("0.01")),
+            Decimal("5.00"),
+        )
+
     def test_admin_can_disable_public_rider_service_for_every_shop(self):
         settings_obj, _ = DeliverySharingSettings.objects.get_or_create(pk=1)
         settings_obj.public_rider_service_enabled = False
@@ -8631,6 +8711,106 @@ class SellerProjectConfigTests(TestCase):
             str(payout.idempotency_key),
         )
 
+    @override_settings(
+        RAZORPAYX_KEY_ID="rzpx_test_key",
+        RAZORPAYX_KEY_SECRET="razorpayx-test-secret",
+        RAZORPAYX_ACCOUNT_NUMBER="1234567890123456",
+    )
+    def test_shop_wallet_displays_masked_linked_bank_account(self):
+        owner = User.objects.create_user(username="wallet_bank_display_owner")
+        shop = Shop.objects.create(
+            name="Wallet Bank Display Shop",
+            owner=owner,
+            razorpay_contact_id="cont_test123",
+            razorpay_fund_account_id="fa_test123",
+        )
+        ShopWallet.objects.create(shop=shop, balance=Decimal("80.00"))
+        self.client.force_login(owner)
+        bank_response = Mock()
+        bank_response.json.return_value = {
+            "id": "fa_test123",
+            "account_type": "bank_account",
+            "bank_account": {
+                "name": "Riya Patel",
+                "bank_name": "Example Bank",
+                "ifsc": "ABCD0123456",
+                "account_number": "123456789012",
+            },
+        }
+        bank_response.raise_for_status.return_value = None
+
+        with patch(
+            "seller.views.requests.request",
+            return_value=bank_response,
+        ) as bank_request:
+            response = self.client.get(
+                reverse("shop_wallet", args=[shop.pk]),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Riya Patel")
+        self.assertContains(response, "Example Bank")
+        self.assertContains(response, "••••9012")
+        self.assertContains(response, "ABCD0123456")
+        self.assertNotContains(response, "123456789012")
+        self.assertContains(response, "Edit linked bank account")
+        self.assertContains(response, 'name="action" value="update_bank_account"')
+        bank_request.assert_called_once()
+        self.assertEqual(
+            bank_request.call_args.args[0:2],
+            ("GET", "https://api.razorpay.com/v1/fund_accounts/fa_test123"),
+        )
+
+    @override_settings(
+        RAZORPAYX_KEY_ID="rzpx_test_key",
+        RAZORPAYX_KEY_SECRET="razorpayx-test-secret",
+        RAZORPAYX_ACCOUNT_NUMBER="1234567890123456",
+    )
+    def test_shop_wallet_owner_can_update_linked_bank_without_creating_payout(self):
+        owner = User.objects.create_user(username="wallet_bank_update_owner")
+        shop = Shop.objects.create(
+            name="Wallet Bank Update Shop",
+            owner=owner,
+            razorpay_contact_id="cont_old123",
+            razorpay_fund_account_id="fa_old123",
+        )
+        wallet = ShopWallet.objects.create(shop=shop, balance=Decimal("80.00"))
+        self.client.force_login(owner)
+
+        def razorpay_response(data):
+            response = Mock()
+            response.json.return_value = data
+            response.raise_for_status.return_value = None
+            return response
+
+        with patch(
+            "seller.views.requests.request",
+            side_effect=[
+                razorpay_response({"id": "cont_new123"}),
+                razorpay_response({"id": "fa_new123"}),
+            ],
+        ) as bank_request:
+            response = self.client.post(
+                reverse("shop_wallet", args=[shop.pk]),
+                {
+                    "action": "update_bank_account",
+                    "account_holder": "New Account Holder",
+                    "account_number": "123456789012",
+                    "ifsc": "ABCD0123456",
+                    "contact_phone": "+91 9876543210",
+                    "contact_email": "beneficiary@example.com",
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        shop.refresh_from_db()
+        wallet.refresh_from_db()
+        self.assertEqual(shop.razorpay_contact_id, "cont_new123")
+        self.assertEqual(shop.razorpay_fund_account_id, "fa_new123")
+        self.assertEqual(wallet.balance, Decimal("80.00"))
+        self.assertFalse(ShopPayout.objects.filter(shop=shop).exists())
+        self.assertEqual(bank_request.call_count, 2)
+
     @override_settings(RAZORPAYX_WEBHOOK_SECRET="payout-webhook-test-secret")
     def test_payout_webhook_failure_releases_funds_once_and_processed_is_terminal(self):
         owner = User.objects.create_user(username="wallet_webhook_owner", password="test-pass")
@@ -10505,7 +10685,10 @@ class SellerProjectConfigTests(TestCase):
         shop_data["accept_legal_documents"] = "on"
         accepted = self.client.post(shop_add_url, shop_data)
         self.assertRedirects(accepted, reverse("shop_list"))
-        self.assertTrue(Shop.objects.filter(owner=owner).exists())
+        shop = Shop.objects.get(owner=owner)
+        self.assertEqual(shop.delivery_fee_mode, "FIXED")
+        self.assertEqual(shop.delivery_fee_per_km, Decimal("0.00"))
+        self.assertEqual(shop.free_delivery_minimum, Decimal("0.00"))
         self.assertEqual(
             LegalAcceptance.objects.filter(user=owner).count(),
             5,
@@ -10527,6 +10710,9 @@ class SellerProjectConfigTests(TestCase):
                 "delivery_eta_reminder_minutes": "4",
                 "rider_nearby_notification_meters": "250",
                 "delivery_fee": "4.25",
+                "delivery_fee_mode": "FIXED_AND_PER_KM",
+                "delivery_fee_per_km": "2.75",
+                "free_delivery_minimum": "35.00",
                 "allow_scheduled_delivery": "on",
             },
         )
@@ -10537,6 +10723,9 @@ class SellerProjectConfigTests(TestCase):
         self.assertEqual(shop.delivery_eta_reminder_minutes, 4)
         self.assertEqual(shop.rider_nearby_notification_meters, 250)
         self.assertEqual(shop.delivery_fee, Decimal("4.25"))
+        self.assertEqual(shop.delivery_fee_mode, "FIXED_AND_PER_KM")
+        self.assertEqual(shop.delivery_fee_per_km, Decimal("2.75"))
+        self.assertEqual(shop.free_delivery_minimum, Decimal("35.00"))
         self.assertTrue(shop.allow_scheduled_delivery)
 
     def test_gst_registered_shop_can_configure_delivery_tax_in_shop_settings(self):
@@ -10612,6 +10801,29 @@ class SellerProjectConfigTests(TestCase):
         self.assertEqual(response.status_code, 302)
         shop.refresh_from_db()
         self.assertEqual(shop.delivery_fee, Decimal("5.00"))
+
+    def test_shop_owner_cannot_save_invalid_free_delivery_minimum(self):
+        owner = User.objects.create_user(username="owner_invalid_free_delivery_minimum")
+        shop = Shop.objects.create(
+            name="Invalid Minimum Shop",
+            owner=owner,
+            free_delivery_minimum=Decimal("25.00"),
+        )
+        self.client.force_login(owner)
+
+        response = self.client.post(
+            reverse("shop_settings", kwargs={"shop_id": shop.id}),
+            {
+                "delivery_eta_reminder_minutes": "3",
+                "rider_nearby_notification_meters": "100",
+                "delivery_fee": "5.00",
+                "free_delivery_minimum": "-1.00",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        shop.refresh_from_db()
+        self.assertEqual(shop.free_delivery_minimum, Decimal("25.00"))
 
     def test_tracking_updates_notify_once_inside_shop_eta_lead_window(self):
         from .models import OrderStatusHistory
@@ -15930,10 +16142,15 @@ class CartBasketTests(TestCase):
                 "subtotal": "20.00",
                 "delivery_charge": "3.50",
                 "grand_total": "23.50",
+                "delivery_pricing_error": "",
                 "delivery_by_shop": [
                     {
                         "shop_name": self.shop.name,
                         "delivery_fee": "3.50",
+                        "free_delivery_minimum": "0.00",
+                        "free_delivery_at": "0.00",
+                        "item_subtotal": "20.00",
+                        "delivery_pricing_error": "",
                     }
                 ],
             },
@@ -16063,6 +16280,46 @@ class CartBasketTests(TestCase):
         free_response = self.client.get(reverse("cart"))
         self.assertEqual(free_response.context["delivery_charge"], Decimal("0.00"))
         self.assertContains(free_response, "FREE")
+
+    def test_free_delivery_minimum_reduces_cart_fee_until_double_threshold(self):
+        self.shop.delivery_fee = Decimal("6.50")
+        self.shop.free_delivery_minimum = Decimal("20.00")
+        self.shop.save(update_fields=["delivery_fee", "free_delivery_minimum"])
+        self.set_cart(1)
+
+        below_threshold = self.client.get(reverse("cart"))
+        self.assertEqual(below_threshold.context["delivery_charge"], Decimal("6.50"))
+
+        response = self.client.post(
+            reverse("cart_update", kwargs={"product_shop_id": self.assignment.pk}),
+            {"quantity": "2", "offer": "retail"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["delivery_charge"], "6.50")
+        self.assertEqual(response.json()["delivery_by_shop"][0]["item_subtotal"], "20.00")
+        self.assertEqual(response.json()["delivery_by_shop"][0]["free_delivery_minimum"], "20.00")
+        self.assertEqual(response.json()["delivery_by_shop"][0]["free_delivery_at"], "40.00")
+
+        at_threshold = self.client.get(reverse("cart"))
+        self.assertEqual(at_threshold.context["delivery_charge"], Decimal("6.50"))
+        self.assertContains(at_threshold, "Delivery fee reduces above ₹20.00 and is free at ₹40.00")
+
+        halfway_response = self.client.post(
+            reverse("cart_update", kwargs={"product_shop_id": self.assignment.pk}),
+            {"quantity": "3", "offer": "retail"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        self.assertEqual(halfway_response.status_code, 200)
+        self.assertEqual(halfway_response.json()["delivery_charge"], "3.25")
+
+        fully_free_response = self.client.post(
+            reverse("cart_update", kwargs={"product_shop_id": self.assignment.pk}),
+            {"quantity": "4", "offer": "retail"},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        self.assertEqual(fully_free_response.status_code, 200)
+        self.assertEqual(fully_free_response.json()["delivery_charge"], "0.00")
 
     def test_cart_line_can_be_added_to_selected_basket_and_merges_quantity(self):
         basket = SavedBasket.objects.create(user=self.user, name="Fruit basket")
@@ -24106,6 +24363,13 @@ class ShopPointOfSaleTests(TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertContains(page, "POS Apples")
         self.assertContains(page, "Home delivery")
+        self.assertContains(page, "pos-sale-card")
+        self.assertContains(page, "pos-mobile-review")
+        self.assertContains(page, 'id="reviewCurrentSale"')
+        self.assertContains(page, 'id="posProductSearchForm"')
+        self.assertContains(page, "sellerhelper-pos-scroll-")
+        self.assertContains(page, "<details class=\"card shadow-sm mb-3 pos-scan-tools\">")
+
         self.assertContains(page, "Use camera")
         self.assertContains(page, 'purpose: "counter-sale-product"')
         self.assertContains(page, 'scanForm.requestSubmit()')
@@ -24153,6 +24417,126 @@ class ShopPointOfSaleTests(TestCase):
             self.client.session[f"shop_pos_cart_{self.shop.pk}"],
             {str(self.assignment.pk): 1},
         )
+
+    def test_pos_product_search_returns_live_matches_by_name_sku_or_barcode(self):
+        self.client.force_login(self.staff_user)
+        searchable_product = Product.objects.create(
+            created_by=self.owner,
+            product_name="Live Search Mango",
+            product_category="FRUITS",
+            price=Decimal("25.00"),
+            unit="pcs",
+            sku="MANGO-LIVE-01",
+            barcode="8901234567890",
+        )
+        searchable_assignment = ProductShop.objects.create(
+            product=searchable_product,
+            shop=self.shop,
+            price=Decimal("25.00"),
+            stock=Decimal("4.0000"),
+            is_active=True,
+        )
+
+        by_name = self.client.get(
+            self.pos_url,
+            {"pos_product_search": "1", "q": "mango"},
+        )
+        self.assertEqual(by_name.status_code, 200)
+        self.assertEqual(
+            [row["id"] for row in by_name.json()["products"]],
+            [searchable_assignment.pk],
+        )
+        self.assertEqual(by_name.json()["total"], 1)
+
+        by_barcode = self.client.get(
+            self.pos_url,
+            {"pos_product_search": "1", "q": "8901234567890"},
+        )
+        self.assertEqual(
+            [row["id"] for row in by_barcode.json()["products"]],
+            [searchable_assignment.pk],
+        )
+        page = self.client.get(self.pos_url)
+        self.assertContains(page, 'id="resetProductSearch"')
+        self.assertContains(page, 'pos_product_search", "1"')
+        self.assertContains(page, 'productSearchInput.addEventListener("input"')
+        self.assertContains(page, "Could not search products.")
+        self.assertContains(page, '<details class="card shadow-sm pos-product-card" >')
+
+        searched_page = self.client.get(self.pos_url, {"q": "mango"})
+        self.assertContains(
+            searched_page,
+            '<details class="card shadow-sm pos-product-card" open>',
+        )
+
+    def test_counter_upi_manager_confirmation_completes_the_sale(self):
+        manager_user = User.objects.create_user(username="pos_counter_upi_manager")
+        ShopStaff.objects.create(
+            shop=self.shop,
+            user=manager_user,
+            role="PAYMENT_MANAGER",
+            can_confirm_rider_payments=True,
+        )
+        self.shop.upi_id = "poscounter@upi"
+        self.shop.save(update_fields=["upi_id"])
+        self.client.force_login(self.staff_user)
+        self._save_cart(1)
+        placed = self.client.post(
+            self.pos_url,
+            {
+                "action": "place_sale",
+                "fulfillment_type": ShopOrder.FULFILLMENT_COUNTER,
+                "payment_type": "UPI",
+            },
+        )
+        approval = ShopPOSPaymentApproval.objects.get(shop=self.shop)
+        self.assertRedirects(
+            placed,
+            f"{self.pos_url}?payment_request={approval.pk}",
+        )
+        payment_page = self.client.get(placed.url)
+        self.assertContains(payment_page, "Request UPI payment confirmation")
+        self.assertContains(
+            payment_page,
+            "Confirmation automatically completes this counter sale.",
+        )
+
+        reported = self.client.post(
+            reverse(
+                "report_shop_pos_payment",
+                kwargs={"payment_approval_id": approval.pk},
+            ),
+        )
+        self.assertRedirects(
+            reported,
+            f"{self.pos_url}?payment_request={approval.pk}",
+        )
+        approval.refresh_from_db()
+        self.assertEqual(approval.status, ShopPOSPaymentApproval.STATUS_REPORTED)
+        order = approval.shop_order.order
+        order.refresh_from_db()
+        self.assertEqual(order.status, "PAYMENT_PENDING")
+        self.assertEqual(order.payment_status, "PENDING")
+
+        self.client.force_login(manager_user)
+        confirmed = self.client.post(
+            reverse(
+                "approve_shop_pos_payment",
+                kwargs={"payment_approval_id": approval.pk},
+            ),
+        )
+        self.assertRedirects(
+            confirmed,
+            reverse("staff_payment_manager_dashboard"),
+        )
+        approval.refresh_from_db()
+        approval.shop_order.refresh_from_db()
+        order.refresh_from_db()
+        self.assertEqual(approval.status, ShopPOSPaymentApproval.STATUS_APPROVED)
+        self.assertEqual(order.status, "DELIVERED")
+        self.assertEqual(approval.shop_order.status, "DELIVERED")
+        self.assertEqual(order.payment_status, "PAID")
+        self.assertTrue(order.is_payment_done)
 
     def test_pos_can_edit_approximate_weight_and_bill_by_actual_weight(self):
         self.product.unit = "500gm"
@@ -24556,12 +24940,15 @@ class ShopPointOfSaleTests(TestCase):
             self.client.session[f"shop_pos_cart_{self.shop.pk}"],
             {},
         )
-        self.assertContains(next_sale_page, "Recent incomplete counter sales")
+        self.assertContains(next_sale_page, "Recent unplaced or incomplete sales")
+        self.assertContains(next_sale_page, "Saved incomplete sales on this device")
+        self.assertContains(next_sale_page, "Remove saved incomplete sale")
         self.assertContains(
             next_sale_page,
             "sellerhelper-pos-incomplete-sales-${shopId}",
         )
         self.assertContains(next_sale_page, "slice(0, 2)")
+        self.assertContains(next_sale_page, 'incompleteSales = incompleteSales.filter(')
         self.assertContains(next_sale_page, 'action", "restore_draft"')
 
     def test_counter_sale_can_resume_valid_saved_draft(self):
@@ -24952,6 +25339,7 @@ class ShopPointOfSaleTests(TestCase):
                 "payment_type": "CASH",
                 "customer_name": "Walk-in Buyer",
                 "customer_phone": "1234567890",
+                "save_customer_for_reuse": "on",
             },
         )
 
@@ -24969,6 +25357,18 @@ class ShopPointOfSaleTests(TestCase):
         self.assertEqual(order.payment_type, "CASH")
         self.assertEqual(order.customer_name, "Walk-in Buyer")
         self.assertEqual(order.created_by, self.staff_user)
+        saved_customer = ShopPOSCustomer.objects.get(
+            shop=self.shop,
+            phone="1234567890",
+        )
+        self.assertEqual(saved_customer.name, "Walk-in Buyer")
+        page = self.client.get(self.pos_url)
+        self.assertContains(page, 'id="saveCustomerForReuse"')
+        self.assertContains(
+            page,
+            'name="save_customer_for_reuse" type="checkbox" checked',
+        )
+        self.assertContains(page, "Uncheck this to use the customer details for this sale only.")
         self.assertEqual(
             OrderItem.objects.get(shop_order=shop_order).quantity,
             2,
@@ -24996,6 +25396,110 @@ class ShopPointOfSaleTests(TestCase):
         self.assertContains(order_list, "Counter sale")
         self.assertContains(order_list, "Walk-in Buyer")
 
+    def test_packer_can_open_orders_and_counter_sales_from_dashboard(self):
+        self.client.force_login(self.staff_user)
+        self._save_cart(1)
+        sale_response = self.client.post(
+            self.pos_url,
+            {
+                "action": "place_sale",
+                "fulfillment_type": ShopOrder.FULFILLMENT_COUNTER,
+                "payment_type": "CASH",
+            },
+        )
+        self.assertEqual(sale_response.status_code, 302)
+        shop_order = ShopOrder.objects.get(shop=self.shop)
+
+        packer = User.objects.create_user(username="pos_packer")
+        ShopStaff.objects.create(
+            shop=self.shop,
+            user=packer,
+            role="PACKER",
+            can_view_orders=False,
+            can_pack_orders=True,
+        )
+        self.client.force_login(packer)
+
+        dashboard = self.client.get(reverse("packer_dashboard"))
+        self.assertContains(
+            dashboard,
+            f"{reverse('shop_order_list')}?shop={self.shop.pk}",
+        )
+        self.assertContains(
+            dashboard,
+            reverse("shop_point_of_sale", kwargs={"shop_id": self.shop.pk}),
+        )
+        self.assertEqual(self.client.get(self.pos_url).status_code, 200)
+
+        staff_dashboard = self.client.get(reverse("staff_dashboard"))
+        self.assertContains(
+            staff_dashboard,
+            f"{reverse('shop_order_list')}?shop={self.shop.pk}",
+        )
+        self.assertContains(
+            staff_dashboard,
+            reverse("shop_point_of_sale", kwargs={"shop_id": self.shop.pk}),
+        )
+
+        order_list = self.client.get(
+            reverse("shop_order_list"),
+            {"shop": self.shop.pk},
+        )
+        self.assertEqual(order_list.status_code, 200)
+        self.assertContains(order_list, shop_order.shop_order_number)
+        self.assertContains(order_list, "Counter sale")
+
+    def test_counter_sale_can_be_placed_without_customer_data(self):
+        self.client.force_login(self.staff_user)
+        self._save_cart(1)
+
+        response = self.client.post(
+            self.pos_url,
+            {
+                "action": "place_sale",
+                "fulfillment_type": ShopOrder.FULFILLMENT_COUNTER,
+                "payment_type": "CASH",
+            },
+        )
+
+        shop_order = ShopOrder.objects.get(shop=self.shop)
+        self.assertRedirects(
+            response,
+            reverse("shop_order_detail", kwargs={"shop_order_id": shop_order.pk}),
+        )
+        self.assertEqual(shop_order.fulfillment_type, ShopOrder.FULFILLMENT_COUNTER)
+        self.assertEqual(shop_order.order.customer_name, "")
+        self.assertEqual(shop_order.order.delivery_contact_no, "")
+        self.assertEqual(shop_order.order.payment_status, "PAID")
+
+    def test_counter_sale_can_use_customer_details_without_saving_them(self):
+        self.client.force_login(self.staff_user)
+        self._save_cart(1)
+
+        response = self.client.post(
+            self.pos_url,
+            {
+                "action": "place_sale",
+                "fulfillment_type": ShopOrder.FULFILLMENT_COUNTER,
+                "payment_type": "CASH",
+                "customer_name": "One-time Buyer",
+                "customer_phone": "5551234567",
+                "save_customer_for_reuse": "",
+            },
+        )
+
+        shop_order = ShopOrder.objects.get(shop=self.shop)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(shop_order.order.customer_name, "One-time Buyer")
+        self.assertEqual(shop_order.order.delivery_contact_no, "5551234567")
+        self.assertIsNone(shop_order.pos_customer)
+        self.assertFalse(
+            ShopPOSCustomer.objects.filter(
+                shop=self.shop,
+                phone="5551234567",
+            ).exists(),
+        )
+
     def test_home_delivery_captures_customer_location_and_enters_rider_flow(self):
         self.shop.delivery_fee = Decimal("20.00")
         self.shop.save(update_fields=["delivery_fee"])
@@ -25011,7 +25515,7 @@ class ShopPointOfSaleTests(TestCase):
                 "sale_id": sale_id,
                 "action": "place_sale",
                 "fulfillment_type": ShopOrder.FULFILLMENT_DELIVERY,
-                "payment_type": "UPI",
+                "payment_type": "CASH",
                 "customer_name": "Delivery Buyer",
                 "customer_phone": "1234567890",
                 "delivery_address": "1 Market Road",
@@ -25030,7 +25534,7 @@ class ShopPointOfSaleTests(TestCase):
         self.assertEqual(shop_order.delivery_fee, Decimal("20.00"))
         self.assertEqual(shop_order.order.status, "PLACED")
         self.assertEqual(shop_order.order.payment_status, "PAID")
-        self.assertEqual(shop_order.order.payment_type, "UPI")
+        self.assertEqual(shop_order.order.payment_type, "CASH")
         self.assertEqual(shop_order.order.order_source, Order.SOURCE_POS)
         self.assertEqual(shop_order.order.delivery_address, "1 Market Road")
         self.assertEqual(shop_order.order.delivery_contact_no, "1234567890")
@@ -25054,6 +25558,693 @@ class ShopPointOfSaleTests(TestCase):
         self.assertFalse(
             ShopWalletTransaction.objects.filter(shop_order=shop_order).exists(),
         )
+
+    def test_upi_counter_sale_waits_for_payment_manager_and_saves_customer(self):
+        manager_user = User.objects.create_user(username="pos_payment_manager")
+        ShopStaff.objects.create(
+            shop=self.shop,
+            user=manager_user,
+            role="PAYMENT_MANAGER",
+            can_confirm_rider_payments=True,
+        )
+        self.shop.upi_id = "posshop@upi"
+        self.shop.save(update_fields=["upi_id"])
+        self.client.force_login(self.staff_user)
+        sale_id = self.client.get(self.pos_url).context["sale_id"]
+        self._save_cart(2)
+        payment_selection_page = self.client.get(
+            f"{self.pos_url}?sale_id={sale_id}",
+        )
+        self.assertContains(payment_selection_page, 'id="upiPaymentPreview"')
+        self.assertContains(payment_selection_page, 'id="upiPaymentPreviewQr"')
+        self.assertContains(payment_selection_page, "data-counter-qr=")
+        self.assertContains(
+            payment_selection_page,
+            "home-delivery route fees and the exact amount are finalized after you place the sale",
+        )
+
+        response = self.client.post(
+            self.pos_url,
+            {
+                "action": "place_sale",
+                "fulfillment_type": ShopOrder.FULFILLMENT_DELIVERY,
+                "payment_type": "UPI",
+                "customer_name": "Saved POS Buyer",
+                "customer_phone": "9876543210",
+                "save_customer_for_reuse": "on",
+                "delivery_address": "9 Pin Road",
+                "delivery_pincode": "380001",
+                "delivery_latitude": "23.0100000",
+                "delivery_longitude": "72.5200000",
+            },
+        )
+
+        payment_request = ShopPOSPaymentApproval.objects.get(shop=self.shop)
+        shop_order = payment_request.shop_order
+        order = shop_order.order
+        self.assertRedirects(
+            response,
+            f"{self.pos_url}?payment_request={payment_request.pk}",
+        )
+        self.assertEqual(order.payment_status, "PENDING")
+        self.assertFalse(order.is_payment_done)
+        self.assertEqual(order.status, "PAYMENT_PENDING")
+        self.assertEqual(shop_order.status, "PAYMENT_PENDING")
+        self.assertEqual(payment_request.upi_id, "posshop@upi")
+        self.assertEqual(shop_order.pos_customer.name, "Saved POS Buyer")
+        self.assertEqual(shop_order.pos_customer.phone, "9876543210")
+        self.assertEqual(
+            shop_order.pos_customer.delivery_address,
+            "9 Pin Road",
+        )
+        self.assertEqual(
+            shop_order.pos_customer.latitude,
+            Decimal("23.0100000"),
+        )
+        pending_sale_page = self.client.get(response.url)
+        self.assertContains(pending_sale_page, "Recent unplaced or incomplete sales")
+        self.assertContains(pending_sale_page, "Sale items")
+        self.assertContains(pending_sale_page, "POS Apples × 2")
+        self.assertContains(pending_sale_page, "Saved POS Buyer")
+        self.assertContains(pending_sale_page, "9 Pin Road")
+        self.assertContains(pending_sale_page, 'option value="UPI"')
+        self.assertContains(pending_sale_page, 'option value="CASH"')
+        self.assertContains(pending_sale_page, 'option value="CARD"')
+        self.assertContains(pending_sale_page, 'option value="OTHER"')
+        self.assertEqual(shop_order.pos_customer.latitude, Decimal("23.0100000"))
+        self.assertEqual(shop_order.pos_customer.longitude, Decimal("72.5200000"))
+        self.assignment.refresh_from_db()
+        self.assertEqual(self.assignment.stock, Decimal("3.0000"))
+
+        pos_page = self.client.get(response.url)
+        self.assertContains(pos_page, "Request UPI payment confirmation")
+        self.assertContains(pos_page, "posshop@upi")
+        self.assertContains(pos_page, 'id="deliveryMap"')
+        self.assertContains(pos_page, "tile.openstreetmap.org")
+        self.assertContains(pos_page, "Satellite view")
+        self.assertContains(pos_page, "World_Imagery")
+
+        self.client.force_login(manager_user)
+        dashboard = self.client.get(reverse("staff_payment_manager_dashboard"))
+        self.assertNotContains(dashboard, shop_order.shop_order_number)
+        self.client.force_login(self.staff_user)
+        reported = self.client.post(
+            reverse(
+                "report_shop_pos_payment",
+                kwargs={"payment_approval_id": payment_request.pk},
+            ),
+        )
+        self.assertRedirects(
+            reported,
+            f"{self.pos_url}?payment_request={payment_request.pk}",
+        )
+        payment_request.refresh_from_db()
+        self.assertEqual(payment_request.status, ShopPOSPaymentApproval.STATUS_REPORTED)
+        change_after_report = self.client.post(
+            reverse(
+                "change_shop_pos_payment_method",
+                kwargs={"payment_approval_id": payment_request.pk},
+            ),
+            {"payment_method": "CASH"},
+        )
+        self.assertRedirects(
+            change_after_report,
+            f"{self.pos_url}?payment_request={payment_request.pk}",
+        )
+        payment_request.refresh_from_db()
+        self.assertEqual(payment_request.payment_method, "UPI")
+        self.assertEqual(payment_request.status, ShopPOSPaymentApproval.STATUS_REPORTED)
+        self.client.force_login(manager_user)
+        dashboard = self.client.get(reverse("staff_payment_manager_dashboard"))
+        self.assertContains(dashboard, shop_order.shop_order_number)
+        approved = self.client.post(
+            reverse(
+                "approve_shop_pos_payment",
+                kwargs={"payment_approval_id": payment_request.pk},
+            ),
+        )
+        self.assertRedirects(approved, reverse("staff_payment_manager_dashboard"))
+        payment_request.refresh_from_db()
+        shop_order.refresh_from_db()
+        order.refresh_from_db()
+        self.assertEqual(payment_request.status, ShopPOSPaymentApproval.STATUS_APPROVED)
+        self.assertEqual(payment_request.reviewed_by, manager_user)
+        self.assertEqual(order.payment_status, "PAID")
+        self.assertTrue(order.is_payment_done)
+        self.assertEqual(order.status, "PLACED")
+        self.assertEqual(shop_order.status, "PLACED")
+        self.assertTrue(
+            Notification.objects.filter(
+                user=self.owner,
+                title="Paid counter delivery order ready",
+            ).exists()
+        )
+
+    def test_unpaid_pos_sale_loads_into_the_current_sale_and_restores_stock(self):
+        manager_user = User.objects.create_user(username="pos_load_sale_manager")
+        ShopStaff.objects.create(
+            shop=self.shop,
+            user=manager_user,
+            role="PAYMENT_MANAGER",
+            can_confirm_rider_payments=True,
+        )
+        self.shop.upi_id = "posshop@upi"
+        self.shop.save(update_fields=["upi_id"])
+        self.client.force_login(self.staff_user)
+        self._save_cart(2)
+        self.client.post(
+            self.pos_url,
+            {
+                "action": "place_sale",
+                "fulfillment_type": ShopOrder.FULFILLMENT_DELIVERY,
+                "payment_type": "UPI",
+                "customer_name": "Load Sale Buyer",
+                "customer_phone": "9876543210",
+                "save_customer_for_reuse": "on",
+                "delivery_address": "18 Current Sale Road",
+                "delivery_pincode": "380001",
+                "delivery_latitude": "23.0100000",
+                "delivery_longitude": "72.5200000",
+            },
+        )
+        payment_request = ShopPOSPaymentApproval.objects.get(shop=self.shop)
+        load_url = reverse(
+            "load_shop_pos_payment_into_sale",
+            kwargs={"payment_approval_id": payment_request.pk},
+        )
+        page = self.client.get(self.pos_url)
+        self.assertContains(page, "Load in current sale")
+        self.assertContains(page, load_url)
+
+        loaded = self.client.post(load_url)
+
+        sale_id = self.client.session[f"shop_pos_sale_id_{self.shop.pk}"]
+        self.assertRedirects(loaded, f"{self.pos_url}?sale_id={sale_id}")
+        self.assertEqual(
+            self.client.session[f"shop_pos_cart_{self.shop.pk}"],
+            {str(self.assignment.pk): 2},
+        )
+        payment_request.refresh_from_db()
+        payment_request.shop_order.refresh_from_db()
+        payment_request.shop_order.order.refresh_from_db()
+        self.assignment.refresh_from_db()
+        self.assertEqual(payment_request.status, ShopPOSPaymentApproval.STATUS_CANCELLED)
+        self.assertEqual(payment_request.shop_order.status, "CANCELLED")
+        self.assertEqual(payment_request.shop_order.order.status, "CANCELLED")
+        self.assertEqual(self.assignment.stock, Decimal("5.0000"))
+        current_sale = self.client.get(loaded.url)
+        self.assertContains(current_sale, "POS Apples")
+        self.assertContains(current_sale, "₹24.00")
+        self.assertContains(current_sale, 'value="Load Sale Buyer"')
+        self.assertContains(current_sale, 'value="9876543210"')
+        self.assertContains(current_sale, "18 Current Sale Road</textarea>")
+        self.assertContains(current_sale, 'value="380001"')
+        self.assertContains(current_sale, 'value="23.0100000"')
+        self.assertContains(current_sale, 'value="72.5200000"')
+        self.assertContains(current_sale, 'value="DELIVERY"')
+        self.assertEqual(
+            current_sale.context["current_sale_details"]["fulfillment_type"],
+            ShopOrder.FULFILLMENT_DELIVERY,
+        )
+        self.assertNotContains(current_sale, "Load in current sale")
+
+    def test_rejected_upi_sale_can_retry_or_cancel_and_restore_stock(self):
+        manager_user = User.objects.create_user(username="pos_rejecting_payment_manager")
+        ShopStaff.objects.create(
+            shop=self.shop,
+            user=manager_user,
+            role="PAYMENT_MANAGER",
+            can_confirm_rider_payments=True,
+        )
+        self.shop.upi_id = "posshop@upi"
+        self.shop.save(update_fields=["upi_id"])
+        self.client.force_login(self.staff_user)
+        self._save_cart(2)
+        response = self.client.post(
+            self.pos_url,
+            {
+                "action": "place_sale",
+                "fulfillment_type": ShopOrder.FULFILLMENT_COUNTER,
+                "payment_type": "UPI",
+            },
+        )
+        payment_request = ShopPOSPaymentApproval.objects.get(shop=self.shop)
+
+        self.client.post(
+            reverse(
+                "report_shop_pos_payment",
+                kwargs={"payment_approval_id": payment_request.pk},
+            ),
+        )
+        self.client.force_login(manager_user)
+        self.client.post(
+            reverse(
+                "reject_shop_pos_payment",
+                kwargs={"payment_approval_id": payment_request.pk},
+            ),
+        )
+        payment_request.refresh_from_db()
+        self.assertEqual(payment_request.status, ShopPOSPaymentApproval.STATUS_REJECTED)
+
+        self.client.force_login(self.staff_user)
+        pending_orders = self.client.get(
+            reverse("shop_order_list"),
+            {"status": "pending"},
+        )
+        self.assertEqual(pending_orders.status_code, 200)
+        self.assertContains(pending_orders, payment_request.shop_order.shop_order_number)
+        self.assertContains(pending_orders, "Payment rejected")
+        self.assertContains(pending_orders, "Counter sale")
+        self.assertContains(pending_orders, "UPI")
+        self.assertContains(
+            pending_orders,
+            reverse(
+                "retry_shop_pos_payment",
+                kwargs={"payment_approval_id": payment_request.pk},
+            ),
+        )
+        self.assertContains(pending_orders, "Retry payment")
+
+        retry = self.client.post(
+            reverse(
+                "retry_shop_pos_payment",
+                kwargs={"payment_approval_id": payment_request.pk},
+            ),
+        )
+        self.assertRedirects(
+            retry,
+            f"{self.pos_url}?payment_request={payment_request.pk}",
+        )
+        payment_request.refresh_from_db()
+        self.assertEqual(payment_request.status, ShopPOSPaymentApproval.STATUS_PENDING)
+
+        cancelled = self.client.post(
+            reverse(
+                "cancel_shop_pos_payment",
+                kwargs={"payment_approval_id": payment_request.pk},
+            ),
+        )
+        self.assertRedirects(cancelled, self.pos_url)
+        payment_request.refresh_from_db()
+        payment_request.shop_order.refresh_from_db()
+        payment_request.shop_order.order.refresh_from_db()
+        self.assertEqual(payment_request.status, ShopPOSPaymentApproval.STATUS_CANCELLED)
+        self.assertEqual(payment_request.shop_order.status, "CANCELLED")
+        self.assertEqual(payment_request.shop_order.order.status, "CANCELLED")
+        self.assignment.refresh_from_db()
+        self.assertEqual(self.assignment.stock, Decimal("5.0000"))
+        self.assertEqual(
+            StockMovement.objects.filter(
+                reference=f"{payment_request.shop_order.order.order_id} payment-cancelled",
+                quantity=Decimal("2"),
+            ).count(),
+            1,
+        )
+
+    def test_pending_upi_payment_can_change_to_card_and_place_sale(self):
+        manager_user = User.objects.create_user(username="pos_method_change_manager")
+        ShopStaff.objects.create(
+            shop=self.shop,
+            user=manager_user,
+            role="PAYMENT_MANAGER",
+            can_confirm_rider_payments=True,
+        )
+        self.shop.upi_id = "posshop@upi"
+        self.shop.save(update_fields=["upi_id"])
+        self.client.force_login(self.staff_user)
+        self._save_cart(1)
+        self.client.post(
+            self.pos_url,
+            {
+                "action": "place_sale",
+                "fulfillment_type": ShopOrder.FULFILLMENT_COUNTER,
+                "payment_type": "UPI",
+            },
+        )
+        payment_request = ShopPOSPaymentApproval.objects.get(shop=self.shop)
+        shop_order = payment_request.shop_order
+
+        changed = self.client.post(
+            reverse(
+                "change_shop_pos_payment_method",
+                kwargs={"payment_approval_id": payment_request.pk},
+            ),
+            {"payment_method": "CARD"},
+        )
+
+        self.assertRedirects(
+            changed,
+            reverse("shop_order_detail", kwargs={"shop_order_id": shop_order.pk}),
+        )
+        payment_request.refresh_from_db()
+        shop_order.refresh_from_db()
+        order = shop_order.order
+        order.refresh_from_db()
+        self.assertEqual(payment_request.payment_method, "CARD")
+        self.assertEqual(payment_request.status, ShopPOSPaymentApproval.STATUS_APPROVED)
+        self.assertEqual(payment_request.reviewed_by, self.staff_user)
+        self.assertEqual(order.payment_type, "CARD")
+        self.assertEqual(order.payment_status, "PAID")
+        self.assertEqual(order.status, "DELIVERED")
+        self.assertTrue(order.is_payment_done)
+
+    @override_settings(
+        RAZORPAY_KEY_ID="rzp_test_pos",
+        RAZORPAY_KEY_SECRET="pos-test-secret",
+    )
+    def test_pending_payment_method_switch_to_razorpay_and_gateway_safety(self):
+        manager_user = User.objects.create_user(username="pos_method_change_razorpay_manager")
+        ShopStaff.objects.create(
+            shop=self.shop,
+            user=manager_user,
+            role="PAYMENT_MANAGER",
+            can_confirm_rider_payments=True,
+        )
+        self.shop.upi_id = "posshop@upi"
+        self.shop.save(update_fields=["upi_id"])
+        self.client.force_login(self.staff_user)
+        self._save_cart(1)
+        self.client.post(
+            self.pos_url,
+            {
+                "action": "place_sale",
+                "fulfillment_type": ShopOrder.FULFILLMENT_COUNTER,
+                "payment_type": "UPI",
+            },
+        )
+        payment_request = ShopPOSPaymentApproval.objects.get(shop=self.shop)
+        gateway_order_response = Mock()
+        gateway_order_response.json.return_value = {
+            "id": "order_switch_test123",
+            "amount": 1200,
+            "currency": "INR",
+        }
+        gateway_order_response.raise_for_status.return_value = None
+        with patch(
+            "seller.views.requests.post",
+            return_value=gateway_order_response,
+        ) as create_gateway_order:
+            changed_to_razorpay = self.client.post(
+                reverse(
+                    "change_shop_pos_payment_method",
+                    kwargs={"payment_approval_id": payment_request.pk},
+                ),
+                {"payment_method": "RAZORPAY"},
+            )
+
+        self.assertRedirects(
+            changed_to_razorpay,
+            f"{self.pos_url}?payment_request={payment_request.pk}",
+        )
+        self.assertEqual(create_gateway_order.call_args.kwargs["json"]["amount"], 1200)
+        payment_request.refresh_from_db()
+        payment_request.shop_order.order.refresh_from_db()
+        self.assertEqual(payment_request.payment_method, "RAZORPAY")
+        self.assertEqual(payment_request.gateway_order_id, "order_switch_test123")
+        self.assertEqual(payment_request.shop_order.order.payment_type, "RAZORPAY")
+        self.assertEqual(payment_request.shop_order.order.payment_status, "PENDING")
+
+        gateway_payments_response = Mock()
+        gateway_payments_response.json.return_value = {
+            "items": [
+                {
+                    "order_id": "order_switch_test123",
+                    "status": "authorized",
+                },
+            ],
+        }
+        gateway_payments_response.raise_for_status.return_value = None
+        with patch(
+            "seller.views.requests.get",
+            return_value=gateway_payments_response,
+        ):
+            blocked_switch = self.client.post(
+                reverse(
+                    "change_shop_pos_payment_method",
+                    kwargs={"payment_approval_id": payment_request.pk},
+                ),
+                {"payment_method": "CASH"},
+            )
+        self.assertRedirects(
+            blocked_switch,
+            f"{self.pos_url}?payment_request={payment_request.pk}",
+        )
+        with patch(
+            "seller.views.requests.get",
+            return_value=gateway_payments_response,
+        ):
+            blocked_load = self.client.post(
+                reverse(
+                    "load_shop_pos_payment_into_sale",
+                    kwargs={"payment_approval_id": payment_request.pk},
+                ),
+            )
+        self.assertRedirects(
+            blocked_load,
+            f"{self.pos_url}?sale_id={self.client.session[f'shop_pos_sale_id_{self.shop.pk}']}",
+        )
+        payment_request.refresh_from_db()
+        payment_request.shop_order.order.refresh_from_db()
+        self.assertEqual(payment_request.payment_method, "RAZORPAY")
+        self.assertEqual(payment_request.shop_order.order.payment_status, "PENDING")
+        self.assertEqual(payment_request.status, ShopPOSPaymentApproval.STATUS_PENDING)
+        self.assertEqual(
+            self.client.session[f"shop_pos_cart_{self.shop.pk}"],
+            {},
+        )
+
+        gateway_payments_response.json.return_value = {"items": []}
+        with patch(
+            "seller.views.requests.get",
+            return_value=gateway_payments_response,
+        ):
+            changed_to_cash = self.client.post(
+                reverse(
+                    "change_shop_pos_payment_method",
+                    kwargs={"payment_approval_id": payment_request.pk},
+                ),
+                {"payment_method": "CASH"},
+            )
+        self.assertRedirects(
+            changed_to_cash,
+            reverse(
+                "shop_order_detail",
+                kwargs={"shop_order_id": payment_request.shop_order_id},
+            ),
+        )
+        payment_request.refresh_from_db()
+        payment_request.shop_order.order.refresh_from_db()
+        self.assertEqual(payment_request.payment_method, "CASH")
+        self.assertEqual(payment_request.shop_order.order.payment_type, "CASH")
+        self.assertEqual(payment_request.shop_order.order.payment_status, "PAID")
+        self.assertEqual(payment_request.shop_order.order.status, "DELIVERED")
+
+    @override_settings(
+        RAZORPAY_KEY_ID="rzp_test_pos",
+        RAZORPAY_KEY_SECRET="pos-test-secret",
+    )
+    def test_razorpay_pos_order_is_placed_only_after_captured_payment_verification(self):
+        self.client.force_login(self.staff_user)
+        sale_id = self.client.get(self.pos_url).context["sale_id"]
+        self._save_cart(1)
+        gateway_order_response = Mock()
+        gateway_order_response.json.return_value = {
+            "id": "order_pos_test123",
+            "amount": 1200,
+            "currency": "INR",
+        }
+        gateway_order_response.raise_for_status.return_value = None
+        payment_selection_page = self.client.get(
+            f"{self.pos_url}?sale_id={sale_id}",
+        )
+        self.assertContains(payment_selection_page, 'id="razorpayPaymentPreview"')
+        self.assertContains(payment_selection_page, "Place sale and continue to Razorpay")
+        self.assertContains(payment_selection_page, "Pay online with Razorpay")
+        self.assertContains(
+            payment_selection_page,
+            "This amount is a preview; home-delivery route fees are finalized after you place the sale",
+        )
+
+        with patch(
+            "seller.views.requests.post",
+            return_value=gateway_order_response,
+        ) as create_gateway_order:
+            response = self.client.post(
+                self.pos_url,
+                {
+                    "action": "place_sale",
+                    "fulfillment_type": ShopOrder.FULFILLMENT_COUNTER,
+                    "payment_type": "RAZORPAY",
+                },
+            )
+
+        payment_request = ShopPOSPaymentApproval.objects.get(shop=self.shop)
+        shop_order = payment_request.shop_order
+        order = shop_order.order
+        self.assertRedirects(
+            response,
+            f"{self.pos_url}?payment_request={payment_request.pk}",
+        )
+        self.assertEqual(create_gateway_order.call_args.kwargs["json"]["amount"], 1200)
+        self.assertEqual(payment_request.payment_method, "RAZORPAY")
+        self.assertEqual(payment_request.gateway_order_id, "order_pos_test123")
+        self.assertEqual(order.status, "PAYMENT_PENDING")
+        self.assertEqual(order.payment_status, "PENDING")
+        self.assertFalse(order.is_payment_done)
+
+        payment_page = self.client.get(response.url)
+        self.assertContains(payment_page, "checkout.razorpay.com/v1/checkout.js")
+        self.assertContains(payment_page, "Pay ₹12.00 with Razorpay")
+        self.assertContains(payment_page, "Recent unplaced or incomplete sales")
+        self.assertEqual(
+            list(payment_page.context["recent_unplaced_pos_sales"]),
+            [payment_request],
+        )
+        self.assertContains(
+            payment_page,
+            reverse(
+                "change_shop_pos_payment_method",
+                kwargs={"payment_approval_id": payment_request.pk},
+            ),
+        )
+        self.assertContains(payment_page, 'option value="CASH"')
+        self.assertContains(payment_page, 'option value="CARD"')
+        self.assertContains(payment_page, 'option value="OTHER"')
+        self.assertContains(payment_page, 'option value="RAZORPAY"')
+        self.assertContains(
+            payment_page,
+            reverse(
+                "cancel_shop_pos_payment",
+                kwargs={"payment_approval_id": payment_request.pk},
+            ),
+        )
+        self.assertContains(payment_page, "Remove sale")
+
+        gateway_payments_response = Mock()
+        gateway_payments_response.json.return_value = {
+            "items": [
+                {
+                    "order_id": "order_pos_test123",
+                    "status": "captured",
+                },
+            ],
+        }
+        gateway_payments_response.raise_for_status.return_value = None
+        with patch(
+            "seller.views.requests.get",
+            return_value=gateway_payments_response,
+        ):
+            cancel_response = self.client.post(
+                reverse(
+                    "cancel_shop_pos_payment",
+                    kwargs={"payment_approval_id": payment_request.pk},
+                ),
+            )
+        self.assertRedirects(
+            cancel_response,
+            f"{self.pos_url}?payment_request={payment_request.pk}",
+        )
+        order.refresh_from_db()
+        self.assertEqual(order.status, "PAYMENT_PENDING")
+        self.assignment.refresh_from_db()
+        self.assertEqual(self.assignment.stock, Decimal("4.0000"))
+
+        payment_id = "pay_postest123"
+        signature = hmac.new(
+            b"pos-test-secret",
+            f"order_pos_test123|{payment_id}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        payment_response = Mock()
+        payment_response.json.return_value = {
+            "order_id": "order_pos_test123",
+            "amount": 1200,
+            "currency": "INR",
+            "status": "authorized",
+        }
+        payment_response.raise_for_status.return_value = None
+        with patch("seller.views.requests.get", return_value=payment_response):
+            not_captured = self.client.post(
+                reverse(
+                    "verify_shop_pos_razorpay_payment",
+                    kwargs={"payment_approval_id": payment_request.pk},
+                ),
+                {
+                    "razorpay_order_id": "order_pos_test123",
+                    "razorpay_payment_id": payment_id,
+                    "razorpay_signature": signature,
+                },
+            )
+        self.assertRedirects(
+            not_captured,
+            f"{self.pos_url}?payment_request={payment_request.pk}",
+        )
+        order.refresh_from_db()
+        self.assertEqual(order.status, "PAYMENT_PENDING")
+        self.assertFalse(order.is_payment_done)
+
+        payment_response.json.return_value["status"] = "captured"
+        with patch("seller.views.requests.get", return_value=payment_response):
+            verified = self.client.post(
+                reverse(
+                    "verify_shop_pos_razorpay_payment",
+                    kwargs={"payment_approval_id": payment_request.pk},
+                ),
+                {
+                    "razorpay_order_id": "order_pos_test123",
+                    "razorpay_payment_id": payment_id,
+                    "razorpay_signature": signature,
+                },
+            )
+
+        self.assertEqual(
+            verified.url,
+            reverse("shop_order_detail", kwargs={"shop_order_id": shop_order.pk}),
+            "; ".join(message.message for message in verified.wsgi_request._messages),
+        )
+        order.refresh_from_db()
+        shop_order.refresh_from_db()
+        payment_request.refresh_from_db()
+        self.assertEqual(order.status, "DELIVERED")
+        self.assertEqual(shop_order.status, "DELIVERED")
+        self.assertEqual(order.payment_status, "PAID")
+        self.assertTrue(order.is_payment_done)
+        self.assertEqual(order.payment_id, payment_id)
+        self.assertEqual(
+            payment_request.status,
+            ShopPOSPaymentApproval.STATUS_APPROVED,
+        )
+
+    def test_shop_owner_can_reuse_saved_pos_customer_from_another_owned_shop(self):
+        other_shop = Shop.objects.create(name="POS Other Owner Shop", owner=self.owner)
+        saved_customer = ShopPOSCustomer.objects.create(
+            shop=other_shop,
+            name="Reusable POS Customer",
+            phone="9991112222",
+        )
+        self.client.force_login(self.owner)
+        page = self.client.get(self.pos_url)
+        self.assertContains(page, "Reusable POS Customer")
+        self.assertEqual(
+            list(page.context["pos_customers"]),
+            [saved_customer],
+        )
+
+        self._save_cart(1)
+        sale = self.client.post(
+            self.pos_url,
+            {
+                "action": "place_sale",
+                "fulfillment_type": ShopOrder.FULFILLMENT_COUNTER,
+                "payment_type": "CASH",
+                "saved_customer_id": str(saved_customer.pk),
+            },
+        )
+        self.assertEqual(sale.status_code, 302)
+        shop_order = ShopOrder.objects.get(shop=self.shop)
+        self.assertEqual(shop_order.pos_customer, saved_customer)
+        self.assertEqual(shop_order.order.customer_name, "Reusable POS Customer")
+        self.assertEqual(shop_order.order.delivery_contact_no, "9991112222")
 
     def test_unprivileged_staff_cannot_use_pos_and_out_of_stock_sale_is_rejected(self):
         ShopStaff.objects.create(

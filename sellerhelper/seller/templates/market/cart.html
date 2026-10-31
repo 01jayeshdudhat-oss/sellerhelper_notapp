@@ -378,8 +378,8 @@
                             Delivery
                         </span>
 
-                        <strong class="{% if not delivery_charge %}text-success{% endif %}" data-cart-delivery-total>
-                            {% if delivery_charge %}₹{{ delivery_charge|floatformat:2 }}{% else %}FREE{% endif %}
+                        <strong class="{% if not delivery_charge and not delivery_pricing_errors %}text-success{% endif %}" data-cart-delivery-total>
+                            {% if delivery_pricing_errors %}Route unavailable{% elif delivery_charge %}₹{{ delivery_charge|floatformat:2 }}{% else %}FREE{% endif %}
                         </strong>
                     </div>
 
@@ -390,12 +390,17 @@
                         <div class="d-flex justify-content-between gap-2">
                             <span class="text-break">
                                 {{ shop.shop_name }}
+                                {% if shop.free_delivery_minimum %}
+                                    <span class="small text-muted d-block">Delivery fee reduces above ₹{{ shop.free_delivery_minimum|floatformat:2 }} and is free at ₹{{ shop.free_delivery_at|floatformat:2 }}</span>
+                                {% endif %}
                                 {% if shop.is_scheduled_delivery %}
                                     <span class="small text-warning-emphasis fw-semibold d-block">Scheduled delivery — shop is currently closed</span>
                                 {% endif %}
                             </span>
                             <span class="text-nowrap">
-                                {% if shop.delivery_fee %}₹{{ shop.delivery_fee|floatformat:2 }}{% else %}<span class="text-success">Free</span>{% endif %}
+                                {% if shop.delivery_pricing_error %}
+                                    <span class="text-danger" title="{{ shop.delivery_pricing_error }}">Route unavailable</span>
+                                {% elif shop.delivery_fee %}₹{{ shop.delivery_fee|floatformat:2 }}{% else %}<span class="text-success">Free</span>{% endif %}
                             </span>
                         </div>
                         {% endfor %}
@@ -411,9 +416,12 @@
                         </strong>
 
                         <strong class="fs-4 text-success" data-cart-grand-total>
-                            ₹{{ grand_total|floatformat:2 }}
+                            {% if delivery_pricing_errors %}—{% else %}₹{{ grand_total|floatformat:2 }}{% endif %}
                         </strong>
 
+                    </div>
+                    <div class="small text-danger mt-2" data-cart-delivery-error{% if not delivery_pricing_errors %} hidden{% endif %}>
+                        {% for error in delivery_pricing_errors %}{{ error }} {% endfor %}
                     </div>
                     <div class="small text-muted mt-2">Applicable GST and platform charges are shown at checkout.</div>
                     <!-- <a
@@ -601,9 +609,19 @@ document.addEventListener("click", async (event) => {
         });
         document.querySelector("[data-cart-subtotal]").textContent = `₹${data.subtotal}`;
         const deliveryTotal = document.querySelector("[data-cart-delivery-total]");
-        deliveryTotal.textContent = Number(data.delivery_charge) ? `₹${data.delivery_charge}` : "FREE";
-        deliveryTotal.classList.toggle("text-success", !Number(data.delivery_charge));
-        document.querySelector("[data-cart-grand-total]").textContent = `₹${data.grand_total}`;
+        deliveryTotal.textContent = data.delivery_pricing_error
+            ? "Route unavailable"
+            : Number(data.delivery_charge) ? `₹${data.delivery_charge}` : "FREE";
+        deliveryTotal.classList.toggle(
+            "text-success",
+            !data.delivery_pricing_error && !Number(data.delivery_charge),
+        );
+        document.querySelector("[data-cart-grand-total]").textContent = data.grand_total
+            ? `₹${data.grand_total}`
+            : "—";
+        const deliveryError = document.querySelector("[data-cart-delivery-error]");
+        deliveryError.textContent = data.delivery_pricing_error || "";
+        deliveryError.hidden = !data.delivery_pricing_error;
 
         const shopsWrapper = document.querySelector("[data-cart-delivery-shops]");
         const shopList = document.querySelector("[data-cart-delivery-shop-list]");
@@ -614,10 +632,23 @@ document.addEventListener("click", async (event) => {
             const name = document.createElement("span");
             name.className = "text-break";
             name.textContent = shop.shop_name;
+            if (Number(shop.free_delivery_minimum)) {
+                const threshold = document.createElement("span");
+                threshold.className = "small text-muted d-block";
+                threshold.textContent = `Delivery fee reduces above ₹${shop.free_delivery_minimum} and is free at ₹${shop.free_delivery_at}`;
+                name.append(threshold);
+            }
             const fee = document.createElement("span");
             fee.className = "text-nowrap";
-            fee.textContent = Number(shop.delivery_fee) ? `₹${shop.delivery_fee}` : "Free";
-            if (!Number(shop.delivery_fee)) fee.classList.add("text-success");
+            fee.textContent = shop.delivery_pricing_error
+                ? "Route unavailable"
+                : Number(shop.delivery_fee) ? `₹${shop.delivery_fee}` : "Free";
+            if (shop.delivery_pricing_error) {
+                fee.classList.add("text-danger");
+                fee.title = shop.delivery_pricing_error;
+            } else if (!Number(shop.delivery_fee)) {
+                fee.classList.add("text-success");
+            }
             row.append(name, fee);
             shopList.append(row);
         });

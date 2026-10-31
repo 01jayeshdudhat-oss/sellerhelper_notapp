@@ -189,12 +189,41 @@
                     </div>
 
                     <div class="col-md-6 mb-3">
+                        <label class="form-label" for="{{ form.delivery_fee_mode.id_for_label }}">
+                            Delivery fee calculation
+                        </label>
+                        {{ form.delivery_fee_mode }}
+                        {% for error in form.delivery_fee_mode.errors %}
+                            <div class="text-danger small">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+                    <div class="col-md-6 mb-3">
                         <label class="form-label" for="{{ form.delivery_fee.id_for_label }}">
-                            Delivery fee per order (₹)
+                            Fixed delivery fee (₹)
                         </label>
                         {{ form.delivery_fee }}
-                        <div class="form-text">Set 0.00 to offer free delivery. Customers see this fee before placing an order.</div>
+                        <div class="form-text">Used for fixed-fee and fixed-plus-per-kilometer pricing.</div>
                         {% for error in form.delivery_fee.errors %}
+                            <div class="text-danger small">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label" for="{{ form.delivery_fee_per_km.id_for_label }}">
+                            Delivery fee per road-route kilometer (₹)
+                        </label>
+                        {{ form.delivery_fee_per_km }}
+                        <div class="form-text">Used for per-kilometer and combined pricing. Checkout uses the locally configured road map and requires a route to the customer's map pin.</div>
+                        {% for error in form.delivery_fee_per_km.errors %}
+                            <div class="text-danger small">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label" for="{{ form.free_delivery_minimum.id_for_label }}">
+                            Minimum order for free delivery (₹)
+                        </label>
+                        {{ form.free_delivery_minimum }}
+                        <div class="form-text">Set 0.00 to disable. Above this discounted order value, the delivery fee decreases proportionally and becomes free at double this amount.</div>
+                        {% for error in form.free_delivery_minimum.errors %}
                             <div class="text-danger small">{{ error }}</div>
                         {% endfor %}
                     </div>

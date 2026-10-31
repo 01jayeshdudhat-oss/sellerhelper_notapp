@@ -233,6 +233,9 @@ class ShopForm(forms.ModelForm):
             "upi_id",
             "gstin",
             "delivery_fee",
+            "delivery_fee_mode",
+            "delivery_fee_per_km",
+            "free_delivery_minimum",
             "delivery_hsn_code",
             "delivery_gst_rate",
             "gst_state_code",
@@ -250,6 +253,12 @@ class ShopForm(forms.ModelForm):
         if require_legal_acceptance is None:
             require_legal_acceptance = not bool(self.instance.pk)
         self.fields["accept_legal_documents"].required = require_legal_acceptance
+        for field_name in (
+            "delivery_fee_mode",
+            "delivery_fee_per_km",
+            "free_delivery_minimum",
+        ):
+            self.fields[field_name].required = False
 
         category_rows = list(
             ProductCategory.objects.filter(is_active=True)
@@ -331,6 +340,19 @@ class ShopForm(forms.ModelForm):
                 "placeholder": "15-character GSTIN (optional)",
             }),
             "delivery_fee": forms.NumberInput(attrs={
+                "class": "form-control",
+                "min": "0",
+                "step": "0.01",
+                "placeholder": "0.00",
+            }),
+            "delivery_fee_mode": forms.Select(attrs={"class": "form-select"}),
+            "delivery_fee_per_km": forms.NumberInput(attrs={
+                "class": "form-control",
+                "min": "0",
+                "step": "0.01",
+                "placeholder": "0.00",
+            }),
+            "free_delivery_minimum": forms.NumberInput(attrs={
                 "class": "form-control",
                 "min": "0",
                 "step": "0.01",
@@ -436,6 +458,13 @@ class ShopForm(forms.ModelForm):
 
     def clean(self):
         cleaned_data = super().clean()
+        for field_name, default in (
+            ("delivery_fee_mode", "FIXED"),
+            ("delivery_fee_per_km", Decimal("0.00")),
+            ("free_delivery_minimum", Decimal("0.00")),
+        ):
+            if cleaned_data.get(field_name) is None:
+                cleaned_data[field_name] = getattr(self.instance, field_name, default)
         gst_rate = cleaned_data.get("delivery_gst_rate")
         if (
             cleaned_data.get("gstin")

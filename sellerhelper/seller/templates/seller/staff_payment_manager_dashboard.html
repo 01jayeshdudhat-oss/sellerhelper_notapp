@@ -6,8 +6,8 @@
 <div class="container py-4">
     <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
         <div>
-            <h1 class="h3 mb-1">Rider payment confirmations</h1>
-            <p class="text-muted mb-0">Review customer payments reported by riders for shops that authorized you.</p>
+            <h1 class="h3 mb-1">Payment confirmations</h1>
+            <p class="text-muted mb-0">Review rider payments and shop counter-sale UPI payments for shops that authorized you.</p>
         </div>
         <a href="{% url 'staff_dashboard' %}" class="btn btn-outline-secondary">Staff dashboard</a>
     </div>
@@ -24,6 +24,64 @@
                 To manage another shop, its owner can add you using this same username and grant rider payment confirmation access for that shop. Each shop grants access independently.
             </p>
         </div>
+    </div>
+
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-header bg-white">
+            <h2 class="h5 mb-0">Counter-sale UPI payments reported by customers</h2>
+        </div>
+        {% if pending_pos_payment_requests %}
+            <div class="table-responsive">
+                <table class="table align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Shop / Order</th>
+                            <th>Customer</th>
+                            <th>Payment</th>
+                            <th>Fulfillment</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for payment in pending_pos_payment_requests %}
+                            <tr>
+                                <td>
+                                    <strong>{{ payment.shop.name }}</strong><br>
+                                    <a href="{% url 'shop_order_detail' payment.shop_order_id %}">
+                                        {{ payment.shop_order.shop_order_number|default:payment.shop_order.order.order_id }}
+                                    </a>
+                                </td>
+                                <td>
+                                    {{ payment.shop_order.order.customer_name|default:"Walk-in customer" }}
+                                    {% if payment.shop_order.order.delivery_contact_no %}
+                                        <br><small class="text-muted">{{ payment.shop_order.order.delivery_contact_no }}</small>
+                                    {% endif %}
+                                    <br><small class="text-muted">Entered by {{ payment.requested_by.get_full_name|default:payment.requested_by.username }}</small>
+                                </td>
+                                <td>₹{{ payment.amount|floatformat:2 }}<br><small class="text-muted">{{ payment.upi_id }}</small></td>
+                                <td>{{ payment.shop_order.get_fulfillment_type_display }}</td>
+                                <td>
+                                    <div class="d-flex flex-wrap gap-2">
+                                        <form method="post" action="{% url 'approve_shop_pos_payment' payment.pk %}">
+                                            {% csrf_token %}
+                                            <button type="submit" class="btn btn-sm btn-success">Confirm payment</button>
+                                        </form>
+                                        <form method="post" action="{% url 'reject_shop_pos_payment' payment.pk %}">
+                                            {% csrf_token %}
+                                            <button type="submit" class="btn btn-sm btn-outline-danger">Reject</button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <div class="card-body">
+                <p class="text-muted mb-0">There are no customer-reported counter-sale UPI payments awaiting confirmation.</p>
+            </div>
+        {% endif %}
     </div>
 
     <div class="card border-0 shadow-sm">

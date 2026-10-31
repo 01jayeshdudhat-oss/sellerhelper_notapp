@@ -827,18 +827,20 @@
                             <!-- Payment -->
                             <td data-sort-value="{% if shop_order.order.is_payment_done %}Paid{% else %}Pending{% endif %}">
 
-                                {% if shop_order.order.is_payment_done %}
-
-                                    <span class="badge bg-success">
-                                        Paid
-                                    </span>
-
+                                {% if shop_order.pos_payment_approval.status == "REJECTED" %}
+                                    <span class="badge bg-danger">Payment rejected</span>
+                                {% elif shop_order.order.is_payment_done %}
+                                    <span class="badge bg-success">Paid</span>
                                 {% else %}
-
-                                    <span class="badge bg-warning text-dark">
-                                        Pending
-                                    </span>
-
+                                    <span class="badge bg-warning text-dark">Pending</span>
+                                {% endif %}
+                                {% if shop_order.order.order_source == "POS" %}
+                                    <div class="small mt-1">
+                                        <span class="badge text-bg-light border">
+                                            {% if shop_order.fulfillment_type == "COUNTER" %}Counter sale · {% endif %}
+                                            {{ shop_order.order.payment_type|default:"Payment method not set" }}
+                                        </span>
+                                    </div>
                                 {% endif %}
                                 {% if shop_order.cash_handover_pending %}
                                     <div class="small mt-1">
@@ -913,6 +915,18 @@
 
                                     <span class="badge bg-warning text-dark">
                                         Returned to Shop
+                                    </span>
+
+                                {% elif shop_order.status == "PAYMENT_PENDING" and shop_order.pos_payment_approval.status == "REJECTED" %}
+
+                                    <span class="badge bg-danger">
+                                        Payment rejected · {{ shop_order.order.payment_type }}
+                                    </span>
+
+                                {% elif shop_order.status == "PAYMENT_PENDING" %}
+
+                                    <span class="badge bg-warning text-dark">
+                                        Awaiting {{ shop_order.order.payment_type }} payment
                                     </span>
 
                                 {% elif shop_order.status == "CANCELLED" %}
@@ -1018,6 +1032,18 @@
                                             </select>
                                         </form>
                                     </div>
+                                {% endif %}
+                                {% if shop_order.can_retry_pos_payment %}
+                                    <form method="post"
+                                          action="{% url 'retry_shop_pos_payment' shop_order.pos_payment_approval.pk %}"
+                                          class="d-inline-block">
+                                        {% csrf_token %}
+                                        <button type="submit"
+                                                class="btn btn-sm btn-warning d-inline-flex align-items-center gap-1 text-nowrap">
+                                            <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+                                            <span>Retry payment</span>
+                                        </button>
+                                    </form>
                                 {% endif %}
                                 <a href="{% url 'shop_order_detail' shop_order.id %}"
                                    class="btn btn-sm btn-outline-primary d-inline-flex align-items-center gap-1 text-nowrap">

@@ -531,7 +531,12 @@
                     <div class="checkout-collapsible-body">
                         {% for shop in checkout_shop_summary %}
                         <div class="d-flex justify-content-between align-items-center gap-3 py-2 {% if not forloop.last %}border-bottom{% endif %}">
-                            <span class="text-break">{{ shop.shop_name }}</span>
+                            <span class="text-break">
+                                {{ shop.shop_name }}
+                                {% if shop.free_delivery_minimum %}
+                                    <span class="small text-muted d-block">Delivery fee reduces above ₹{{ shop.free_delivery_minimum|floatformat:2 }} and is free at ₹{{ shop.free_delivery_at|floatformat:2 }}</span>
+                                {% endif %}
+                            </span>
                             <strong class="text-nowrap">
                                 {% if shop.delivery_free %}<span class="text-success">Free</span>{% else %}₹{{ shop.delivery_fee|floatformat:2 }}{% endif %}
                             </strong>
